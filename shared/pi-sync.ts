@@ -1,0 +1,22 @@
+import type { Message } from "./schema";
+export type PiLiveSession = {
+  id: string;
+  sessionId: string;
+  name: string;
+  cwd: string;
+  sessionFile?: string;
+  model: { id: string; provider: string; api: string } | null;
+  thinking: string;
+  revision: string;
+  busy: boolean;
+  online: boolean;
+  heartbeat: number;
+  activityAt: number;
+  error?: string;
+  applied: boolean;
+  requestCount: number;
+  lastAppliedRequest: number;
+  ack?: { id: string; status: string; error?: string };
+  partial?: Message;
+};
+export type PiLiveDetail = PiLiveSession & { messages: Message[] };

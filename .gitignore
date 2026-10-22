@@ -1,0 +1,30 @@
+# Dependencies and build output
+node_modules/
+dist/
+coverage/
+.vite/
+.cache/
+*.tsbuildinfo
+
+# Local credentials and environment variables
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+/auth.json
+.pi/
+.codex/
+
+# Local conversation data and debug artifacts (may contain private prompts)
+/artifacts/
+/sessions/
+/exports/
+/pi-lab-sync/
+*.jsonl
+*.log
+*.tmp
+
+# macOS metadata
+.DS_Store
+._*

@@ -1,0 +1,431 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createServer, type ServerResponse } from "node:http";
+import { once } from "node:events";
+import { mkdtemp, readFile, writeFile, rm, access } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { generate, validateTranscript, exactPayload } from "../server/engine";
+import { defaults, fileSchema, type Message } from "../shared/schema";
+
+const user: Message = {
+  id: "user",
+  role: "user",
+  content: "Complete the fixture task.",
+  enabled: true,
+};
+function reply(
+  res: ServerResponse,
+  call?: { name: string; arguments: object; id?: string },
+) {
+  res.writeHead(200, { "Content-Type": "text/event-stream" });
+  const chunks = call
+    ? [
+        {
+          delta: {
+            role: "assistant",
+            tool_calls: [
+              {
+                index: 0,
+                id: call.id || "call_test",
+                type: "function",
+                function: { name: call.name, arguments: "" },
+              },
+            ],
+          },
+          finish_reason: null,
+        },
+        {
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                function: { arguments: JSON.stringify(call.arguments) },
+              },
+            ],
+          },
+          finish_reason: null,
+        },
+        { delta: {}, finish_reason: "tool_calls" },
+      ]
+    : [
+        {
+          delta: { role: "assistant", content: "AGENT_COMPLETE" },
+          finish_reason: "stop",
+        },
+      ];
+  for (const chunk of chunks)
+    res.write(
+      `data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", model: "gpt-4.1-mini", choices: [{ index: 0, ...chunk }], ...(chunk.finish_reason ? { usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 } } : {}) })}\n\n`,
+    );
+  res.end("data: [DONE]\n\n");
+}
+async function provider(handler: (body: any, res: ServerResponse) => void) {
+  const server = createServer(async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    try {
+      handler(JSON.parse(text), res);
+    } catch (error) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: { message: String(error) } }));
+    }
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  return {
+    baseUrl: `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}/v1`,
+    close: () => {
+      server.closeAllConnections();
+      server.close();
+    },
+  };
+}
+test("Agent executes real write/read/bash tools, feeds results back, and replays edited history", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "pi-lab-tools-"));
+  const sent: any[] = [];
+  const mock = await provider((body, res) => {
+    sent.push(body);
+    if (sent.length === 1)
+      reply(res, {
+        id: "call_write",
+        name: "write",
+        arguments: { path: "result.txt", content: "real file content" },
+      });
+    else if (sent.length === 2)
+      reply(res, {
+        id: "call_read",
+        name: "read",
+        arguments: { path: "result.txt" },
+      });
+    else if (sent.length === 3)
+      reply(res, {
+        id: "call_bash",
+        name: "bash",
+        arguments: { command: "cat result.txt", timeout: 5 },
+      });
+    else reply(res);
+  });
+  try {
+    const events: Record<string, any>[] = [];
+    await generate(
+      {
+        settings: {
+          ...defaults,
+          baseUrl: mock.baseUrl,
+          toolMode: "agent",
+          workingDirectory: cwd,
+        },
+        messages: [{ id: "system", role: "system", content: "Original system text.", enabled: true }, user],
+      },
+      (e) => events.push(e),
+    );
+    assert.equal(
+      events.some((e) => e.type === "error"),
+      false,
+      JSON.stringify(events),
+    );
+    assert.equal(sent.length, 4);
+    assert.equal(
+      await readFile(path.join(cwd, "result.txt"), "utf8"),
+      "real file content",
+    );
+    assert.deepEqual(sent[0].tools.map((t: any) => t.function.name).sort(), [
+      "bash",
+      "edit",
+      "find",
+      "grep",
+      "ls",
+      "read",
+      "write",
+    ]);
+    assert.equal(sent[0].messages[0].content, "Original system text.");
+    assert.equal(sent[1].messages[2].tool_calls[0].function.name, "write");
+    assert.equal(sent[1].messages[3].role, "tool");
+    assert.equal(sent[1].messages[3].tool_call_id, "call_write");
+    assert.match(sent[2].messages.at(-1).content, /real file content/);
+    assert.match(sent[3].messages.at(-1).content, /real file content/);
+    assert.equal(
+      sent[3].messages.filter((m: any) => m.role === "user").length,
+      1,
+    );
+    assert.equal(events.filter((e) => e.type === "done").length, 1);
+    assert.deepEqual(events.find((e) => e.type === "done")?.usage, {
+      input: 28,
+      output: 12,
+    });
+    assert.equal(events.find((e) => e.type === "done")?.turns, 4);
+    const trace = new Map<string, Message>();
+    for (const e of events)
+      if (e.type === "assistant" || e.type === "message")
+        trace.set(e.message.id, e.message);
+    assert.equal(
+      [...trace.values()].filter((m) => m.role === "tool").length,
+      3,
+    );
+    const messages = [user, ...trace.values()];
+    messages.find((m) => m.role === "tool" && m.toolName === "read")!.content =
+      "edited tool result";
+    const imported = fileSchema.parse({
+      version: 1,
+      title: "replay",
+      settings: defaults,
+      messages,
+    });
+    const replay: Record<string, any>[] = [];
+    await generate(
+      {
+        settings: { ...defaults, baseUrl: mock.baseUrl },
+        messages: imported.messages,
+      },
+      (e) => replay.push(e),
+    );
+    assert.equal(
+      replay.some((e) => e.type === "error"),
+      false,
+      JSON.stringify(replay),
+    );
+    assert.ok(
+      sent
+        .at(-1)
+        .messages.some(
+          (m: any) => m.role === "tool" && m.content === "edited tool result",
+        ),
+    );
+  } finally {
+    mock.close();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+test("read-only mode rejects unavailable write tools and lets the model recover", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "pi-lab-readonly-"));
+  const sent: any[] = [];
+  const mock = await provider((body, res) => {
+    sent.push(body);
+    if (sent.length === 1)
+      reply(res, {
+        name: "write",
+        arguments: { path: "forbidden.txt", content: "no" },
+      });
+    else reply(res);
+  });
+  try {
+    const events: Record<string, any>[] = [];
+    await generate(
+      {
+        settings: {
+          ...defaults,
+          baseUrl: mock.baseUrl,
+          toolMode: "read-only",
+          workingDirectory: cwd,
+        },
+        messages: [user],
+      },
+      (e) => events.push(e),
+    );
+    assert.deepEqual(sent[0].tools.map((t: any) => t.function.name).sort(), [
+      "find",
+      "grep",
+      "ls",
+      "read",
+    ]);
+    await assert.rejects(access(path.join(cwd, "forbidden.txt")));
+    assert.equal(
+      events.find((e) => e.type === "message")?.message.isError,
+      true,
+    );
+    assert.equal(sent.length, 2);
+    assert.equal(events.at(-1)?.type, "done");
+  } finally {
+    mock.close();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+test("turn limit stops after a completed tool batch and leaves resumable history", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "pi-lab-limit-"));
+  await writeFile(path.join(cwd, "seed.txt"), "seed");
+  let count = 0;
+  const mock = await provider((_body, res) => {
+    count++;
+    reply(res, { name: "read", arguments: { path: "seed.txt" } });
+  });
+  try {
+    const events: Record<string, any>[] = [];
+    await generate(
+      {
+        settings: {
+          ...defaults,
+          baseUrl: mock.baseUrl,
+          toolMode: "read-only",
+          workingDirectory: cwd,
+          maxTurns: 1,
+        },
+        messages: [user],
+      },
+      (e) => events.push(e),
+    );
+    assert.equal(count, 1);
+    assert.equal(events.at(-1)?.reason, "turn_limit");
+    const trace = new Map<string, Message>();
+    for (const e of events)
+      if (e.type === "assistant" || e.type === "message")
+        trace.set(e.message.id, e.message);
+    assert.doesNotThrow(() =>
+      validateTranscript(defaults, [user, ...trace.values()]),
+    );
+  } finally {
+    mock.close();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+test("stop cancels an executing Pi bash process without a successful done event", async () => {
+  const abort = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const mock = await provider((_body, res) =>
+    reply(res, {
+      name: "bash",
+      arguments: { command: "sleep 30", timeout: 35 },
+    }),
+  );
+  const started = Date.now();
+  try {
+    const events: Record<string, any>[] = [];
+    await generate(
+      {
+        settings: { ...defaults, baseUrl: mock.baseUrl, toolMode: "agent" },
+        messages: [user],
+      },
+      (e) => {
+        events.push(e);
+        if (e.type === "tool_activity")
+          timer ??= setTimeout(() => abort.abort(), 150);
+      },
+      abort.signal,
+    );
+    assert.ok(Date.now() - started < 5000);
+    assert.equal(
+      events.some((e) => e.type === "done"),
+      false,
+    );
+    assert.equal(
+      events.some((e) => e.type === "message" && e.message.role === "tool"),
+      true,
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
+    mock.close();
+  }
+});
+test("tool history validates pairs, excluded results, duplicate ids, and JSON arguments", () => {
+  const call: Message = {
+    id: "a",
+    role: "assistant",
+    content: "",
+    enabled: true,
+    toolCalls: [
+      { id: "call_a|fc_a", name: "read", arguments: '{"path":"seed.txt"}' },
+    ],
+  };
+  const result: Message = {
+    id: "t",
+    role: "tool",
+    content: "seed",
+    enabled: true,
+    toolCallId: "call_a|fc_a",
+    toolName: "read",
+  };
+  assert.doesNotThrow(() => validateTranscript(defaults, [call, result]));
+  assert.throws(
+    () => validateTranscript(defaults, [call, { ...result, enabled: false }]),
+    /添加工具结果/,
+  );
+  assert.throws(() => validateTranscript(defaults, [result]), /对应的调用/);
+  assert.throws(
+    () => validateTranscript(defaults, [call, user, result]),
+    /补齐/,
+  );
+  assert.throws(
+    () => validateTranscript(defaults, [call, result, call, result]),
+    /重复/,
+  );
+  assert.throws(
+    () =>
+      validateTranscript(defaults, [
+        { ...call, toolCalls: [{ ...call.toolCalls![0], arguments: "[1]" }] },
+        result,
+      ]),
+    /JSON 对象/,
+  );
+});
+test("Responses and Anthropic preserve native tool pairs and signed reasoning", () => {
+  const call: Message = {
+    id: "a",
+    role: "assistant",
+    enabled: true,
+    content: "",
+    toolCalls: [
+      { id: "call_a|fc_a", name: "read", arguments: '{"path":"seed.txt"}' },
+    ],
+    providerState: {
+      api: "openai-codex-responses",
+      provider: "openai-codex",
+      model: "test",
+      thinking: [
+        {
+          type: "thinking",
+          thinking: "",
+          thinkingSignature: JSON.stringify({
+            type: "reasoning",
+            id: "rs_test",
+            encrypted_content: "opaque",
+            summary: [],
+          }),
+        },
+      ],
+    },
+  };
+  const result: Message = {
+    id: "t",
+    role: "tool",
+    enabled: true,
+    content: "edited result",
+    toolCallId: "call_a|fc_a",
+    toolName: "read",
+    isError: true,
+  };
+  const responses = exactPayload(
+    {},
+    { ...defaults, protocol: "pi-subscription", model: "test" },
+    [call, result],
+  );
+  const input = responses.input as any[];
+  assert.equal(input[0].encrypted_content, "opaque");
+  assert.deepEqual(input[1], {
+    type: "function_call",
+    call_id: "call_a",
+    id: "fc_a",
+    name: "read",
+    arguments: '{"path":"seed.txt"}',
+  });
+  assert.deepEqual(input[2], {
+    type: "function_call_output",
+    call_id: "call_a",
+    output: "edited result",
+  });
+  const switched = exactPayload(
+    {},
+    { ...defaults, protocol: "pi-subscription", model: "other" },
+    [call, result],
+  ).input as any[];
+  assert.equal(switched.length, 2);
+  assert.equal(switched[0].id, undefined);
+  const anthropic = exactPayload(
+    {},
+    { ...defaults, protocol: "anthropic-messages" },
+    [call, result],
+  ).messages as any[];
+  assert.equal(anthropic[0].content[0].type, "tool_use");
+  assert.equal(anthropic[0].content[0].id, "call_a");
+  assert.equal(anthropic[1].content[0].type, "tool_result");
+  assert.equal(anthropic[1].content[0].is_error, true);
+});
