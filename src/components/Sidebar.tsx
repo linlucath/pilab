@@ -28,9 +28,9 @@ export function Sidebar({ sessions, active, collapsed, disabled, onToggle, onCre
     </button>
     {!collapsed && <label className="session-search"><Search size={15} /><input placeholder="搜索会话" value={search} onChange={(event) => setSearch(event.target.value)} aria-label="搜索会话" />{search && <button onClick={() => setSearch("")} aria-label="清除搜索">×</button>}</label>}
     <div className="session-list" aria-label="已保存会话" style={{ gap: 2 }}>
-      {visible.map((session) => <article key={session.id} className={`session-row ${session.id === active ? "selected" : ""}`} style={{ border: 0, boxShadow: "none", borderRadius: 8, background: session.id === active ? "var(--surface)" : undefined }}>
+      {visible.map((session) => <article key={session.id} data-session-id={session.id} className={`session-row ${session.id === active ? "selected" : ""}`} style={{ border: 0, boxShadow: "none", borderRadius: 8, background: session.id === active ? "var(--surface)" : undefined }}>
         <button className="session-main" disabled={disabled} onClick={() => onSelect(session.id)} title={session.parentSessionTitle ? `${session.title} · 派生自 ${session.parentSessionTitle}` : session.title} style={{ padding: "7px 8px", gap: 8 }}>
-          {collapsed ? <span className="session-initial">{session.title.slice(0, 1) || "对"}</span> : <span className="session-copy" style={{ gap: 2 }}><strong>{session.title || "未命名对话"}</strong><small title={`${folderName(session.settings.workingDirectory)} · ${session.messages.length} 条`}>📁 {folderName(session.settings.workingDirectory)} · {session.messages.length} 条</small></span>}
+          <span className="session-initial">{session.title.slice(0, 1) || "对"}</span><span className="session-copy" style={{ gap: 2 }}><strong>{session.title || "未命名对话"}</strong><small title={`${folderName(session.settings.workingDirectory)} · ${session.messages.length} 条`}>📁 {folderName(session.settings.workingDirectory)} · {session.messages.length} 条</small></span>
         </button>
         {!collapsed && <div className="session-row-actions">
           <button className="icon-button" title="重命名" aria-label={`重命名 ${session.title}`} disabled={disabled} onClick={() => { const title = window.prompt("会话名称", session.title); if (title?.trim()) onRename(session.id, title.trim()); }}><Pencil size={13} /></button>

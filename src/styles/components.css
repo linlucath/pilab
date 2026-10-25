@@ -3,6 +3,7 @@
 .sidebar-brand-row > strong { font-size: 15px; font-weight: 650; letter-spacing: -.35px; }
 .brand-mark { display: grid; width: 30px; height: 30px; flex: 0 0 auto; place-items: center; border-radius: 9px; color: #fff; background: var(--accent-deep); font: 700 22px/1 Georgia, serif; }
 .sidebar-collapse { margin-left: auto; }
+.sidebar-mobile-toggle { display: none; }
 .new-conversation { display: flex; width: 100%; min-height: 38px; align-items: center; gap: 9px; padding: 0 11px; border: 1px solid #18181b; border-radius: 9px; color: #fff; background: #18181b; font-size: 11px; font-weight: 600; text-align: left; box-shadow: var(--shadow-sm); }
 .new-conversation:hover:not(:disabled) { background: #303036; border-color: #303036; }
 .new-conversation kbd { margin-left: auto; padding: 2px 5px; border: 1px solid rgba(255,255,255,.2); border-radius: 5px; color: rgba(255,255,255,.7); font: 9px var(--font-mono); }
@@ -25,6 +26,7 @@
 .session-copy small > span { display: inline-flex; min-width: 0; align-items: center; gap: 4px; white-space: nowrap; }
 .session-copy small > span:first-child { overflow: hidden; text-overflow: ellipsis; }
 .session-initial { display: grid; width: 27px; height: 27px; place-items: center; border-radius: 8px; color: var(--text); background: var(--surface-hover); }
+.sidebar:not(.is-collapsed) .session-initial { display: none; }
 .session-row-actions { position: absolute; top: 50%; right: 5px; display: flex; gap: 1px; padding: 2px; transform: translateY(-50%); border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-sm); opacity: 0; transition: opacity .14s ease; }
 .session-row:hover .session-row-actions, .session-row:focus-within .session-row-actions { opacity: 1; }
 .session-row-actions .icon-button { width: 25px; height: 25px; }

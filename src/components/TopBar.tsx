@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Archive, BookOpen, Bug, Check, ChevronDown, Moon, PanelRight, PanelRightClose, PanelLeftOpen, Sparkles, Sun, Wrench } from "lucide-react";
+import { Archive, BookOpen, Bug, Check, ChevronDown, Moon, PanelRight, PanelRightClose, PanelLeftOpen, PanelLeftClose, Sparkles, Sun, Wrench } from "lucide-react";
 import type { PiLiveSession } from "../../shared/pi-sync";
 import type { Session } from "../workspace-store";
 import { folderName } from "../utils/session";
@@ -7,7 +7,7 @@ import { folderName } from "../utils/session";
 type DebugPanel = "request" | "history" | "diagnostics";
 type Props = {
   session: Session; saveState: "saved" | "saving" | "error"; onDebugView: (view: DebugPanel) => void;
-  sidebarCollapsed: boolean; onOpenSidebar: () => void; theme: "light" | "dark"; onTheme: () => void;
+  sidebarCollapsed: boolean; onToggleSidebar: () => void; theme: "light" | "dark"; onTheme: () => void;
   rightOpen: boolean; onRight: () => void; compactTools: boolean; onCompactTools: () => void;
   piSessions: PiLiveSession[]; followPi: boolean; onFollowPi: (value: boolean) => void;
   syncError: string; onSelectPi: (id: string) => void; onApplyPi: () => void; onDiscardPi: () => void; onCancelPending: () => void;
@@ -32,7 +32,7 @@ export function TopBar(props: Props) {
   };
   return <header className="topbar">
     <div className="topbar-leading">
-      {props.sidebarCollapsed && <button className="icon-button" onClick={props.onOpenSidebar} aria-label="展开会话栏" title="展开会话栏"><PanelLeftOpen size={17} /></button>}
+      <button className="icon-button sidebar-mobile-toggle" onClick={props.onToggleSidebar} aria-label={props.sidebarCollapsed ? "展开会话栏" : "收起侧栏"} title={props.sidebarCollapsed ? "展开会话栏" : "收起侧栏"}>{props.sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button>
       <div className="title-line"><Sparkles size={16} /><input aria-label="会话标题" value={props.session.title} maxLength={200} onChange={(event) => props.onTitle(event.target.value)} /></div>
       <div className="cwd-control">
         {editingCwd ? <input autoFocus aria-label="工作目录" value={cwd} onChange={(event) => setCwd(event.target.value)} onBlur={() => { props.onWorkingDirectory(cwd); setEditingCwd(false); }} onKeyDown={(event) => { if (event.key === "Enter") { props.onWorkingDirectory(cwd); setEditingCwd(false); } if (event.key === "Escape") { setCwd(workingDirectory); setEditingCwd(false); } }} /> : <button title={workingDirectory || "服务端默认目录"} aria-label={`编辑工作目录：${workingDirectory || "服务端默认目录"}`} onClick={() => setEditingCwd(true)}>📁 <span>{folderName(workingDirectory)}</span></button>}

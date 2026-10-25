@@ -18,6 +18,8 @@
   :root { --sidebar-width: 68px; --right-width: 280px; }
   .sidebar { width: 68px; min-width: 68px; align-items: center; padding: 15px 8px; }
   .sidebar-brand-row { justify-content: center; padding: 0; }.sidebar-brand-row > strong, .sidebar-collapse, .new-conversation span, .new-conversation kbd, .session-search, .session-copy, .session-row-actions, .sidebar-footer { display: none; }
+  .sidebar-mobile-toggle { display: grid; }
+  .sidebar:not(.is-collapsed) .session-initial { display: grid; }
   .new-conversation { width: 42px; justify-content: center; padding: 0; }
   .session-list { width: 100%; margin: 0; padding: 0; }.session-row { justify-content: center; }.session-main { flex: 0 0 auto; padding: 6px; }.session-initial { width: 34px; height: 34px; }
   .topbar { height: 62px; min-height: 62px; gap: 7px; padding: 0 10px; }
