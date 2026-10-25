@@ -165,7 +165,8 @@ test("E2E-01 从提示消息分支并运行后，两个分支内容和回复互�
   await expect(page.locator(".session-row").filter({ hasText: "新建对话 · 分支" })).toBeVisible();
   await expect.poll(async () => {
     const data = await page.context().request.get(new URL("/api/workspace", page.url()).href).then((response) => response.json());
-    return data.workspace.sessions.length === 2 && data.workspace.sessions.some((item: { title: string }) => item.title === "新建对话 · 分支");
+    const branch = data.workspace.sessions.find((item: { title: string }) => item.title === "新建对话 · 分支");
+    return data.workspace.sessions.length === 2 && branch?.messages.some((message: { content: string }) => message.content === "BRANCH-PROMPT") && branch.messages.some((message: { content: string }) => message.content === "BRANCH-REPLY");
   }).toBe(true);
   const sessions = (await page.context().request.get(new URL("/api/workspace", page.url()).href).then((response) => response.json())).workspace.sessions;
   expect(sessions).toHaveLength(2);
@@ -203,4 +204,7 @@ test("E2E-02 协议角色错误先被拒绝，修正后原上下文可再次运�
   expect(payloads).toHaveLength(2);
   expect(payloads[1].messages.map((message) => message.role)).toEqual(["system", "user"]);
   expect(payloads[1].messages.at(-1)?.content).toBe("E2E-02-user");
+  await page.locator(".debug-menu summary").click();
+  await page.getByRole("button", { name: "请求检查" }).click();
+  await expect(page.getByRole("dialog")).toContainText("E2E-02-user");
 });

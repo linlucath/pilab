@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 import { openWorkspace, resetWorkspace, sendMessage, setMockScript, ui } from "./fixtures/index";
 
-type PersistedSession = { id: string; title: string; messages: { id: string; role: string; content: string; enabled: boolean }[]; settings: Record<string, unknown>; runs?: unknown[] };
+type PersistedSession = { id: string; title: string; messages: { id: string; role: string; content: string; enabled: boolean }[]; settings: Record<string, unknown>; runs?: unknown[]; parentSessionId?: string; parentSessionTitle?: string };
 type PersistedWorkspace = { sessions: PersistedSession[]; active: string; hiddenPiSessions: string[]; followPi: boolean; revision: number };
 
 async function prepare(page: Page) {
@@ -112,6 +112,24 @@ test("WSP-01 刷新后恢复工作区会话、消息和配置", async ({ page })
   expect(reloaded.sessions.some((session) => session.title === "secondary-session")).toBe(true);
 });
 
+test("WSP-01 保存失败提示且草稿保留并自动重试", async ({ page }) => {
+  let rejected = false;
+  await page.route("**/api/workspace/changes", async (route) => {
+    const delta = route.request().postDataJSON();
+    const hasTarget = delta.sessions?.some((session: { title?: string }) => session.title === "retry-after-save-error");
+    if (!rejected && route.request().method() === "PATCH" && hasTarget) {
+      rejected = true;
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "mock disk failure" }) });
+    } else await route.continue();
+  });
+  await page.getByRole("textbox", { name: "会话标题" }).fill("retry-after-save-error");
+  await expect(page.locator(".save-state")).toHaveText("保存失败");
+  await expect(page.locator(".toast")).toContainText("mock disk failure");
+  expect((await savedWorkspace(page)).sessions[0].title).not.toBe("retry-after-save-error");
+  await waitForWorkspace(page, (workspace) => workspace.sessions.find((session) => session.id === workspace.active)?.title === "retry-after-save-error");
+  expect(rejected).toBe(true);
+});
+
 test("WSP-02 两个标签页并发时合并消息重排与另一字段修改", async ({ page, context }) => {
   await runWithReply(page, "PROMPT-A", "REPLY-A");
   await setMockScript(page, [{ type: "text", text: "REPLY-B", chunkSize: 4, delayMs: 2 }]);
@@ -173,6 +191,64 @@ test("WSP-02 两个标签页并发时合并消息重排与另一字段修改", a
   await secondPage.close();
 });
 
+test("WSP-02 同字段冲突采用后写入，新增与删除保留另一标签页的无关修改", async ({ page, context }) => {
+  const secondPage = await context.newPage();
+  await openWorkspace(secondPage);
+  await expect(ui(secondPage).composer).toBeVisible();
+  await expect(page.locator(".save-state")).toHaveText("已保存");
+  await expect(secondPage.locator(".save-state")).toHaveText("已保存");
+
+  let release!: () => void;
+  let intercepted!: () => void;
+  let gate = new Promise<void>((resolve) => { release = resolve; });
+  let held = new Promise<void>((resolve) => { intercepted = resolve; });
+  let shouldHold: (delta: { sessions?: { title?: string }[]; removed?: string[] }) => boolean = (delta) => delta.sessions?.some((patch) => patch.title === "local-title") || false;
+  let didHold = false;
+  await page.route("**/api/workspace/changes", async (route) => {
+    const delta = route.request().postDataJSON();
+    if (!didHold && route.request().method() === "PATCH" && shouldHold(delta)) {
+      didHold = true;
+      intercepted();
+      await gate;
+    }
+    await route.continue();
+  });
+  await page.getByRole("textbox", { name: "会话标题" }).fill("local-title");
+  await held;
+  await secondPage.getByRole("textbox", { name: "会话标题" }).fill("remote-title");
+  await waitForWorkspace(secondPage, (workspace) => workspace.sessions.find((session) => session.id === workspace.active)?.title === "remote-title");
+  release();
+  await waitForWorkspace(page, (workspace) => workspace.sessions.find((session) => session.id === workspace.active)?.title === "remote-title");
+
+  await secondPage.getByRole("button", { name: "新建对话" }).click();
+  await secondPage.getByRole("textbox", { name: "会话标题" }).fill("new-session-to-delete");
+  await waitForWorkspace(secondPage, (workspace) => workspace.sessions.length === 2 && workspace.sessions.some((session) => session.title === "new-session-to-delete"));
+  const createdId = (await savedWorkspace(secondPage)).sessions.find((session) => session.title === "new-session-to-delete")!.id;
+  await page.reload();
+  await secondPage.reload();
+  await expect(ui(page).composer).toBeVisible();
+  await expect(ui(secondPage).composer).toBeVisible();
+
+  let releaseDelete!: () => void;
+  let deletionHeld!: () => void;
+  gate = new Promise<void>((resolve) => { releaseDelete = resolve; });
+  held = new Promise<void>((resolve) => { deletionHeld = resolve; });
+  shouldHold = (delta: { removed?: string[] }) => delta.removed?.includes(createdId) || false;
+  didHold = false;
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator(".session-row").filter({ hasText: "new-session-to-delete" }).getByRole("button", { name: /删除/ }).click();
+  await deletionHeld;
+  const originalId = (await savedWorkspace(secondPage)).sessions.find((session) => session.id !== createdId)!.id;
+  await secondPage.locator(`button.session-main[title="remote-title"]`).click();
+  await setSetting(secondPage, "main-model", "parallel-model-update");
+  await waitForWorkspace(secondPage, (workspace) => workspace.sessions.find((session) => session.id === originalId)?.settings.model === "parallel-model-update");
+  releaseDelete();
+  await waitForWorkspace(page, (workspace) => workspace.sessions.length === 1 && workspace.sessions[0].id === originalId && workspace.sessions[0].settings.model === "parallel-model-update");
+  await expect(page.getByRole("textbox", { name: "会话标题" })).toHaveValue("remote-title");
+  await expect(page.locator("#main-model")).toHaveValue("parallel-model-update");
+  await secondPage.close();
+});
+
 test("WSP-03 刷新清空页面运行记录但保留会话上下文", async ({ page }) => {
   await runWithReply(page, "lifecycle-prompt", "lifecycle-reply");
   await page.locator(".debug-menu summary").click();
@@ -207,6 +283,7 @@ test("WSP-04 导出再导入会话生成独立副本并分配新消息 ID", asyn
   expect(imported.title).toBe("export-import-source");
   expect(imported.messages.map((message) => message.content)).toEqual(expect.arrayContaining(["exported-prompt", "exported-reply"]));
   expect(imported.messages.map((message) => message.id)).not.toEqual(sourceIds);
+  expect(imported.settings.apiKey).toBe("");
   expect(imported.runs || []).toHaveLength(0);
 });
 
@@ -286,7 +363,7 @@ test("PI-01 登录状态区分已连接、未登录和状态读取失败且不�
 });
 
 test("PI-03 标准接口运行保留消息角色和原始顺序，供应商错误可见", async ({ page }) => {
-  const payloads: { messages: { role: string; content: string }[]; settings: { protocol: string } }[] = [];
+  const payloads: { messages: { role: string; content: string; toolCalls?: unknown[]; toolCallId?: string }[]; settings: { protocol: string } }[] = [];
   await page.route("**/api/run", async (route) => {
     if (route.request().method() === "POST") payloads.push(route.request().postDataJSON());
     await route.continue();
@@ -304,9 +381,30 @@ test("PI-03 标准接口运行保留消息角色和原始顺序，供应商错�
   expect(payloads[0].messages.map((message) => message.role)).toEqual(["system", "developer", "user"]);
   expect(payloads[0].messages.at(-1)?.content).toBe("user-after-developer");
 
+  await setMockScript(page, [{ type: "tool", input: "protocol-tool" }, { type: "text", text: "after-tool" }]);
+  await page.getByRole("button", { name: "重新运行" }).click();
+  await expect(page.getByText("after-tool", { exact: true })).toBeVisible();
+  await waitForWorkspace(page, (workspace) => {
+    const messages = workspace.sessions.find((session) => session.id === workspace.active)?.messages;
+    return !!messages?.some((message) => message.role === "assistant" && message.toolCalls?.length) && messages.some((message) => message.role === "tool");
+  });
+  await setMockScript(page, [{ type: "text", text: "tool-history-replay" }]);
+  await page.getByRole("button", { name: "重新运行" }).click();
+  await expect(page.getByText("tool-history-replay", { exact: true })).toBeVisible();
+  expect(payloads[2].messages.some((message) => message.role === "assistant" && message.toolCalls?.length)).toBe(true);
+  expect(payloads[2].messages.some((message) => message.role === "tool" && message.toolCallId)).toBe(true);
+
+  await page.locator("#protocol").selectOption("openai-responses");
+  await setMockScript(page, [{ type: "text", text: "responses-protocol-ok" }]);
+  await page.getByRole("button", { name: "重新运行" }).click();
+  await expect(page.getByText("responses-protocol-ok", { exact: true })).toBeVisible();
+  expect(payloads[3].settings.protocol).toBe("openai-responses");
+  expect(payloads[3].messages[0].role).toBe("system");
+  expect(payloads[3].messages.some((message) => message.role === "tool")).toBe(true);
+
   await page.locator("#protocol").selectOption("anthropic-messages");
   await page.getByRole("button", { name: "重新运行" }).click();
   await expect(page.getByRole("alert")).toContainText(/Developer|Anthropic/i);
-  expect(payloads).toHaveLength(2);
-  expect(payloads[1].messages.map((message) => message.role)).toEqual(["system", "developer", "user", "assistant"]);
+  expect(payloads).toHaveLength(5);
+  expect(payloads[4].messages.slice(0, 3).map((message) => message.role)).toEqual(["system", "developer", "user"]);
 });
