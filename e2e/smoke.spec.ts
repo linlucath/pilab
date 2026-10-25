@@ -2,8 +2,10 @@ import { test, expect } from "@playwright/test";
 import { openWorkspace, resetWorkspace, sendMessage, setMockScript, ui } from "./fixtures/index";
 
 test.beforeEach(async ({ page }) => {
-  await resetWorkspace(page);
   await openWorkspace(page);
+  await resetWorkspace(page);
+  await page.reload();
+  await expect(ui(page).composer).toBeVisible();
 });
 
 test("SMOKE-01 页面加载并显示新对话输入框", async ({ page }) => {

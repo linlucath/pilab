@@ -181,7 +181,7 @@ npm run patrol -- RUN-03    # 只跑一个行为编号
 npm run shots               # 关键 UI 场景截图到 artifacts/shots/
 ```
 
-E2E 使用独立 3100 端口，并为项目数据、Pi 配置和工作目录创建临时目录；启动脚本清除 API 凭证，模型请求只进入 `PI_LAB_E2E=1` 显式开启的脚本化 mock。测试可从 `e2e/fixtures` 导入 `setMockScript(page, [{ type: "text", text: "固定回复" }])`；支持 `text`、`slow`、`long`、`tool`、`error`。测试标题以行为编号（如 `RUN-03`、`SMOKE-01`）开头；失败时 Playwright 保留截图和 trace。`patrol` 会按编号汇总结果，并在 `specs/behaviors.md` 存在时列出 mock 可测行为的测试覆盖缺口。
+E2E 为每个 worktree 按路径选择独立的可用端口，也可通过 `PI_LAB_E2E_PORT` 显式指定；`e2e`、`patrol` 与 `shots` 共用此端口策略。每次启动都会为项目数据、Pi 配置和工作目录创建临时目录；启动脚本清除 API 凭证，模型请求只进入 `PI_LAB_E2E=1` 显式开启的脚本化 mock。测试可从 `e2e/fixtures` 导入 `setMockScript(page, [{ type: "text", text: "固定回复" }])`；支持 `text`、`slow`、`long`、`tool`、`error`。测试标题以行为编号（如 `RUN-03`、`SMOKE-01`）开头；失败时 Playwright 保留截图和 trace。`patrol` 会按编号汇总结果，并在 `specs/behaviors.md` 存在时列出 mock 可测行为的测试覆盖缺口。
 
 浏览器联调的可选模拟接口：`npx tsx tests/mock-provider.ts`，监听 `127.0.0.1:3001`。将 Base URL 设置为 `http://127.0.0.1:3001/v1`，输出会明确标为本地测试内容。它不随正常服务启动。
 

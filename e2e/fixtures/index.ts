@@ -5,13 +5,16 @@ export type MockScriptStep =
   | { type: "tool"; input?: string }
   | { type: "error"; message?: string };
 
+const serverOrigin = () => `http://127.0.0.1:${process.env.PI_LAB_E2E_PORT || "3100"}`;
+const endpoint = (page: Page, pathname: string) => new URL(pathname, page.url() === "about:blank" ? serverOrigin() : page.url()).href;
+
 export async function resetWorkspace(page: Page) {
-  const response = await page.context().request.post("http://127.0.0.1:3100/api/e2e/reset");
+  const response = await page.context().request.post(endpoint(page, "/api/e2e/reset"));
   expect(response.ok(), `reset endpoint returned ${response.status()}`).toBeTruthy();
 }
 
 export async function setMockScript(page: Page, script: MockScriptStep[]) {
-  const response = await page.context().request.put("http://127.0.0.1:3100/api/e2e/mock", { data: { script } });
+  const response = await page.context().request.put(endpoint(page, "/api/e2e/mock"), { data: { script } });
   expect(response.ok(), `mock script rejected: ${await response.text()}`).toBeTruthy();
 }
 
@@ -28,7 +31,7 @@ export function ui(page: Page) {
 }
 
 export async function openWorkspace(page: Page) {
-  await page.goto("http://127.0.0.1:3100/");
+  await page.goto(`${serverOrigin()}/`);
   await expect(ui(page).composer).toBeVisible();
 }
 

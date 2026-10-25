@@ -4,11 +4,14 @@ import path from "node:path";
 import { chromium } from "@playwright/test";
 import { resetWorkspace } from "../e2e/fixtures/index";
 import { shotScenarios } from "./shot-scenarios";
+import { e2eOrigin, selectE2ePort } from "./e2e-port.mjs";
 
 const root = process.cwd();
+const e2ePort = await selectE2ePort();
+const baseURL = e2eOrigin(e2ePort);
 const output = path.join(root, "artifacts", "shots");
 await mkdir(output, { recursive: true });
-const server = spawn(process.execPath, ["scripts/start-e2e-server.mjs"], { cwd: root, stdio: "ignore" });
+const server = spawn(process.execPath, ["scripts/start-e2e-server.mjs"], { cwd: root, env: { ...process.env, PI_LAB_E2E_PORT: String(e2ePort) }, stdio: "ignore" });
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 try {
   const deadline = Date.now() + 90_000;
@@ -16,7 +19,7 @@ try {
   while (Date.now() < deadline) {
     if (server.exitCode !== null) throw new Error("isolated E2E server exited before becoming ready");
     try {
-      const response = await fetch("http://127.0.0.1:3100/api/health");
+      const response = await fetch(`${baseURL}/api/health`);
       if (response.ok) { ready = true; break; }
     } catch { /* The child is still starting. */ }
     await new Promise((resolve) => setTimeout(resolve, 250));
