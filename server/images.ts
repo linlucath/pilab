@@ -5,7 +5,8 @@ import { LocalImageStore } from "../extensions/pi-gpt-subagent/images";
 import type { Message } from "../shared/schema";
 import { toPiMessage } from "./transcript";
 
-export const projectImages = new LocalImageStore(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+export const projectImages = new LocalImageStore(process.env.PI_LAB_DATA_DIR || projectRoot);
 
 export async function restoreImageHistory(messages: Message[], model: Model<Api>) {
   let latest = -1;

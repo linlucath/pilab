@@ -8,6 +8,9 @@
     "build": "tsc --noEmit && vite build",
     "start": "NODE_ENV=production tsx server/index.ts",
     "test": "tsx --test tests/*.test.ts",
+    "e2e": "playwright test",
+    "patrol": "tsx scripts/patrol.ts",
+    "shots": "tsx scripts/shots.ts",
     "screenshot": "python3 scripts/capture-ui.py",
     "test:live": "tsx tests/live-subscription.ts --live",
     "install:sync": "tsx scripts/install-sync.ts",
@@ -30,6 +33,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@types/express": "^5.0.0",
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",

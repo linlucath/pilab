@@ -13,9 +13,11 @@ import {
   piSnapshotReader, streamPiSnapshots,
 } from "./pi-sync";
 import { clearLogs, logEvent, queryLogs, type LogCategory, type LogLevel } from "./logger";
+import { isE2eMode, resetE2eMockScript, setE2eMockScript } from "./e2e-mock";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const dataRoot = path.resolve(process.env.PI_LAB_DATA_DIR || root);
 const app = express();
-const workspaceStore = new ProjectWorkspaceStore(path.join(root, ".pi-lab", "workspace.json"));
+const workspaceStore = new ProjectWorkspaceStore(path.join(dataRoot, ".pi-lab", "workspace.json"));
 app.disable("x-powered-by");
 app.use((req, res, next) => {
   // A local app: prevent third-party pages from making authenticated requests to the backend.
@@ -175,8 +177,24 @@ app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
     engine: "pi-agent-core",
-    workingDirectory: process.cwd(),
+    workingDirectory: isE2eMode() ? process.env.PI_LAB_E2E_CWD || process.cwd() : process.cwd(),
   });
+});
+app.post("/api/e2e/reset", async (_req, res) => {
+  if (!isE2eMode()) { res.sendStatus(404); return; }
+  try {
+    await workspaceStore.reset();
+    resetE2eMockScript();
+    clearLogs();
+    res.json({ ok: true });
+  } catch (error) { res.status(500).json({ error: (error as Error).message }); }
+});
+app.put("/api/e2e/mock", (req, res) => {
+  if (!isE2eMode()) { res.sendStatus(404); return; }
+  try {
+    setE2eMockScript(req.body?.script);
+    res.json({ ok: true });
+  } catch (error) { res.status(400).json({ error: (error as Error).message }); }
 });
 app.get("/api/pi-status", async (_req, res) => {
   try {

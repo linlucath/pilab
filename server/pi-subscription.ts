@@ -47,6 +47,8 @@ export function resolvePiModel(models: ModelRuntime, id: string) {
     : models.getModel(id.slice(0, slash), id.slice(slash + 1));
 }
 export async function piStatus() {
+  if (process.env.PI_LAB_E2E === "1")
+    return { connected: false, models: [] };
   const models = await piRuntime();
   let selectedModel: string | undefined;
   try {

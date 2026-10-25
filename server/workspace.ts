@@ -43,6 +43,15 @@ export class ProjectWorkspaceStore {
     });
   }
   flush() { return this.queue.then(() => {}); }
+  reset() {
+    return this.exclusive(async () => {
+      await unlink(this.file).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      });
+      this.latest = undefined;
+      this.snapshots.clear();
+    });
+  }
   initialize(input: unknown) {
     return this.exclusive(async () => {
       const existing = await this.read();

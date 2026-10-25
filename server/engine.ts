@@ -23,6 +23,7 @@ import {
 import { piRuntime, resolvePiModel } from "./pi-subscription";
 import { randomUUID } from "node:crypto";
 import { agentTools } from "./tools";
+import { e2eMockStreamFn, e2eMockTools, isE2eMode } from "./e2e-mock";
 import { projectImages, restoreImageHistory } from "./images";
 import { latestImageContext, retainToolImages } from "../extensions/pi-gpt-subagent/images";
 import {
@@ -182,8 +183,9 @@ export async function generate(
   const { settings, messages } = runSchema.parse(input);
   const effort = getReasoningEffort(settings);
   const active = validateTranscript(settings, messages);
+  const e2e = isE2eMode();
   const subscription =
-    settings.protocol === "pi-subscription" ? await piRuntime() : undefined;
+    !e2e && settings.protocol === "pi-subscription" ? await piRuntime() : undefined;
   const subscribedModel = subscription && resolvePiModel(subscription, settings.model);
   if (subscription && !subscribedModel)
     throw new Error(`Pi 订阅模型不存在：${settings.model}`);
@@ -197,8 +199,9 @@ export async function generate(
   const model: Model<Api> = subscribedModel || {
     id: settings.model,
     name: settings.model,
-    api:
-      settings.protocol === "pi-subscription"
+    api: e2e
+      ? "openai-completions"
+      : settings.protocol === "pi-subscription"
         ? "openai-codex-responses"
         : settings.protocol,
     provider:
@@ -223,7 +226,12 @@ export async function generate(
     }
     emit(event);
   };
-  const { cwd, tools } = await agentTools(settings, history, onEvent);
+  const { cwd, tools } = e2e
+    ? {
+        cwd: settings.workingDirectory.trim() || process.env.PI_LAB_E2E_CWD || process.cwd(),
+        tools: settings.toolMode === "none" ? [] : e2eMockTools(),
+      }
+    : await agentTools(settings, history, onEvent);
   emit({ type: "runtime", cwd, tools: tools.map((t) => t.name) });
   const transcript: AgentMessage[] = await restoreImageHistory(prepareMessagesForModel(active), model);
   // Agent continuation starts from an existing transcript. Declare the initial
@@ -241,7 +249,7 @@ export async function generate(
       ...options,
       ...(subscription
         ? { transport: "sse" as const }
-        : { apiKey: envKey(settings) }),
+        : { apiKey: e2e ? "e2e-mock" : envKey(settings) }),
       temperature:
         subscription || effort !== "off" ? undefined : settings.temperature,
       maxTokens: settings.maxTokens,
@@ -258,6 +266,10 @@ export async function generate(
         return exact;
       },
     };
+    if (e2e) {
+      requestOptions.onPayload?.({ mock: true, model: chosen.id }, chosen);
+      return e2eMockStreamFn(chosen, context, requestOptions);
+    }
     if (subscription)
       return subscription.streamSimple(chosen, context, requestOptions);
     if (chosen.api === "openai-completions")

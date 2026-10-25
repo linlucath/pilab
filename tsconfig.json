@@ -19,6 +19,8 @@
     "shared",
     "tests",
     "vite.config.ts",
+    "playwright.config.ts",
+    "e2e",
     "extensions",
     "scripts"
   ]

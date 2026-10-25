@@ -27,8 +27,7 @@ const MAX_FILE_ENTRIES = 1000;
 const MAX_MEMORY_ENTRIES = 500;
 const MAX_DATA_BYTES = 48 * 1024;
 const logDirectory = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "..",
+  process.env.PI_LAB_DATA_DIR || path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
   ".pi-lab",
   "logs",
 );
