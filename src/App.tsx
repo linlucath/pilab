@@ -305,6 +305,15 @@ export default function App() {
     setWorkspace((current) => ({ ...current, sessions: [...current.sessions, next], active: next.id, followPi: false }));
     setSelectedRun(undefined); setScrollRequest((value) => value + 1);
   };
+  useEffect(() => {
+    const createShortcut = (event: KeyboardEvent) => {
+      if ((!event.metaKey && !event.ctrlKey) || event.altKey || event.key.toLowerCase() !== "n" || runLockRef.current) return;
+      event.preventDefault();
+      createSession();
+    };
+    window.addEventListener("keydown", createShortcut);
+    return () => window.removeEventListener("keydown", createShortcut);
+  }, [createSession]);
   const duplicateSession = (source: Session) => createSession({ ...source, title: `${source.title} · 副本` });
   const deleteSession = (id: string) => {
     if (runLockRef.current) return;
