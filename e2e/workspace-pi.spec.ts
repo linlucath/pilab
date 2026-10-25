@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 import { openWorkspace, resetWorkspace, sendMessage, setMockScript, ui } from "./fixtures/index";
 
-type PersistedSession = { id: string; title: string; messages: { id: string; role: string; content: string; enabled: boolean }[]; settings: Record<string, unknown>; runs?: unknown[]; parentSessionId?: string; parentSessionTitle?: string };
+type PersistedSession = { id: string; title: string; messages: { id: string; role: string; content: string; enabled: boolean; toolCalls?: { id: string }[]; toolCallId?: string }[]; settings: Record<string, unknown>; runs?: unknown[]; parentSessionId?: string; parentSessionTitle?: string };
 type PersistedWorkspace = { sessions: PersistedSession[]; active: string; hiddenPiSessions: string[]; followPi: boolean; revision: number };
 
 async function prepare(page: Page) {
