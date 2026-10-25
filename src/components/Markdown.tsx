@@ -39,7 +39,7 @@ function isTableSeparator(row: string) { const columns = cells(row); return colu
 function CodeBlock({ source }: { source: string }) {
   const [copied, setCopied] = useState(false);
   async function copy() {
-    try { await navigator.clipboard.writeText(source); setCopied(true); setTimeout(() => setCopied(false), 1200); }
+    try { await navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 1200); }
     catch { setCopied(false); }
   }
   const language = source.split("\n", 1)[0].match(/^```([^\s`]*)/)?.[1] || "code";

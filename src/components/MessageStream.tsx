@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { ArrowDown, ArrowUp, BookOpen, Brain, ChevronDown, Clock, Cpu, Dna, Eye, EyeOff, GitBranch, Image as ImageIcon, MessageSquarePlus, Pencil, Plus, Search, Send, Sparkles, Terminal, Trash2, UserRound, Wrench, X } from "lucide-react";
+import { ArrowDown, ArrowUp, BookOpen, Brain, ChevronDown, Clock, Copy, Cpu, Dna, Eye, EyeOff, GitBranch, Image as ImageIcon, MessageSquarePlus, Pencil, Plus, Search, Send, Sparkles, Terminal, Trash2, UserRound, Wrench, X } from "lucide-react";
 import { roles, type Message, type ToolCall } from "../../shared/schema";
 import type { GptSessionSummary } from "../../shared/gpt-sessions";
 import { Markdown } from "./Markdown";
@@ -16,7 +16,7 @@ type Props = {
   forkNotice?: { forkId: string; title: string };
   onSwitchFork?: (id: string) => void;
   onJumpToSession?: (id: string) => void; onFork: () => void;
-  onMessage: (id: string, patch: Partial<Message>) => void;
+  onMessage: (id: string, patch: Partial<Message>) => void; onCopy: (text: string) => void;
   onCall: (message: Message, index: number, patch: Partial<ToolCall>) => void;
   onAdd: (after?: number, role?: Message["role"]) => void;
   onMove: (index: number, delta: number) => void; onDelete: (id: string) => void;
@@ -82,8 +82,8 @@ function SystemPromptBanner({ messages, startIndex, onMessage, onAdd, onDelete, 
   </section>;
 }
 
-function MessageCard({ message, index, total, busy, onMessage, onAdd, onMove, onDelete, onBranch, children, onImage, searchTerm }: {
-  message: Message; index: number; total: number; busy: boolean; onMessage: Props["onMessage"]; onAdd: Props["onAdd"]; onMove: Props["onMove"]; onDelete: Props["onDelete"]; onBranch: Props["onBranch"]; children?: React.ReactNode; onImage: (file: string, name: string) => void; searchTerm?: string;
+function MessageCard({ message, index, total, busy, onMessage, onCopy, onAdd, onMove, onDelete, onBranch, children, onImage, searchTerm }: {
+  message: Message; index: number; total: number; busy: boolean; onMessage: Props["onMessage"]; onCopy: Props["onCopy"]; onAdd: Props["onAdd"]; onMove: Props["onMove"]; onDelete: Props["onDelete"]; onBranch: Props["onBranch"]; children?: React.ReactNode; onImage: (file: string, name: string) => void; searchTerm?: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [hovered, setHovered] = useState(false);
@@ -107,12 +107,13 @@ function MessageCard({ message, index, total, busy, onMessage, onAdd, onMove, on
     opacity: hovered || editing ? 1 : 0, pointerEvents: hovered || editing ? "auto" : "none", transition: "opacity .14s ease",
   };
   const actionButtonStyle: React.CSSProperties = { display: "grid", width: 27, height: 25, placeItems: "center", padding: 0, border: 0, borderRadius: 6, color: "var(--text-muted)", background: "transparent", cursor: "pointer" };
-  const roleSelector = <select aria-label={`消息 ${index + 1} 角色`} disabled={roleLocked} value={message.role} onChange={(event) => onMessage(message.id, { role: event.target.value as Message["role"], toolCalls: undefined, toolCallId: undefined, toolName: undefined, isError: undefined, images: undefined, providerState: undefined })} style={{ maxWidth: 69, height: 25, padding: "0 3px", border: 0, borderRadius: 5, color: "var(--text-subtle)", background: "transparent", fontSize: 9 }}>
+  const roleSelector = <select aria-label={`消息 ${index + 1} 角色`} title={roleLocked && (message.role === "tool" || !!message.toolCalls?.length) ? "工具调用及其结果不能直接更改角色，以免破坏工具配对。" : undefined} disabled={roleLocked} value={message.role} onChange={(event) => onMessage(message.id, { role: event.target.value as Message["role"], toolCalls: undefined, toolCallId: undefined, toolName: undefined, isError: undefined, images: undefined, providerState: undefined })} style={{ maxWidth: 69, height: 25, padding: "0 3px", border: 0, borderRadius: 5, color: "var(--text-subtle)", background: "transparent", fontSize: 9 }}>
     {roles.filter((role) => role !== "tool" || message.role === "tool").map((role) => <option key={role} value={role}>{roleName(role)}</option>)}
   </select>;
-  const toolbar = <div className="message-actions message-actions--floating" style={isUser ? { ...toolbarStyle, position: "absolute", top: -14, right: 9, zIndex: 3 } : toolbarStyle}>
+  const toolbar = <div className="message-actions message-actions--floating" style={isUser ? { ...toolbarStyle, position: "absolute", top: 0, right: 9, zIndex: 3 } : toolbarStyle}>
     {editing ? <><button style={actionButtonStyle} disabled={busy} aria-label="保存消息" title="保存 · ⌘/Ctrl+Enter" onClick={saveEdit}><span>✓</span></button><button style={actionButtonStyle} disabled={busy} aria-label="取消编辑" title="取消 · Esc" onClick={cancelEdit}><X size={13} /></button></> : <>
       {roleSelector}
+      <button style={actionButtonStyle} disabled={busy} aria-label="复制消息" title="复制完整消息文本" onClick={() => onCopy(message.content)}><Copy size={13} /></button>
       <button style={actionButtonStyle} disabled={busy} aria-label="编辑消息" title="编辑消息" onClick={startEdit}><Pencil size={13} /></button>
       <button style={actionButtonStyle} disabled={busy} aria-label="从此处分支" title="从此处分支" onClick={() => onBranch(message, index)}><GitBranch size={13} /></button>
       <button style={actionButtonStyle} disabled={busy} aria-label={message.enabled ? "排除上下文" : "包含上下文"} title={message.enabled ? "排除上下文" : "包含上下文"} onClick={() => onMessage(message.id, { enabled: !message.enabled })}>{message.enabled ? <Eye size={13} /> : <EyeOff size={13} />}</button>
@@ -123,16 +124,16 @@ function MessageCard({ message, index, total, busy, onMessage, onAdd, onMove, on
     </>}
   </div>;
   const rowStyle: React.CSSProperties = isUser
-    ? { position: "relative", display: "flex", width: "100%", justifyContent: "flex-end", margin: "13px 0 22px" }
+    ? { position: "relative", display: "flex", width: "100%", justifyContent: "flex-end", margin: "13px 0 22px", paddingTop: 15 }
     : { position: "relative", display: "flex", width: "100%", justifyContent: "flex-start", margin: "14px 0 25px" };
   const cardStyle: React.CSSProperties = isUser
     ? { position: "relative", width: "fit-content", minHeight: 0, maxWidth: "min(88%, 760px)", padding: "7px 16px", overflow: "visible", border: `1px solid ${isSearchHit ? "color-mix(in srgb, var(--warning) 50%, var(--border))" : "var(--border)"}`, borderRadius: "19px 19px 5px 19px", color: "var(--text)", background: "color-mix(in srgb, var(--surface-hover) 84%, var(--accent-soft))", boxShadow: "0 2px 8px rgba(28,30,35,.035)" }
     : isAssistant
       ? { position: "relative", width: "100%", overflow: "visible", border: 0, borderRadius: 0, color: "var(--text)", background: "transparent", boxShadow: "none" }
       : {};
-  return <div className={`message-row ${isUser ? "message-row--user-bubble" : ""} ${isAssistant ? "message-row--assistant-editorial" : ""} ${isSearchHit ? "search-hit" : ""}`} data-message-id={message.id} style={rowStyle}>
-    <article className={`chat-message ${message.role} ${message.enabled ? "" : "excluded"}`} style={cardStyle} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} onFocusCapture={() => setHovered(true)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setHovered(false); }}>
-      {isUser && toolbar}
+  return <div className={`message-row ${isUser ? "message-row--user-bubble" : ""} ${isAssistant ? "message-row--assistant-editorial" : ""} ${isSearchHit ? "search-hit" : ""}`} data-message-id={message.id} style={rowStyle} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} onFocusCapture={() => setHovered(true)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setHovered(false); }}>
+    {isUser && toolbar}
+    <article className={`chat-message ${message.role} ${message.enabled ? "" : "excluded"}`} style={cardStyle}>
       {isUser ? null : <header className="message-head" style={{ display: "flex", minHeight: isAssistant ? 27 : 32, alignItems: "center", gap: 8, padding: isAssistant ? "2px 0 0" : "5px 10px 0", border: 0, background: "transparent" }}>
         {isAssistant ? <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "var(--text-subtle)", fontSize: 10, fontWeight: 600 }}><Sparkles size={13} style={{ color: "var(--accent)" }} />Gemini</span> : <span className={`message-role ${message.role}`}>{roleIcon(message.role)}{roleName(message.role)}</span>}
         {toolbar}
@@ -164,9 +165,10 @@ function readGptReply(content: string) {
   return (section?.[1] || content).trim();
 }
 
-function ToolStep({ assistant, call, callIndex, result, stepNumber, onCall, onResult, onImage, onDeleteCall, disabled, searchTerm }: { assistant: Message; call: ToolCall; callIndex: number; result?: Message; stepNumber?: number; onCall: Props["onCall"]; onResult: Props["onMessage"]; onImage: (file: string, name: string) => void; onDeleteCall: Props["onDeleteCall"]; disabled?: boolean; searchTerm?: string }) {
+function ToolStep({ assistant, call, callIndex, result, stepNumber, onCall, onResult, onImage, onDeleteCall, disabled, searchTerm, jumpedId }: { assistant: Message; call: ToolCall; callIndex: number; result?: Message; stepNumber?: number; onCall: Props["onCall"]; onResult: Props["onMessage"]; onImage: (file: string, name: string) => void; onDeleteCall: Props["onDeleteCall"]; disabled?: boolean; searchTerm?: string; jumpedId?: string }) {
   const [expanded, setExpanded] = useState(false);
   const [raw, setRaw] = useState(false);
+  useEffect(() => { if (jumpedId && jumpedId === result?.id) setExpanded(true); }, [jumpedId, result?.id]);
   const args = parseToolArguments(call.arguments);
   const dispatchesToGpt = call.name === "gpt_session_create" || call.name === "gpt_session_send";
   const readsFromGpt = call.name === "gpt_session_wait" || call.name === "gpt_session_read";
@@ -174,7 +176,7 @@ function ToolStep({ assistant, call, callIndex, result, stepNumber, onCall, onRe
   const status = result ? result.isError ? "失败" : "完成" : "待返回";
   const reply = result?.content ? readGptReply(result.content) : "";
   const hasGptReport = readsFromGpt && !!reply && !/暂无新回复|暂时还没有发来回复|还没有发来回复/.test(reply);
-  return <details className={`tool-step tool-step-row ${result?.isError ? "failed" : ""}`} data-tool-name={call.name} data-message-id={assistant.id} data-result-id={result?.id} data-has-report={hasGptReport ? "true" : undefined} data-has-thinking={thinking ? "true" : undefined} open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+  return <details className={`tool-step tool-step-row ${result?.isError ? "failed" : ""}`} title="工具调用及其结果不能直接更改角色，以免破坏工具配对。" data-tool-name={call.name} data-message-id={assistant.id} data-result-id={result?.id} data-has-report={hasGptReport ? "true" : undefined} data-has-thinking={thinking ? "true" : undefined} open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
     <summary>{typeof stepNumber === "number" && <span className="tool-step-number">{String(stepNumber).padStart(2, "0")}</span>}<span className="tool-step-icon">{toolIcon(call.name)}</span><strong>{toolTitle(call.name, call.arguments)}</strong><span className={`tool-state ${result ? result.isError ? "error" : "complete" : "pending"}`}>{status}</span><ChevronDown size={14} /></summary>
     {expanded && <div className="tool-step-body">
       {dispatchesToGpt && typeof args.message === "string" && args.message.trim() && <section className="tool-readable-block tool-dispatch-block"><strong>派发给 GPT 的指令{args.name ? ` · ${args.name}` : ""}</strong><Markdown content={args.message} highlight={searchTerm} /></section>}
@@ -236,7 +238,7 @@ function collectToolGroups(messages: Message[], start: number, byCallId: Map<str
   return groups;
 }
 
-function ToolStepGroup({ steps, compact, onCall, onMessage, onImage, onDeleteCall, live = false, liveLabel, disabled, searchTerm }: { steps: { assistant: Message; call: ToolCall; callIndex: number; result?: Message }[]; compact: boolean; onCall: Props["onCall"]; onMessage: Props["onMessage"]; onImage: (file: string, name: string) => void; onDeleteCall: Props["onDeleteCall"]; live?: boolean; liveLabel?: string; disabled?: boolean; searchTerm?: string }) {
+function ToolStepGroup({ steps, compact, onCall, onMessage, onImage, onDeleteCall, live = false, liveLabel, disabled, searchTerm, jumpedId }: { steps: { assistant: Message; call: ToolCall; callIndex: number; result?: Message }[]; compact: boolean; onCall: Props["onCall"]; onMessage: Props["onMessage"]; onImage: (file: string, name: string) => void; onDeleteCall: Props["onDeleteCall"]; live?: boolean; liveLabel?: string; disabled?: boolean; searchTerm?: string; jumpedId?: string }) {
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   const [hovered, setHovered] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
@@ -293,7 +295,7 @@ function ToolStepGroup({ steps, compact, onCall, onMessage, onImage, onDeleteCal
         <button type="button" className="tool-group-archive" disabled={disabled || live || steps.some((step) => !step.result)} onClick={toggleArchive} style={{ ...actionStyle, marginLeft: "auto", opacity: hovered ? 1 : 0 }}>{archived ? "恢复" : compacted ? "还原" : "🧹 精简"}</button>
         <span aria-hidden="true" style={{ flex: "0 0 auto", marginLeft: compacted ? 0 : "auto", color: "var(--text-subtle)", fontSize: 14 }}>{open ? "▾" : "▸"}</span>
       </summary>
-      {open && <div className="tool-timeline-thread" style={{ margin: "2px 0 5px 6px", padding: "2px 0 3px 12px", borderLeft: "1px solid var(--border)", background: "transparent" }}>{steps.map((step, index) => <ToolStep key={`${step.call.id}-${step.assistant.id}`} {...step} stepNumber={index + 1} onCall={onCall} onResult={onMessage} onImage={onImage} onDeleteCall={onDeleteCall} disabled={disabled} searchTerm={searchTerm} />)}</div>}
+      {open && <div className="tool-timeline-thread" style={{ margin: "2px 0 5px 6px", padding: "2px 0 3px 12px", borderLeft: "1px solid var(--border)", background: "transparent" }}>{steps.map((step, index) => <ToolStep key={`${step.call.id}-${step.assistant.id}`} {...step} stepNumber={index + 1} onCall={onCall} onResult={onMessage} onImage={onImage} onDeleteCall={onDeleteCall} disabled={disabled} searchTerm={searchTerm} jumpedId={jumpedId} />)}</div>}
     </details>
     {summaryOpen && <section className="tool-summary-card" style={{ margin: "3px 0 8px 21px", padding: "10px 12px", border: "1px solid color-mix(in srgb, var(--success) 22%, var(--border))", borderRadius: 10, background: "color-mix(in srgb, var(--success-soft) 40%, var(--surface))", boxShadow: "none" }}>
       <header style={{ display: "flex", minHeight: 24, alignItems: "center", gap: 8, marginBottom: 5 }}><strong style={{ color: "var(--text-muted)", fontSize: 9 }}>工具组摘要</strong><span style={{ color: "var(--text-subtle)", fontSize: 8 }}>保留在模型上下文中</span><div style={{ display: "flex", gap: 5, marginLeft: "auto" }}>{editingSummary ? <><button disabled={disabled} onClick={saveSummary}>保存</button><button disabled={disabled} onClick={() => { setSummaryDraft(summaryText); setEditingSummary(false); }}>取消</button></> : <button disabled={disabled} onClick={() => { setSummaryDraft(summaryText); setEditingSummary(true); }}>编辑</button>}<button disabled={disabled} aria-label="收起摘要" title="收起摘要" onClick={() => setSummaryOpen(false)}>×</button></div></header>
@@ -351,6 +353,16 @@ export function MessageStream(props: Props) {
     let target = [...root.querySelectorAll<HTMLElement>("[data-message-id], [data-result-id]")].find((element) => element.dataset.messageId === id || element.dataset.resultId === id);
     if (!target) {
       const message = props.messages.find((item) => item.id === id);
+      if (message?.role === "tool") {
+        const owner = props.messages.find((item) => item.toolCalls?.some((call) => wireToolCallId(call.id) === wireToolCallId(message.toolCallId || "")));
+        const group = owner && root.querySelector<HTMLElement>(`.tool-group[data-message-id="${CSS.escape(owner.id)}"]`);
+        const groupDetails = group?.querySelector<HTMLDetailsElement>(":scope > details");
+        if (groupDetails) {
+          if (!groupDetails.open) groupDetails.querySelector<HTMLElement>("summary")?.click();
+          requestAnimationFrame(() => requestAnimationFrame(() => jumpToMessage(id)));
+          return;
+        }
+      }
       const banner = root.querySelector<HTMLElement>(".system-banner");
       const toggle = banner?.querySelector<HTMLButtonElement>(".system-banner-head button");
       const expandedMessage = [...(banner?.querySelectorAll<HTMLElement>("[data-message-id]") || [])].some((element) => element.dataset.messageId === id);
@@ -360,7 +372,10 @@ export function MessageStream(props: Props) {
       }
       return;
     }
-    for (let parent: HTMLElement | null = target; parent && parent !== root; parent = parent.parentElement) if (parent instanceof HTMLDetailsElement) parent.open = true;
+    for (let parent: HTMLElement | null = target; parent && parent !== root; parent = parent.parentElement) if (parent instanceof HTMLDetailsElement) {
+      if (parent === target && !parent.open) parent.querySelector<HTMLElement>("summary")?.click();
+      else parent.open = true;
+    }
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     target.classList.add("jump-highlight");
     setJumpedId(id);
@@ -440,12 +455,12 @@ export function MessageStream(props: Props) {
     const compacted = message as CompactedMessage;
     const query = visibleSearchTerm.trim();
     const searchable = `${message.content} ${compacted.modelSummary || ""}`.toLocaleLowerCase();
-    return <MessageCard key={message.id} message={message} index={index} total={props.messages.length} busy={props.busy} onMessage={props.onMessage} onAdd={props.onAdd} onMove={props.onMove} onDelete={props.onDelete} onBranch={props.onBranch} onImage={openImage} searchTerm={query && searchable.includes(query.toLocaleLowerCase()) ? query : ""}>{children}</MessageCard>;
+    return <MessageCard key={message.id} message={message} index={index} total={props.messages.length} busy={props.busy} onMessage={props.onMessage} onCopy={props.onCopy} onAdd={props.onAdd} onMove={props.onMove} onDelete={props.onDelete} onBranch={props.onBranch} onImage={openImage} searchTerm={query && searchable.includes(query.toLocaleLowerCase()) ? query : ""}>{children}</MessageCard>;
   };
   const renderGroup = (steps: { assistant: Message; call: ToolCall; callIndex: number; result?: Message }[]) => {
     const live = props.busy && steps.some((step) => !step.result || step.assistant.id === props.streamingId);
     const liveLabel = props.toolActivity ? `正在执行 ${props.toolActivity.name}…` : "Gemini 正在思考 / 调度 GPT…";
-    return <ToolStepGroup key={`group-${steps[0].assistant.id}`} steps={steps} compact={props.compactTools} onCall={props.onCall} onMessage={props.onMessage} onImage={openImage} onDeleteCall={props.onDeleteCall} live={live} liveLabel={liveLabel} disabled={disabled} searchTerm={visibleSearchTerm} />;
+    return <ToolStepGroup key={`group-${steps[0].assistant.id}`} steps={steps} compact={props.compactTools} onCall={props.onCall} onMessage={props.onMessage} onImage={openImage} onDeleteCall={props.onDeleteCall} live={live} liveLabel={liveLabel} disabled={disabled} searchTerm={visibleSearchTerm} jumpedId={jumpedId} />;
   };
   const toggleDirectory = () => setDirectoryOpenState(!directoryOpen);
   const content: React.ReactNode[] = [<div className="stream-tools" key="stream-tools" style={{ position: "sticky", top: 7, zIndex: 20, height: 0, margin: 0, padding: 0, overflow: "visible", background: "transparent", pointerEvents: "none" }}>
@@ -469,7 +484,7 @@ export function MessageStream(props: Props) {
       // Keep assistant prose in a normal, always-visible message card. Tool collapsing
       // applies only to tool details; it must never hide text emitted alongside calls.
       if (!message.images?.length && message.content.trim()) {
-        const callView = <div className="assistant-tool-steps">{own.map((step) => <ToolStep key={step.call.id} {...step} onCall={props.onCall} onResult={props.onMessage} onImage={openImage} onDeleteCall={props.onDeleteCall} disabled={disabled} searchTerm={visibleSearchTerm} />)}{props.busy && props.streamingId === message.id && <div className="live-thinking" role="status">{props.streamingThinking ? <details><summary><Brain size={14} />思考过程 · 实时</summary><pre>{props.streamingThinking}</pre></details> : <span>✨ Gemini 正在思考 / 调度 GPT…</span>}</div>}</div>;
+        const callView = <div className="assistant-tool-steps">{own.map((step) => <ToolStep key={step.call.id} {...step} onCall={props.onCall} onResult={props.onMessage} onImage={openImage} onDeleteCall={props.onDeleteCall} disabled={disabled} searchTerm={visibleSearchTerm} jumpedId={jumpedId} />)}{props.busy && props.streamingId === message.id && <div className="live-thinking" role="status">{props.streamingThinking ? <details><summary><Brain size={14} />思考过程 · 实时</summary><pre>{props.streamingThinking}</pre></details> : <span>✨ Gemini 正在思考 / 调度 GPT…</span>}</div>}</div>;
         content.push(renderCard(message, index, callView)); index++; continue;
       }
       if (!message.images?.length) {
@@ -484,7 +499,7 @@ export function MessageStream(props: Props) {
         }
         content.push(renderGroup(steps)); index = cursor; continue;
       }
-      const callView = <div className="assistant-tool-steps">{own.map((step) => <ToolStep key={step.call.id} {...step} onCall={props.onCall} onResult={props.onMessage} onImage={openImage} onDeleteCall={props.onDeleteCall} disabled={disabled} searchTerm={visibleSearchTerm} />)}{props.busy && props.streamingId === message.id && <div className="live-thinking" role="status">{props.streamingThinking ? <details><summary><Brain size={14} />思考过程 · 实时</summary><pre>{props.streamingThinking}</pre></details> : <span>✨ Gemini 正在思考 / 调度 GPT…</span>}</div>}</div>;
+      const callView = <div className="assistant-tool-steps">{own.map((step) => <ToolStep key={step.call.id} {...step} onCall={props.onCall} onResult={props.onMessage} onImage={openImage} onDeleteCall={props.onDeleteCall} disabled={disabled} searchTerm={visibleSearchTerm} jumpedId={jumpedId} />)}{props.busy && props.streamingId === message.id && <div className="live-thinking" role="status">{props.streamingThinking ? <details><summary><Brain size={14} />思考过程 · 实时</summary><pre>{props.streamingThinking}</pre></details> : <span>✨ Gemini 正在思考 / 调度 GPT…</span>}</div>}</div>;
       content.push(renderCard(message, index, callView)); index++; continue;
     }
     if (message.role === "assistant" && props.busy && props.streamingId === message.id) {
