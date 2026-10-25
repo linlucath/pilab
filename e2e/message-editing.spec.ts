@@ -56,8 +56,10 @@ test("MSG-01 仅添加各角色消息、从消息入口插入并在系统区添�
 
   await page.locator(".system-banner").getByRole("button", { name: "展开 / 编辑" }).click();
   await page.locator(".system-banner").getByRole("button", { name: "添加 Developer" }).click();
-  await page.locator(".system-banner").getByRole("button", { name: "编辑指令" }).click();
   const developerEditors = page.getByRole("textbox", { name: "developer 人设内容" });
+  await expect(developerEditors).toHaveCount(2);
+  await page.locator(".system-banner").getByRole("button", { name: "编辑指令" }).click();
+  await expect(developerEditors.last()).toBeEditable();
   await developerEditors.last().fill("developer added from system prompt area");
   await page.locator(".system-banner").getByRole("button", { name: /保存/ }).click();
   await expect(developerEditors.last()).toHaveValue("developer added from system prompt area");
@@ -317,6 +319,8 @@ test("MSG-08 搜索旧消息和工具结果、展开目标并可退出且不改�
 });
 
 test("MSG-09 安全渲染 Markdown、表格和代码并只复制代码内容", async ({ page }) => {
+  const longCode = Array.from({ length: 40 }, (_, index) => `console.log(${index});`).join("\n");
+  const codeText = `const answer = 42;\n${longCode}`;
   const content = [
     "## Markdown heading",
     "- first item",
@@ -325,7 +329,7 @@ test("MSG-09 安全渲染 Markdown、表格和代码并只复制代码内容", a
     "| --- | --- | --- | --- | --- | --- |",
     "| one | two | three | four | five | six |",
     "```js",
-    "const answer = 42;",
+    codeText,
     "```",
     "<img src=x onerror=alert(1)>",
     "[safe](https://example.com) [mail](mailto:test@example.com) [bad](javascript:alert(1))",
@@ -342,7 +346,9 @@ test("MSG-09 安全渲染 Markdown、表格和代码并只复制代码内容", a
   await expect(target.locator('a[href="https://example.com"]')).toBeVisible();
   await expect(target.locator('a[href="mailto:test@example.com"]')).toBeVisible();
   await expect(target.locator(".message-content")).toContainText("<img src=x onerror=alert(1)>");
+  const codeBlock = target.locator(".markdown-code pre");
+  expect(await codeBlock.evaluate((element) => element.scrollHeight > element.clientHeight)).toBeTruthy();
   await target.getByRole("button", { name: "复制代码" }).click();
   await expect(target.locator(".markdown-code .code-head button")).toContainText("已复制");
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("const answer = 42;");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(codeText);
 });

@@ -134,7 +134,7 @@
 .markdown-code { margin: 10px 0; overflow: hidden; border: 1px solid #34353c; border-radius: 9px; color: var(--code-fg); background: var(--code-bg); }
 .code-head { display: flex; min-height: 31px; align-items: center; justify-content: space-between; padding: 0 10px; border-bottom: 1px solid rgba(255,255,255,.08); color: #aaaab3; font: 9px var(--font-mono); }
 .code-head button { display: inline-flex; align-items: center; gap: 5px; border: 0; color: #c6c6ce; background: transparent; font: 9px var(--font-sans); }
-.markdown-code pre { margin: 0; padding: 12px; overflow: visible; font: 10px/1.65 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.markdown-code pre { max-height: 320px; margin: 0; padding: 12px; overflow: auto; font: 10px/1.65 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .thinking-accordion { margin: 0 15px 13px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
 .thinking-accordion summary { display: flex; align-items: center; gap: 7px; padding: 9px 10px; color: var(--text-muted); font-size: 10px; cursor: pointer; list-style: none; }.thinking-accordion summary::-webkit-details-marker { display: none; }.thinking-accordion summary > svg { color: var(--accent); }.thinking-accordion summary small { margin-left: auto; color: var(--text-subtle); }
 .thinking-accordion pre, .live-thinking pre { max-height: 260px; margin: 0 9px 9px; padding: 10px; overflow: auto; border-radius: 7px; color: var(--text-muted); background: var(--surface); font: 10px/1.65 var(--font-mono); white-space: pre-wrap; }

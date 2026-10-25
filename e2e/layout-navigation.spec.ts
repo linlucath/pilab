@@ -8,10 +8,14 @@ const sessionRows = (page: import("@playwright/test").Page) => sidebar(page).loc
 
  test("LAY-01 打开本机工作区并在读取失败时重试", async ({ page }) => {
   await page.route("**/api/workspace", async (route) => {
-    if (route.request().method() === "GET") await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "工作区读取失败" }) });
-    else await route.continue();
+    if (route.request().method() === "GET") {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "工作区读取失败" }) });
+    } else await route.continue();
   });
-  await page.goto("/");
+  const navigation = page.goto("/");
+  await expect(page.getByRole("status")).toContainText("正在打开本地工作区…");
+  await navigation;
   const loading = page.getByRole("status");
   await expect(loading).toContainText("工作区读取失败");
   await expect(loading.getByRole("button", { name: "重试" })).toBeVisible();
