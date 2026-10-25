@@ -6,7 +6,7 @@
 .topbar-leading, .topbar-trailing { display: flex; min-width: 0; align-items: center; gap: 12px; }
 .topbar-leading { flex: 1 1 0; }
 .topbar-trailing { flex: 1 1 0; justify-content: flex-end; }
-.workspace-body { display: flex; min-width: 0; min-height: 0; flex: 1; overflow: hidden; }
+.workspace-body { position: relative; display: flex; min-width: 0; min-height: 0; flex: 1; overflow: hidden; }
 .conversation-pane { position: relative; display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; background: var(--canvas); }
 .message-stream, .scroll-view { position: relative; min-width: 0; min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .message-stream { background: var(--canvas); }
@@ -14,6 +14,7 @@
 .stream-bottom-space { height: 14px; }
 .scroll-view { padding: 26px clamp(20px, 4vw, 52px); background: var(--canvas); }
 .right-panel { display: flex; width: var(--right-width); min-width: var(--right-width); height: 100%; flex-direction: column; gap: 0; overflow: auto; overscroll-behavior: contain; border-left: 1px solid var(--border); background: var(--sidebar-bg); scrollbar-gutter: stable; }
+.right-panel-backdrop { display: none; }
 .panel-section { padding: 19px 18px; border-bottom: 1px solid var(--border); }
 .primary-settings { background: var(--surface); }
 .worker-panel { padding: 17px 16px 19px; border-bottom: 1px solid var(--border); background: var(--sidebar-bg); }
@@ -31,4 +32,5 @@
 .toast > span { max-height: 150px; overflow: auto; } .toast > svg { color: var(--accent); } .toast button { display: grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); }
 .app-loading { display: grid; width: 100vw; height: 100vh; place-content: center; gap: 12px; color: var(--text-muted); background: var(--app-bg); text-align: center; }
 .sidebar-compact .sidebar { width: 68px; min-width: 68px; align-items: center; padding: 16px 9px; }
+.sidebar-compact .sidebar-top-toggle { display: inline-grid; }
 .sidebar-compact .sidebar-brand-row { width: 100%; justify-content: center; }
