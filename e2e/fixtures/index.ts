@@ -1,4 +1,6 @@
 import { expect, type Locator, type Page } from "@playwright/test";
+import { defaults, type Message, type Settings } from "../../shared/schema";
+import type { SavedSession } from "../../shared/workspace";
 
 export type MockScriptStep =
   | { type: "text" | "slow" | "long"; text?: string; delayMs?: number; chunkSize?: number }
@@ -11,6 +13,23 @@ const endpoint = (page: Page, pathname: string) => new URL(pathname, page.url() 
 export async function resetWorkspace(page: Page) {
   const response = await page.context().request.post(endpoint(page, "/api/e2e/reset"));
   expect(response.ok(), `reset endpoint returned ${response.status()}`).toBeTruthy();
+}
+
+export function e2eSession(id: string, title: string, messages: Message[], settings: Partial<Settings> = {}): SavedSession {
+  return { id, title, settings: { ...defaults, ...settings }, messages };
+}
+
+export async function seedWorkspace(page: Page, sessions: SavedSession[], active = sessions[0]?.id) {
+  if (page.url() !== "about:blank") {
+    await page.goto("about:blank");
+    const drained = await page.context().request.get(endpoint(page, "/api/workspace"));
+    expect(drained.ok(), `workspace drain returned ${drained.status()}`).toBeTruthy();
+  }
+  await resetWorkspace(page);
+  const response = await page.context().request.post(endpoint(page, "/api/workspace"), {
+    data: { sessions, active, hiddenPiSessions: [], followPi: false },
+  });
+  expect(response.ok(), `workspace seed returned ${response.status()}: ${await response.text()}`).toBeTruthy();
 }
 
 export async function setMockScript(page: Page, script: MockScriptStep[]) {

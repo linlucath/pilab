@@ -213,7 +213,7 @@ export default function App() {
     const onResize = () => {
       if (compactQuery.matches === compact) return;
       compact = compactQuery.matches;
-      setSidebarCollapsed(compact);
+      if (!compact) setSidebarCollapsed(false);
       setRightOpen(!compact);
     };
     window.addEventListener("resize", onResize);
@@ -323,6 +323,15 @@ export default function App() {
     setWorkspace((current) => ({ ...current, sessions: [...current.sessions, next], active: next.id, followPi: false }));
     setSelectedRun(undefined); setScrollRequest((value) => value + 1);
   };
+  useEffect(() => {
+    const createShortcut = (event: KeyboardEvent) => {
+      if ((!event.metaKey && !event.ctrlKey) || event.altKey || event.key.toLowerCase() !== "n" || runLockRef.current) return;
+      event.preventDefault();
+      createSession();
+    };
+    window.addEventListener("keydown", createShortcut);
+    return () => window.removeEventListener("keydown", createShortcut);
+  }, [createSession]);
   const duplicateSession = (source: Session) => createSession({ ...source, title: `${source.title} · 副本` });
   const deleteSession = (id: string) => {
     if (runLockRef.current) return;
@@ -701,7 +710,7 @@ export default function App() {
       <div className="workspace-body">
         {rightOpen && <button type="button" className="right-panel-backdrop" aria-label="关闭工作台遮罩" onClick={() => setRightOpen(false)} />}
         <section className="conversation-pane">
-          <MessageStream sessionId={session.id} scrollRequest={scrollRequest} directoryOpen={directoryOpen} onDirectoryOpenChange={setDirectoryOpen} archiveRequest={archiveToolRequest} onArchiveableGroupsChange={reportArchiveableToolGroups} messages={session.messages} busy={busy} compactTools={compactTools} streamingId={streamingId} streamingThinking={streamingThinking} toolActivity={toolActivity} gptWorkers={visibleGptSessions} lineage={session.parentSessionId ? { parentSessionId: session.parentSessionId, parentSessionTitle: session.parentSessionTitle, forkSummary: session.forkSummary } : undefined} forkNotice={forkNotice?.sourceId === session.id ? { forkId: forkNotice.forkId, title: forkNotice.title } : undefined} onSwitchFork={selectSession} onJumpToSession={selectSession} onFork={() => setForkModalOpen(true)} onMessage={updateMessage} onCall={updateCall} onAdd={addMessage} onMove={moveMessage} onDelete={deleteMessage} onDeleteCall={deleteToolCall} onBranch={branchAt} />
+          <MessageStream sessionId={session.id} scrollRequest={scrollRequest} directoryOpen={directoryOpen} onDirectoryOpenChange={setDirectoryOpen} archiveRequest={archiveToolRequest} onArchiveableGroupsChange={reportArchiveableToolGroups} messages={session.messages} busy={busy} compactTools={compactTools} streamingId={streamingId} streamingThinking={streamingThinking} toolActivity={toolActivity} gptWorkers={visibleGptSessions} lineage={session.parentSessionId ? { parentSessionId: session.parentSessionId, parentSessionTitle: session.parentSessionTitle, forkSummary: session.forkSummary } : undefined} forkNotice={forkNotice?.sourceId === session.id ? { forkId: forkNotice.forkId, title: forkNotice.title } : undefined} onSwitchFork={selectSession} onJumpToSession={selectSession} onFork={() => setForkModalOpen(true)} onMessage={updateMessage} onCall={updateCall} onAdd={addMessage} onMove={moveMessage} onDelete={deleteMessage} onDeleteCall={deleteToolCall} onBranch={branchAt} onCopy={(text) => void copyText(text)} />
           {runError?.sessionId === session.id && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>本次运行失败</strong><span>{runError.message}</span></div><button onClick={() => setRunError(null)} aria-label="关闭运行错误">关闭<X size={14} /></button></div>}
           <ComposerBar busy={busy} blocked={!!session.piSync} toolName={toolActivity?.name} messageCount={session.messages.length} contextTokens={contextMetrics.context} savedPercent={contextMetrics.savedPercent} draft={composerText} onDraftChange={updateComposerText} backgroundWorkers={visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={workerWakeNotice} autoWakeEnabled={autoWakeEnabled} onCancelWake={() => setWorkerWakeNotice(null)} onEnableAutoWake={() => setAutoWakeEnabled(true)} onReviewWorkers={reviewWorkers} onSend={sendMessage} onRun={() => void run()} onStop={() => controller.current?.abort()} />
         </section>

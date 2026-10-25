@@ -32,7 +32,7 @@ export function TopBar(props: Props) {
   };
   return <header className="topbar">
     <div className="topbar-leading">
-      <button className="icon-button sidebar-top-toggle" onClick={props.onToggleSidebar} aria-label={props.sidebarCollapsed ? "展开会话栏" : "收起会话栏"} title={props.sidebarCollapsed ? "展开会话栏" : "收起会话栏"}>{props.sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button>
+      <button className="icon-button sidebar-top-toggle sidebar-mobile-toggle" onClick={props.onToggleSidebar} aria-label={props.sidebarCollapsed ? "展开会话栏 / 展开侧栏" : "收起会话栏 / 收起侧栏"} title={props.sidebarCollapsed ? "展开会话栏" : "收起会话栏"}>{props.sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button>
       <div className="title-line"><Sparkles size={16} /><input aria-label="会话标题" value={props.session.title} maxLength={200} onChange={(event) => props.onTitle(event.target.value)} /></div>
       <div className="cwd-control">
         {editingCwd ? <input autoFocus aria-label="工作目录" value={cwd} onChange={(event) => setCwd(event.target.value)} onBlur={() => { props.onWorkingDirectory(cwd); setEditingCwd(false); }} onKeyDown={(event) => { if (event.key === "Enter") { props.onWorkingDirectory(cwd); setEditingCwd(false); } if (event.key === "Escape") { setCwd(workingDirectory); setEditingCwd(false); } }} /> : <button title={workingDirectory || "服务端默认目录"} aria-label={`编辑工作目录：${workingDirectory || "服务端默认目录"}`} onClick={() => setEditingCwd(true)}>📁 <span>{folderName(workingDirectory)}</span></button>}
