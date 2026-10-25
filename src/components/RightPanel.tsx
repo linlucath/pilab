@@ -6,7 +6,7 @@ import type { Run, Session } from "../workspace-store";
 
 type ModelOption = { id: string; name: string; reasoningEfforts: ReasoningEffort[]; reasoningEffortMap?: Partial<Record<ReasoningEffort, string | null>> };
 type Props = {
-  session: Session; busy: boolean; runtimeCwd: string; apiKey: string; models: ModelOption[]; piConnected?: boolean; hidden?: boolean;
+  session: Session; busy: boolean; runtimeCwd: string; apiKey: string; models: ModelOption[]; piConnected?: boolean; hidden?: boolean; onClose: () => void;
   piDefaultModel?: string; activeRun?: Run; onSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   onApiKey: (key: string) => void; onRefreshAuth: () => void; onExport: () => void; onImport: (file?: File) => void;
   onSessionsChange?: (sessions: GptSessionSummary[]) => void;
@@ -91,7 +91,7 @@ export function RightPanel(props: Props) {
   const toggleWorker = (id: string) => setExpanded((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
   return <aside className="right-panel" aria-label="工作台配置" hidden={props.hidden}>
     <section className="panel-section primary-settings" style={{ order: 1, padding: "13px 16px" }}>
-      <div className="right-heading" style={{ marginBottom: 10 }}><div><span className="heading-icon"><Settings2 size={16} /></span><div><strong>模型与环境</strong><small>当前会话的运行配置</small></div></div><span className="local-lock"><Shield size={13} />本地</span></div>
+      <div className="right-heading" style={{ marginBottom: 10 }}><div><span className="heading-icon"><Settings2 size={16} /></span><div><strong>模型与环境</strong><small>当前会话的运行配置</small></div></div><div className="right-heading-actions"><span className="local-lock"><Shield size={13} />本地</span><button className="icon-button panel-close" type="button" aria-label="关闭工作台" title="关闭工作台" onClick={props.onClose}><X size={16} /></button></div></div>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", rowGap: 8 }}>
         <div><label className="field-label" htmlFor="working-directory" style={{ margin: "0 0 4px" }}>工作目录</label><input id="working-directory" className="field-input path-input" style={{ height: 34, padding: "0 8px" }} value={props.session.settings.workingDirectory} onChange={(event) => props.onSetting("workingDirectory", event.target.value)} placeholder={props.runtimeCwd || "服务端默认目录"} disabled={props.busy} /></div>
         <div><label className="field-label" htmlFor="main-model" style={{ margin: "0 0 4px" }}>主模型</label>{isSubscription && props.models.length ? <select id="main-model" className="field-input" style={{ height: 34, padding: "0 8px" }} value={props.session.settings.model} onChange={(event) => props.onSetting("model", event.target.value)} disabled={props.busy}>{availableModels.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select> : <input id="main-model" className="field-input" style={{ height: 34, padding: "0 8px" }} value={props.session.settings.model} onChange={(event) => props.onSetting("model", event.target.value)} disabled={props.busy} />}<div className="auth-line" style={{ marginTop: 3 }}><span className={props.piConnected ? "auth-ok" : "auth-wait"}><i />{props.piConnected ? "Pi 登录已连接" : props.piConnected === false ? "Pi 尚未登录" : "检查 Pi 状态中"}</span><button className="icon-button" style={{ width: 24, height: 24 }} title="刷新 Pi 登录状态" aria-label="刷新 Pi 登录状态" onClick={props.onRefreshAuth}><RefreshCw size={13} /></button></div></div>

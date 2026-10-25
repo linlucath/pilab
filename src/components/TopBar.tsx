@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Archive, BookOpen, Bug, Check, ChevronDown, Moon, PanelRight, PanelRightClose, PanelLeftOpen, Sparkles, Sun, Wrench } from "lucide-react";
+import { Archive, BookOpen, Bug, Check, ChevronDown, Moon, PanelLeftClose, PanelLeftOpen, PanelRight, PanelRightClose, Sparkles, Sun, Wrench } from "lucide-react";
 import type { PiLiveSession } from "../../shared/pi-sync";
 import type { Session } from "../workspace-store";
 import { folderName } from "../utils/session";
@@ -7,7 +7,7 @@ import { folderName } from "../utils/session";
 type DebugPanel = "request" | "history" | "diagnostics";
 type Props = {
   session: Session; saveState: "saved" | "saving" | "error"; onDebugView: (view: DebugPanel) => void;
-  sidebarCollapsed: boolean; onOpenSidebar: () => void; theme: "light" | "dark"; onTheme: () => void;
+  sidebarCollapsed: boolean; onToggleSidebar: () => void; theme: "light" | "dark"; onTheme: () => void;
   rightOpen: boolean; onRight: () => void; compactTools: boolean; onCompactTools: () => void;
   piSessions: PiLiveSession[]; followPi: boolean; onFollowPi: (value: boolean) => void;
   syncError: string; onSelectPi: (id: string) => void; onApplyPi: () => void; onDiscardPi: () => void; onCancelPending: () => void;
@@ -32,7 +32,7 @@ export function TopBar(props: Props) {
   };
   return <header className="topbar">
     <div className="topbar-leading">
-      {props.sidebarCollapsed && <button className="icon-button" onClick={props.onOpenSidebar} aria-label="展开会话栏" title="展开会话栏"><PanelLeftOpen size={17} /></button>}
+      <button className="icon-button sidebar-top-toggle" onClick={props.onToggleSidebar} aria-label={props.sidebarCollapsed ? "展开会话栏" : "收起会话栏"} title={props.sidebarCollapsed ? "展开会话栏" : "收起会话栏"}>{props.sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button>
       <div className="title-line"><Sparkles size={16} /><input aria-label="会话标题" value={props.session.title} maxLength={200} onChange={(event) => props.onTitle(event.target.value)} /></div>
       <div className="cwd-control">
         {editingCwd ? <input autoFocus aria-label="工作目录" value={cwd} onChange={(event) => setCwd(event.target.value)} onBlur={() => { props.onWorkingDirectory(cwd); setEditingCwd(false); }} onKeyDown={(event) => { if (event.key === "Enter") { props.onWorkingDirectory(cwd); setEditingCwd(false); } if (event.key === "Escape") { setCwd(workingDirectory); setEditingCwd(false); } }} /> : <button title={workingDirectory || "服务端默认目录"} aria-label={`编辑工作目录：${workingDirectory || "服务端默认目录"}`} onClick={() => setEditingCwd(true)}>📁 <span>{folderName(workingDirectory)}</span></button>}
@@ -43,9 +43,9 @@ export function TopBar(props: Props) {
       <button type="button" className={`topbar-directory-button ${props.directoryOpen ? "active" : ""}`} aria-label="目录与搜索" aria-expanded={!!props.directoryOpen} title="打开对话目录与搜索 · ⌘F / Ctrl+F" onClick={props.onDirectoryToggle}><BookOpen size={14} /><span>目录</span></button>
       {(props.archiveableToolGroups || 0) > 0 && <button type="button" className="topbar-archive-button" disabled={props.forkDisabled} onClick={props.onArchiveOldTools} title={`精简 ${props.archiveableToolGroups} 个较旧的工具组`} aria-label={`精简 ${props.archiveableToolGroups} 个较旧的工具组`}><Archive size={14} /><span>{props.archiveableToolGroups}</span></button>}
       <button className={`tool-fold-button ${props.compactTools ? "active" : ""}`} onClick={props.onCompactTools} title={props.compactTools ? "展开工具过程" : "收起工具过程"} aria-label={props.compactTools ? "展开工具" : "收起工具"}><Wrench size={15} /><span>{props.compactTools ? "展开工具" : "收起工具"}</span></button>
-      <button className="fork-topbar-button" disabled={props.forkDisabled} onClick={props.onFork} title="创建一个携带提纯记忆的新会话分身"><Sparkles size={14} /><span>提纯分身</span></button>
+      <button className="fork-topbar-button" disabled={props.forkDisabled} onClick={props.onFork} aria-label="创建提纯分身" title="创建一个携带提纯记忆的新会话分身"><Sparkles size={14} /><span>提纯分身</span></button>
       <details className="pi-sync-menu">
-        <summary className={`pi-sync-pill ${currentPi?.online ? "online" : ""}`} title={currentPi ? `${currentPi.name} · ${currentPi.online ? "在线" : "离线"}` : "Pi 同步"}><span className="pi-status-dot" /><span>Pi 同步</span><ChevronDown size={14} /></summary>
+        <summary className={`pi-sync-pill ${currentPi?.online ? "online" : ""}`} aria-label="Pi 同步" title={currentPi ? `${currentPi.name} · ${currentPi.online ? "在线" : "离线"}` : "Pi 同步"}><span className="pi-status-dot" /><span>Pi 同步</span><ChevronDown size={14} /></summary>
         <div className="pi-sync-popover">
           <div className="popover-heading"><strong>Pi CLI 同步</strong><small>{onlineCount} 个在线</small></div>
           <select aria-label="选择 Pi CLI 会话" value={props.session.piSync?.id || ""} onChange={(event) => event.target.value && props.onSelectPi(event.target.value)}><option value="">选择 Pi 会话…</option>{props.piSessions.map((item) => <option key={item.id} value={item.id}>{item.online ? "●" : "○"} {item.name} · {item.cwd.split(/[\\/]/).at(-1)}</option>)}</select>

@@ -53,6 +53,48 @@ export const shotScenarios: ShotScenario[] = [
     run: async (page) => {
       await page.setViewportSize({ width: 390, height: 844 });
       await openWorkspace(page);
+      await expect(page.getByRole("complementary", { name: "工作台配置" })).toBeHidden();
+      await expect(page.locator(".sidebar")).toHaveCSS("width", "0px");
+    },
+  },
+  {
+    name: "drawer-390-open",
+    run: async (page) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await openWorkspace(page);
+      await page.getByRole("button", { name: "显示工作台" }).click();
+      await expect(page.getByRole("complementary", { name: "工作台配置" })).toBeVisible();
+      await expect(page.locator(".right-panel-backdrop")).toBeVisible();
+    },
+  },
+  {
+    name: "responsive-768",
+    run: async (page) => {
+      await page.setViewportSize({ width: 768, height: 900 });
+      await openWorkspace(page);
+      await expect(page.getByRole("complementary", { name: "工作台配置" })).toBeHidden();
+    },
+  },
+  {
+    name: "responsive-1024",
+    run: async (page) => {
+      await page.setViewportSize({ width: 1024, height: 900 });
+      await openWorkspace(page);
+      await expect(page.getByRole("complementary", { name: "工作台配置" })).toBeVisible();
+    },
+  },
+  {
+    name: "streaming-dark-disabled",
+    run: async (page) => {
+      await page.setViewportSize({ width: 1024, height: 900 });
+      await openWorkspace(page);
+      await page.getByRole("button", { name: "切换深色模式" }).click();
+      await setMockScript(page, [{ type: "slow", text: "DARK-STREAM: 生成状态和禁用控件仍清晰可辨。" + "持续输出。".repeat(45), chunkSize: 4, delayMs: 100 }]);
+      await sendMessage(page, "检查深色模式下的运行反馈");
+      await expect(page.getByText(/DARK-STREAM/)).toBeVisible();
+      await expect(page.locator(".chat-message.assistant .streaming-cursor")).toBeVisible();
+      await expect(page.locator(".effort-segment button").first()).toBeDisabled();
+      await page.addStyleTag({ content: ".streaming-cursor { animation: none !important; opacity: 1 !important; }" });
     },
   },
 ];

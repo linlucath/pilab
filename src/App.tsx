@@ -75,8 +75,8 @@ export default function App() {
     try { return localStorage.getItem("pilab-theme-v2") === "dark" ? "dark" : "light"; }
     catch { return "light"; }
   });
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [rightOpen, setRightOpen] = useState(true);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.matchMedia("(max-width: 860px)").matches);
+  const [rightOpen, setRightOpen] = useState(() => !window.matchMedia("(max-width: 860px)").matches);
   const [compactTools, setCompactTools] = useState(() => {
     try { return localStorage.getItem("pilab-tools-compact-v1") !== "false"; } catch { return true; }
   });
@@ -207,6 +207,24 @@ export default function App() {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [debugPanel]);
+  useEffect(() => {
+    const compactQuery = window.matchMedia("(max-width: 860px)");
+    let compact = compactQuery.matches;
+    const onResize = () => {
+      if (compactQuery.matches === compact) return;
+      compact = compactQuery.matches;
+      setSidebarCollapsed(compact);
+      setRightOpen(!compact);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  useEffect(() => {
+    if (!rightOpen || window.innerWidth > 860) return;
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setRightOpen(false); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [rightOpen]);
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.key !== "Enter" || runInFlightRef.current) return;
@@ -679,14 +697,15 @@ export default function App() {
   return <div className={`app-shell ${sidebarCollapsed ? "sidebar-compact" : ""} ${rightOpen ? "right-visible" : ""}`}>
     <Sidebar sessions={workspace.sessions} active={session.id} collapsed={sidebarCollapsed} disabled={busy || !!session.piSync?.pending} onToggle={() => setSidebarCollapsed((value) => !value)} onCreate={() => createSession()} onSelect={selectSession} onRename={renameSession} onDuplicate={duplicateSession} onDelete={deleteSession} />
     <main className="app-main">
-      <TopBar session={session} saveState={storageStatus} onDebugView={(panel) => { setDebugPanel(panel); setDirectoryOpen(false); }} directoryOpen={directoryOpen} onDirectoryToggle={() => setDirectoryOpen((open) => !open)} archiveableToolGroups={archiveableToolGroupCount} onArchiveOldTools={() => setArchiveToolRequest((request) => request + 1)} sidebarCollapsed={sidebarCollapsed} onOpenSidebar={() => setSidebarCollapsed(false)} theme={theme} onTheme={() => setTheme((value) => value === "light" ? "dark" : "light")} rightOpen={rightOpen} onRight={() => setRightOpen((value) => !value)} compactTools={compactTools} onCompactTools={() => setCompactTools((value) => !value)} piSessions={piSessions} followPi={workspace.followPi} onFollowPi={setFollowPi} syncError={syncError} onSelectPi={(id) => void selectPiSession(id)} onApplyPi={() => void applyToPi()} onDiscardPi={() => { if (session.piSync) void readPiSession(session.piSync.id, false, true).catch((error) => setSyncError(error.message)); }} onCancelPending={() => void cancelPiApply()} onTitle={(title) => patchSession({ title })} onWorkingDirectory={(workingDirectory) => updateSetting("workingDirectory", workingDirectory)} onFork={() => session.settings.toolMode === "agent" && !session.piSync ? requestSmartFork(`${session.title} · 提纯分身`, 0, true) : setForkModalOpen(true)} forkDisabled={busy} />
+      <TopBar session={session} saveState={storageStatus} onDebugView={(panel) => { setDebugPanel(panel); setDirectoryOpen(false); }} directoryOpen={directoryOpen} onDirectoryToggle={() => setDirectoryOpen((open) => !open)} archiveableToolGroups={archiveableToolGroupCount} onArchiveOldTools={() => setArchiveToolRequest((request) => request + 1)} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} theme={theme} onTheme={() => setTheme((value) => value === "light" ? "dark" : "light")} rightOpen={rightOpen} onRight={() => setRightOpen((value) => !value)} compactTools={compactTools} onCompactTools={() => setCompactTools((value) => !value)} piSessions={piSessions} followPi={workspace.followPi} onFollowPi={setFollowPi} syncError={syncError} onSelectPi={(id) => void selectPiSession(id)} onApplyPi={() => void applyToPi()} onDiscardPi={() => { if (session.piSync) void readPiSession(session.piSync.id, false, true).catch((error) => setSyncError(error.message)); }} onCancelPending={() => void cancelPiApply()} onTitle={(title) => patchSession({ title })} onWorkingDirectory={(workingDirectory) => updateSetting("workingDirectory", workingDirectory)} onFork={() => session.settings.toolMode === "agent" && !session.piSync ? requestSmartFork(`${session.title} · 提纯分身`, 0, true) : setForkModalOpen(true)} forkDisabled={busy} />
       <div className="workspace-body">
+        {rightOpen && <button type="button" className="right-panel-backdrop" aria-label="关闭工作台遮罩" onClick={() => setRightOpen(false)} />}
         <section className="conversation-pane">
           <MessageStream sessionId={session.id} scrollRequest={scrollRequest} directoryOpen={directoryOpen} onDirectoryOpenChange={setDirectoryOpen} archiveRequest={archiveToolRequest} onArchiveableGroupsChange={reportArchiveableToolGroups} messages={session.messages} busy={busy} compactTools={compactTools} streamingId={streamingId} streamingThinking={streamingThinking} toolActivity={toolActivity} gptWorkers={visibleGptSessions} lineage={session.parentSessionId ? { parentSessionId: session.parentSessionId, parentSessionTitle: session.parentSessionTitle, forkSummary: session.forkSummary } : undefined} forkNotice={forkNotice?.sourceId === session.id ? { forkId: forkNotice.forkId, title: forkNotice.title } : undefined} onSwitchFork={selectSession} onJumpToSession={selectSession} onFork={() => setForkModalOpen(true)} onMessage={updateMessage} onCall={updateCall} onAdd={addMessage} onMove={moveMessage} onDelete={deleteMessage} onDeleteCall={deleteToolCall} onBranch={branchAt} />
           {runError?.sessionId === session.id && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>本次运行失败</strong><span>{runError.message}</span></div><button onClick={() => setRunError(null)} aria-label="关闭运行错误">关闭<X size={14} /></button></div>}
           <ComposerBar busy={busy} blocked={!!session.piSync} toolName={toolActivity?.name} messageCount={session.messages.length} contextTokens={contextMetrics.context} savedPercent={contextMetrics.savedPercent} draft={composerText} onDraftChange={updateComposerText} backgroundWorkers={visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={workerWakeNotice} autoWakeEnabled={autoWakeEnabled} onCancelWake={() => setWorkerWakeNotice(null)} onEnableAutoWake={() => setAutoWakeEnabled(true)} onReviewWorkers={reviewWorkers} onSend={sendMessage} onRun={() => void run()} onStop={() => controller.current?.abort()} />
         </section>
-        <RightPanel hidden={!rightOpen} session={session} busy={busy} runtimeCwd={runtimeCwd} onSessionsChange={reportGptSessions} autoWakeEnabled={autoWakeEnabled} onAutoWake={setAutoWakeEnabled} apiKey={currentApiKey} models={piConnection?.models || []} piConnected={piConnection?.connected} piDefaultModel={piConnection?.defaultModel} activeRun={activeRun} onSetting={updateSetting} onApiKey={(key) => setApiKeys((current) => ({ ...current, [session.id]: key }))} onRefreshAuth={() => void refreshPiStatus()} onExport={exportSession} onImport={(file) => void importSession(file)} />
+        <RightPanel hidden={!rightOpen} onClose={() => setRightOpen(false)} session={session} busy={busy} runtimeCwd={runtimeCwd} onSessionsChange={reportGptSessions} autoWakeEnabled={autoWakeEnabled} onAutoWake={setAutoWakeEnabled} apiKey={currentApiKey} models={piConnection?.models || []} piConnected={piConnection?.connected} piDefaultModel={piConnection?.defaultModel} activeRun={activeRun} onSetting={updateSetting} onApiKey={(key) => setApiKeys((current) => ({ ...current, [session.id]: key }))} onRefreshAuth={() => void refreshPiStatus()} onExport={exportSession} onImport={(file) => void importSession(file)} />
       </div>
     </main>
     {debugPanel && <div className="debug-overlay" role="presentation" onClick={() => setDebugPanel(null)}>

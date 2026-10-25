@@ -1,4 +1,4 @@
-import { Fragment, useState, type ReactNode } from "react";
+import { cloneElement, Fragment, isValidElement, useState, type ReactNode } from "react";
 import { Check, Copy } from "lucide-react";
 
 function safeLink(value: string) {
@@ -47,7 +47,7 @@ function CodeBlock({ source }: { source: string }) {
   return <div className="markdown-code"><div className="code-head"><span>{language}</span><button onClick={() => void copy()} aria-label="复制代码">{copied ? <Check size={13} /> : <Copy size={13} />}{copied ? "已复制" : "复制"}</button></div><pre><code>{code}</code></pre></div>;
 }
 
-export function Markdown({ content, highlight = "" }: { content: string; highlight?: string }) {
+export function Markdown({ content, highlight = "", trailing }: { content: string; highlight?: string; trailing?: ReactNode }) {
   const lines = content.split("\n");
   const blocks: ReactNode[] = [];
   let paragraph: string[] = [];
@@ -92,5 +92,11 @@ export function Markdown({ content, highlight = "" }: { content: string; highlig
     paragraph.push(trimmed); index++;
   }
   flush();
+  if (trailing) {
+    const last = blocks.at(-1);
+    if (isValidElement<{ children?: ReactNode }>(last) && last.type === "p")
+      blocks[blocks.length - 1] = cloneElement(last, {}, last.props.children, trailing);
+    else blocks.push(<p className="markdown-streaming-tail" key="streaming-tail">{trailing}</p>);
+  }
   return <div className="markdown-body">{blocks.length ? blocks : <span className="muted">空消息</span>}</div>;
 }
