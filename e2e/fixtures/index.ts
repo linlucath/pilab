@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page } from "@playwright/test";
+import { defaults, type Message, type Settings } from "../../shared/schema";
 
 export type MockScriptStep =
   | { type: "text" | "slow" | "long"; text?: string; delayMs?: number; chunkSize?: number }
@@ -32,6 +33,37 @@ export function ui(page: Page) {
 
 export async function openWorkspace(page: Page) {
   await page.goto(`${serverOrigin()}/`);
+  await expect(ui(page).composer).toBeVisible();
+}
+
+export type SeedSession = {
+  id: string;
+  title: string;
+  messages: Message[];
+  settings?: Partial<Settings>;
+};
+
+export async function seedWorkspace(page: Page, sessions: SeedSession[]) {
+  if (!sessions.length) throw new Error("seedWorkspace requires at least one session");
+  const response = await page.context().request.post(endpoint(page, "/api/workspace"), {
+    data: {
+      sessions: sessions.map((session) => ({
+        ...session,
+        settings: { ...defaults, ...session.settings, apiKey: "" },
+      })),
+      active: sessions[0].id,
+      hiddenPiSessions: [],
+      followPi: false,
+    },
+  });
+  expect(response.ok(), `workspace seed rejected: ${await response.text()}`).toBeTruthy();
+}
+
+export async function prepareE2eWorkspace(page: Page, sessions: SeedSession[] = []) {
+  await openWorkspace(page);
+  await resetWorkspace(page);
+  if (sessions.length) await seedWorkspace(page, sessions);
+  await page.reload();
   await expect(ui(page).composer).toBeVisible();
 }
 
