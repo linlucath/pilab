@@ -506,10 +506,10 @@ export default function App() {
     const activeMessages = runMessages.filter((message) => message.enabled);
     if (!activeMessages.length || !activeMessages.some((message) => message.content.trim() || message.toolCalls?.length || message.role === "tool")) {
       const message = "请先添加至少一条有内容且已启用的消息。";
-      setRunError({ sessionId: activeSession.id, message }); setNotice(message); return;
+      setRunError({ sessionId: activeSession.id, message }); return;
     }
     const historyIssue = toolHistoryError(activeMessages);
-    if (historyIssue) { setRunError({ sessionId: activeSession.id, message: historyIssue }); setNotice(historyIssue); return; }
+    if (historyIssue) { setRunError({ sessionId: activeSession.id, message: historyIssue }); return; }
     const runId = uid(); const sessionId = activeSession.id; const started = Date.now();
     const settings = { ...activeSession.settings, apiKey: apiKeys[activeSession.id] || "" };
     const record: Run = { id: runId, at: started, status: "running", output: "", thinking: "", elapsed: 0, snapshot: { settings: { ...settings, apiKey: "" }, messages: structuredClone(runMessages) } };
@@ -621,7 +621,7 @@ export default function App() {
         const message = "⚠️ 回复流意外中断（未收到完成信号），已记录至诊断日志";
         reportClientDiagnostic("stream_unexpected_eof", undefined, { runId, sessionId, inputMessageCount: activeMessages.length, receivedChars: text.length, startedAt: new Date(started).toISOString() });
         updateRun({ status: "error", error: message, output: text });
-        setRunError({ sessionId, message }); setNotice(message);
+        setRunError({ sessionId, message });
       }
     } catch (error) {
       removeEmpty(currentMessageId);
@@ -637,7 +637,7 @@ export default function App() {
           : networkFailure ? `网页连接本地服务失败：${detail}` : detail;
         reportClientDiagnostic(errorEventReceived ? "run_stream_error_event" : streamStarted ? "run_stream_read_error" : "run_request_error", error, { runId, sessionId, inputMessageCount: activeMessages.length, receivedChars: text.length, startedAt: new Date(started).toISOString() });
         updateRun({ status: "error", error: message, output: text });
-        setRunError({ sessionId, message }); setNotice(message);
+        setRunError({ sessionId, message });
       }
     } finally {
       setBusy(false); setStreamingId(""); setToolActivity(null); controller.current = null;
@@ -714,7 +714,7 @@ export default function App() {
           {runError?.sessionId === session.id && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>本次运行失败</strong><span>{runError.message}</span></div><button onClick={() => setRunError(null)} aria-label="关闭运行错误">关闭<X size={14} /></button></div>}
           <ComposerBar busy={busy} blocked={!!session.piSync} toolName={toolActivity?.name} messageCount={session.messages.length} contextTokens={contextMetrics.context} savedPercent={contextMetrics.savedPercent} draft={composerText} onDraftChange={updateComposerText} backgroundWorkers={visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={workerWakeNotice} autoWakeEnabled={autoWakeEnabled} onCancelWake={() => setWorkerWakeNotice(null)} onEnableAutoWake={() => setAutoWakeEnabled(true)} onReviewWorkers={reviewWorkers} onSend={sendMessage} onRun={() => void run()} onStop={() => controller.current?.abort()} />
         </section>
-        <RightPanel hidden={!rightOpen} onClose={() => setRightOpen(false)} session={session} busy={busy} runtimeCwd={runtimeCwd} onSessionsChange={reportGptSessions} autoWakeEnabled={autoWakeEnabled} onAutoWake={setAutoWakeEnabled} apiKey={currentApiKey} models={piConnection?.models || []} piConnected={piConnection?.connected} piDefaultModel={piConnection?.defaultModel} activeRun={activeRun} onSetting={updateSetting} onApiKey={(key) => setApiKeys((current) => ({ ...current, [session.id]: key }))} onRefreshAuth={() => void refreshPiStatus()} onExport={exportSession} onImport={(file) => void importSession(file)} />
+        <RightPanel hidden={!rightOpen} onClose={() => setRightOpen(false)} session={session} busy={busy} runtimeCwd={runtimeCwd} onSessionsChange={reportGptSessions} autoWakeEnabled={autoWakeEnabled} onAutoWake={setAutoWakeEnabled} apiKey={currentApiKey} models={piConnection?.models || []} piConnected={piConnection?.connected} piDefaultModel={piConnection?.defaultModel} activeRun={activeRun} onSetting={updateSetting} onNotice={setNotice} onApiKey={(key) => setApiKeys((current) => ({ ...current, [session.id]: key }))} onRefreshAuth={() => void refreshPiStatus()} onExport={exportSession} onImport={(file) => void importSession(file)} />
       </div>
     </main>
     {debugPanel && <div className="debug-overlay" role="presentation" onClick={() => setDebugPanel(null)}>

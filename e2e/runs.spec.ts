@@ -7,6 +7,11 @@ async function ready(page: Page) {
   await page.reload();
   await expect(ui(page).composer).toBeVisible();
 }
+async function expectNoToast(page: Page) {
+  // Let any asynchronous notification handler finish before checking absence.
+  await page.waitForTimeout(250);
+  await expect(page.locator(".toast")).toHaveCount(0);
+}
 async function runCurrent(page: Page) {
   await page.locator("button.run-current").click();
 }
@@ -168,12 +173,14 @@ test("RUN-05 本地连接失败和模型错误显示不同原因", async ({ page
   await ui(page).composer.fill("RUN05-CONNECTION-FAIL");
   await ui(page).send.click();
   await expect(ui(page).alerts).toContainText("网页连接本地服务失败");
+  await expectNoToast(page);
   await page.unroute("**/api/run");
 
   await setMockScript(page, [{ type: "error", message: "RUN05-UPSTREAM-MODEL-ERROR" }]);
   await ui(page).composer.fill("RUN05-MODEL-FAIL");
   await ui(page).send.click();
   await expect(ui(page).alerts).toContainText("RUN05-UPSTREAM-MODEL-ERROR");
+  await expectNoToast(page);
   await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0);
 });
 
@@ -189,6 +196,7 @@ test("RUN-05 流在部分正文后 EOF 时保留内容并报告中断", async ({
   await ui(page).composer.fill("RUN05-EOF-TASK");
   await ui(page).send.click();
   await expect(ui(page).alerts).toContainText("回复流意外中断（未收到完成信号）");
+  await expectNoToast(page);
   await expect(page.getByText("RUN05-PARTIAL-BEFORE-EOF", { exact: true })).toBeVisible();
   await page.unroute("**/api/run");
   await page.locator(".debug-menu > summary").click();

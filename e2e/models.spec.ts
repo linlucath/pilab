@@ -18,7 +18,7 @@ const mockedPiCatalog = {
   provider: "mock-provider",
   defaultModel: "mock-provider/model-a",
   models: [
-    { id: "mock-provider/model-a", name: "Mock A", reasoningEfforts: ["low", "high"] },
+    { id: "mock-provider/model-a", name: "Mock A", reasoningEfforts: ["off", "low", "high"] },
     { id: "mock-provider/model-b", name: "Mock B", reasoningEfforts: ["low"] },
   ],
 };
@@ -84,18 +84,40 @@ test("MOD-02 已开启推理时请求不携带 Temperature，档位受 mock 模�
   expect(requestText).not.toMatch(/\"temperature\"\s*:/);
 });
 
-test.fixme("MOD-02 关闭 reasoning 后可设置 Temperature，并在切换不支持档位的模型时自动调整并提示", async ({ page }) => {
-  // ISSUE-200: 模型工作台没有 reasoning=off 入口，也没有在切换到低能力模型时修正已选档位。
+test("MOD-02 关闭 reasoning 后可设置 Temperature 并发送到请求", async ({ page }) => {
   await openAdvanced(page);
-  await page.getByRole("button", { name: "Off" }).click();
-  await expect(page.locator("#temperature")).toBeEnabled();
-  await page.locator("#temperature").fill("1.25");
+  await page.locator("#protocol").selectOption("openai-completions");
+  await page.getByRole("button", { name: "Off", exact: true }).click();
+  const temperature = page.locator("#temperature");
+  await expect(temperature).toBeEnabled();
+  await temperature.focus();
+  await page.keyboard.press("End");
+  await expect(temperature).toHaveValue("2");
   await addMessage(page, "user", "TEMPERATURE-CHECK");
   await setMockScript(page, [{ type: "text", text: "OFF-REASONING" }]);
   await page.locator("button.run-current").click();
   await expect(page.getByText("OFF-REASONING", { exact: true })).toBeVisible();
   await openRequestInspector(page);
-  expect(await page.locator(".request-turn pre").innerText()).toContain("1.25");
+  expect(await page.locator(".request-turn pre").innerText()).toMatch(/"temperature"\s*:\s*2/);
+});
+
+test("MOD-02 切换 Pi 模型时自动调整不支持的推理档位并提示", async ({ page }) => {
+  await page.route("**/api/pi-status", (route) => route.fulfill({ json: mockedPiCatalog }));
+  await page.reload();
+  await openAdvanced(page);
+  await page.locator("#protocol").selectOption("pi-subscription");
+  await page.locator("#main-model").selectOption("mock-provider/model-a");
+  const efforts = page.locator(".effort-segment");
+  await expect(efforts.getByRole("button", { name: "Off", exact: true })).toBeEnabled();
+  await expect(efforts.getByRole("button", { name: "Medium", exact: true })).toBeDisabled();
+  await efforts.getByRole("button", { name: "High", exact: true }).click();
+  await page.locator("#main-model").selectOption("mock-provider/model-b");
+  await expect(efforts.getByRole("button", { name: "Low", exact: true })).toHaveClass(/selected/);
+  await expect(efforts.getByRole("button", { name: "High", exact: true })).toBeDisabled();
+  await expect(efforts.getByRole("button", { name: "Off", exact: true })).toBeDisabled();
+  await expect(page.locator(".toast")).toContainText("Mock B");
+  await expect(page.locator(".toast")).toContainText("High");
+  await expect(page.locator(".toast")).toContainText("Low");
 });
 
 test("MOD-03 页面 API Key 不进入检查面板、持久化工作区或导出文件，刷新后清空", async ({ page }) => {

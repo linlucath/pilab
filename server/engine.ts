@@ -284,7 +284,11 @@ export async function generate(
       },
     };
     if (e2e) {
-      requestOptions.onPayload?.({ mock: true, model: chosen.id }, chosen);
+      requestOptions.onPayload?.({
+        mock: true,
+        model: chosen.id,
+        ...(requestOptions.temperature !== undefined ? { temperature: requestOptions.temperature } : {}),
+      }, chosen);
       return e2eMockStreamFn(chosen, context, requestOptions);
     }
     if (subscription)

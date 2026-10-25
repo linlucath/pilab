@@ -19,13 +19,17 @@ valid_name() {
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && "$1" != "." && "$1" != ".." ]]
 }
 
-require_main() {
+require_main_branch() {
   local branch
   branch="$(git -C "$ROOT" branch --show-current)"
   if [[ "$branch" != "main" ]]; then
     echo "worker.sh must be run from the main worktree (current branch: $branch)." >&2
     exit 1
   fi
+}
+
+require_main() {
+  require_main_branch
   if [[ -n "$(git -C "$ROOT" status --porcelain)" ]]; then
     echo "Main worktree has uncommitted changes; commit or stash them before this operation." >&2
     exit 1
@@ -38,7 +42,7 @@ worker_branch() { printf 'worker/%s' "$1"; }
 new_worker() {
   local name="$1" path branch
   valid_name "$name" || { echo "Invalid worker name: $name" >&2; exit 2; }
-  require_main
+  require_main_branch
   path="$(worker_path "$name")"
   branch="$(worker_branch "$name")"
   [[ ! -e "$path" ]] || { echo "Worktree path already exists: $path" >&2; exit 1; }

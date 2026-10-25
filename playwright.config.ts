@@ -26,6 +26,7 @@ export default defineConfig({
     url: `${baseURL}/api/health`,
     env: { PI_LAB_E2E_PORT: String(e2ePort), PI_LAB_E2E_PORT_RESOLVED: "1" },
     timeout: 90_000,
+    gracefulShutdown: { signal: "SIGTERM", timeout: 5_000 },
     reuseExistingServer: false,
     stdout: "pipe",
     stderr: "pipe",
