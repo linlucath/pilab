@@ -3,8 +3,8 @@ import { defaults, type Message, type Settings } from "../../shared/schema";
 import type { SavedSession } from "../../shared/workspace";
 
 export type MockScriptStep =
-  | { type: "text" | "slow" | "long"; text?: string; delayMs?: number; chunkSize?: number }
-  | { type: "tool"; input?: string }
+  | { type: "text" | "slow" | "long"; text?: string; delayMs?: number; delayBeforeMs?: number; chunkSize?: number; thinking?: string; reason?: "stop" | "length" }
+  | { type: "tool"; input?: string; assistantText?: string; thinking?: string; output?: string; delayMs?: number; outputChunkDelayMs?: number; outputError?: boolean }
   | { type: "error"; message?: string };
 
 const serverOrigin = () => `http://127.0.0.1:${process.env.PI_LAB_E2E_PORT || "3100"}`;
@@ -58,6 +58,32 @@ export async function sendMessage(page: Page, text: string) {
   const controls = ui(page);
   await controls.composer.fill(text);
   await controls.send.click();
+}
+
+export async function addMessage(page: Page, role: "user" | "assistant" | "system", text: string) {
+  await page.getByRole("combobox", { name: "新消息角色" }).selectOption(role);
+  await ui(page).composer.fill(text);
+  await page.getByRole("button", { name: "仅添加" }).click();
+  await expect(page.locator(".message-row").filter({ hasText: text })).toBeVisible();
+}
+
+export async function openRightPanel(page: Page) {
+  const show = page.getByRole("button", { name: "显示工作台" });
+  if (await show.count()) await show.click();
+  await expect(page.getByRole("complementary", { name: "工作台配置" })).toBeVisible();
+}
+
+export async function openAdvanced(page: Page) {
+  await openRightPanel(page);
+  const toggle = page.getByRole("button", { name: /高级设置与调试/ });
+  if (!(await page.locator("#protocol").count())) await toggle.click();
+  await expect(page.locator("#protocol")).toBeVisible();
+}
+
+export async function openRequestInspector(page: Page) {
+  await page.locator(".debug-menu > summary").click();
+  await page.getByRole("button", { name: "请求检查" }).click();
+  await expect(page.getByRole("dialog", { name: "请求检查" })).toBeVisible();
 }
 
 export function toolSummary(tool: Locator) { return tool.locator("summary"); }

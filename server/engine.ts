@@ -1,4 +1,6 @@
 import { modelRequestError } from "./network";
+import { stat } from "node:fs/promises";
+import path from "node:path";
 import {
   Agent,
   type AgentMessage,
@@ -124,6 +126,18 @@ export function exactPayload(payload: unknown, settings: Settings, active: Messa
   return serializeExactPayload(payload, settings, prepareMessagesForModel(active));
 }
 
+async function e2eWorkingDirectory(settings: Settings) {
+  const cwd = settings.workingDirectory.trim() || process.env.PI_LAB_E2E_CWD || process.cwd();
+  if (settings.toolMode !== "none") {
+    try {
+      if (!path.isAbsolute(cwd) || !(await stat(cwd)).isDirectory()) throw new Error();
+    } catch {
+      throw new Error("工具工作目录必须是存在的绝对路径目录。");
+    }
+  }
+  return cwd;
+}
+
 export function validateTranscript(settings: Settings, messages: Message[]) {
   const active = messages.filter((m) => m.enabled);
   if (
@@ -229,7 +243,7 @@ export async function generate(
   };
   const { cwd, tools } = e2e
     ? {
-        cwd: settings.workingDirectory.trim() || process.env.PI_LAB_E2E_CWD || process.cwd(),
+        cwd: await e2eWorkingDirectory(settings),
         tools: settings.toolMode === "none" ? [] : e2eMockTools(),
       }
     : await agentTools(settings, history, onEvent);
