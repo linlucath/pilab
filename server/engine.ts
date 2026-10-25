@@ -1,4 +1,4 @@
-import "./network";
+import { modelRequestError } from "./network";
 import {
   Agent,
   type AgentMessage,
@@ -20,16 +20,16 @@ import {
   type Message,
   type Settings,
 } from "../shared/schema";
-import { piRuntime } from "./pi-subscription";
+import { piRuntime, resolvePiModel } from "./pi-subscription";
 import { randomUUID } from "node:crypto";
 import { agentTools } from "./tools";
+import { projectImages, restoreImageHistory } from "./images";
+import { latestImageContext, retainToolImages } from "../extensions/pi-gpt-subagent/images";
 import {
-  exactPayload,
+  exactPayload as serializeExactPayload,
   fromPiMessage,
-  toPiMessage,
   validateToolHistory,
 } from "./transcript";
-export { exactPayload } from "./transcript";
 
 export type Emit = (event: Record<string, unknown>) => void;
 export function validateReasoningEffort(settings: Settings, model: Model<Api>) {
@@ -40,6 +40,88 @@ export function validateReasoningEffort(settings: Settings, model: Model<Api>) {
     );
   return effort;
 }
+export function prepareMessagesForModel(messages: Message[]): Message[] {
+  let previousSummary = "";
+  return messages.map((message) => {
+    const compacted = message.compactedByModel === true || !!message.modelSummary?.trim();
+    if (!compacted) { previousSummary = ""; return message; }
+    const summary = message.modelSummary?.trim() || "工具调用已归档。";
+    if (message.role === "tool") {
+      const includeSummary = summary !== previousSummary;
+      previousSummary = summary;
+      return {
+        ...message,
+        content: includeSummary ? `[已脱水归档] ${summary}` : "[已脱水归档] 结果已并入同组摘要。",
+        images: undefined,
+      };
+    }
+    if (message.role !== "assistant") return message;
+    const includeSummary = !(message.toolCalls?.length) && summary !== previousSummary;
+    if (includeSummary) previousSummary = summary;
+    const toolCalls = (message.toolCalls || []).map((call) => {
+      if (!["gpt_session_create", "gpt_session_send"].includes(call.name)) return call;
+      try {
+        const args = JSON.parse(call.arguments) as Record<string, unknown>;
+        const request = typeof args.message === "string" ? args.message : "";
+        if (request.length <= 800) return call;
+        args.message = `任务摘要：${summary.slice(0, 800)}`;
+        return { ...call, arguments: JSON.stringify(args) };
+      } catch { return call; }
+    });
+    return {
+      ...message,
+      content: includeSummary ? `[已脱水归档] ${summary}` : "",
+      images: undefined,
+      providerState: message.providerState ? { ...message.providerState, thinking: [] } : undefined,
+      toolCalls,
+    };
+  });
+}
+
+function prepareAgentContext(messages: AgentMessage[], sources: Message[]): AgentMessage[] {
+  const wireId = (id: string) => id.split("|")[0];
+  const compactedCalls = new Map<string, string>();
+  const compactedResults = new Map<string, string>();
+  for (const source of sources) {
+    const summary = source.modelSummary?.trim();
+    if (!(source.compactedByModel || summary)) continue;
+    if (source.role === "assistant")
+      for (const call of source.toolCalls ?? []) compactedCalls.set(wireId(call.id), summary || "工具调用已归档。");
+    if (source.role === "tool" && source.toolCallId) compactedResults.set(wireId(source.toolCallId), summary || "工具结果已归档。");
+  }
+  let previousSummary = "";
+  return messages.map((message) => {
+    const value = message as any;
+    if (value.role === "toolResult") {
+      const summary = compactedResults.get(wireId(value.toolCallId));
+      if (!summary) { previousSummary = ""; return message; }
+      const includeSummary = summary !== previousSummary;
+      previousSummary = summary;
+      return { ...value, content: [{ type: "text", text: includeSummary ? `[已脱水归档] ${summary}` : "[已脱水归档] 结果已并入同组摘要。" }], details: undefined } as AgentMessage;
+    }
+    if (value.role === "assistant" && Array.isArray(value.content)) {
+      const summaries: string[] = [...new Set<string>(value.content.flatMap((block: any) => block?.type === "toolCall" && compactedCalls.has(wireId(block.id)) ? [compactedCalls.get(wireId(block.id))!] : []))];
+      if (!summaries.length) { previousSummary = ""; return message; }
+      const summary = summaries[0];
+      const content = value.content.flatMap((block: any) => {
+        if (block?.type === "thinking" || block?.type === "text") return [];
+        if (block?.type !== "toolCall" || !compactedCalls.has(wireId(block.id))) return [block];
+        if (!["gpt_session_create", "gpt_session_send"].includes(block.name)) return [block];
+        const args = block.arguments;
+        if (!args || typeof args !== "object" || typeof args.message !== "string" || args.message.length <= 800) return [block];
+        return [{ ...block, arguments: { ...args, message: `任务摘要：${summary.slice(0, 800)}` } }];
+      });
+      return { ...value, content } as AgentMessage;
+    }
+    previousSummary = "";
+    return message;
+  });
+}
+
+export function exactPayload(payload: unknown, settings: Settings, active: Message[]): Record<string, unknown> {
+  return serializeExactPayload(payload, settings, prepareMessagesForModel(active));
+}
+
 export function validateTranscript(settings: Settings, messages: Message[]) {
   const active = messages.filter((m) => m.enabled);
   if (
@@ -77,12 +159,18 @@ export function validateTranscript(settings: Settings, messages: Message[]) {
   return active;
 }
 function envKey(settings: Settings) {
+  const modelOrEndpoint = `${settings.model} ${settings.baseUrl}`.toLowerCase();
+  const providerKey =
+    settings.protocol === "anthropic-messages"
+      ? process.env.ANTHROPIC_API_KEY
+      : modelOrEndpoint.includes("gemini") ||
+          modelOrEndpoint.includes("generativelanguage.googleapis.com")
+        ? process.env.GEMINI_API_KEY
+        : process.env.OPENAI_API_KEY;
   return (
     settings.apiKey ||
     process.env.PI_LAB_API_KEY ||
-    (settings.protocol === "anthropic-messages"
-      ? process.env.ANTHROPIC_API_KEY
-      : process.env.OPENAI_API_KEY) ||
+    providerKey ||
     "local-no-key"
   );
 }
@@ -96,20 +184,15 @@ export async function generate(
   const active = validateTranscript(settings, messages);
   const subscription =
     settings.protocol === "pi-subscription" ? await piRuntime() : undefined;
-  const subscribedModel = subscription?.getModel(
-    "openai-codex",
-    settings.model,
-  );
+  const subscribedModel = subscription && resolvePiModel(subscription, settings.model);
   if (subscription && !subscribedModel)
     throw new Error(`Pi 订阅模型不存在：${settings.model}`);
   if (
     subscription &&
-    !(await subscription.listCredentials()).some(
-      (c) => c.providerId === "openai-codex" && c.type === "oauth",
-    )
+    subscribedModel && !subscription.hasConfiguredAuth(subscribedModel.provider)
   )
     throw new Error(
-      "Pi 尚未登录 OpenAI Codex 订阅，请先在终端运行 pi 并使用 /login 登录。",
+      `Pi 尚未登录 ${subscribedModel.provider}，请先在终端运行 pi 并使用 /login 登录。`,
     );
   const model: Model<Api> = subscribedModel || {
     id: settings.model,
@@ -131,9 +214,18 @@ export async function generate(
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   };
   if (subscribedModel) validateReasoningEffort(settings, subscribedModel);
-  const { cwd, tools } = await agentTools(settings);
+  const generatedTranscript: Message[] = [];
+  const history = () => [...active, ...generatedTranscript];
+  const onEvent = (event: Record<string, unknown>) => {
+    if (event.type === "session_forked") {
+      emit({ type: "session_forked", fork: event.fork });
+      return;
+    }
+    emit(event);
+  };
+  const { cwd, tools } = await agentTools(settings, history, onEvent);
   emit({ type: "runtime", cwd, tools: tools.map((t) => t.name) });
-  const transcript: AgentMessage[] = active.map((m) => toPiMessage(m, model));
+  const transcript: AgentMessage[] = await restoreImageHistory(prepareMessagesForModel(active), model);
   // Agent continuation starts from an existing transcript. Declare the initial
   // loadout explicitly, including when the user already supplied a system message.
   if (tools.length) {
@@ -141,11 +233,10 @@ export async function generate(
     if (transcript[0]?.role === "system") transcript[0] = { ...transcript[0], toolsAdded };
     else transcript.unshift({ role: "system", content: "", toolsAdded, timestamp: Date.now() });
   }
-  const generatedTranscript: Message[] = [];
   let requestCount = 0;
   const streamFn: StreamFn = (chosen, context, options) => {
     requestCount++;
-    const currentMessages = [...active, ...generatedTranscript];
+    const currentMessages = prepareMessagesForModel([...active, ...generatedTranscript]);
     const requestOptions: SimpleStreamOptions = {
       ...options,
       ...(subscription
@@ -157,7 +248,12 @@ export async function generate(
       maxRetries: 0,
       timeoutMs: 120_000,
       onPayload: (payload) => {
-        const exact = exactPayload(payload, settings, currentMessages);
+        // Use the provider's multimodal serializer when images are attached.
+        // The exact text editor serializer intentionally handles text-only turns.
+        const hasImages = context.messages.some((message) => Array.isArray(message.content) && message.content.some((block) => block.type === "image"));
+        const exact = hasImages || (subscription && chosen.api !== "openai-codex-responses")
+          ? payload
+          : exactPayload(payload, settings, currentMessages);
         emit({ type: "request", turn: requestCount, payload: exact });
         return exact;
       },
@@ -190,6 +286,10 @@ export async function generate(
       thinkingLevel: effort,
     },
     streamFn,
+    transformContext: async (messages) => latestImageContext(prepareAgentContext(messages, history())),
+    beforeToolCall: async ({ toolCall }) => toolCall.name === "view_images" && !model.input.includes("image")
+      ? { block: true, reason: "当前模型不支持图片，请切换到支持图片的模型。" } : undefined,
+    afterToolCall: ({ result, toolCall }) => retainToolImages(projectImages, result, toolCall.name),
     toolExecution: "sequential",
     finishTurn: ({ message }) => {
       const needsTools =
@@ -267,6 +367,8 @@ export async function generate(
     if (event.type === "message_end" && event.message.role === "assistant") {
       const message = event.message;
       const saved = fromPiMessage(message, currentAssistantId);
+      if (saved.providerState && message.errorMessage)
+        saved.providerState.errorMessage = modelRequestError(message.errorMessage, model).slice(0, 12_000);
       generatedTranscript.push(saved);
       emit({ type: "assistant", message: saved });
       usage.input +=
@@ -280,7 +382,7 @@ export async function generate(
         emit({
           type: "error",
           message:
-            message.errorMessage ||
+            (message.errorMessage && modelRequestError(message.errorMessage, model)) ||
             (signal?.aborted ? "生成已停止" : "模型请求失败"),
         });
       }
@@ -294,7 +396,7 @@ export async function generate(
     await agent.prompt([]);
     if (agent.state.errorMessage && !failed) {
       failed = true;
-      emit({ type: "error", message: agent.state.errorMessage });
+      emit({ type: "error", message: modelRequestError(agent.state.errorMessage, model) });
     }
     if (!failed && !signal?.aborted)
       emit({

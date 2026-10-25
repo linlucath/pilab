@@ -1,6 +1,6 @@
-import { readdir, readFile, writeFile, stat, unlink } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { getSystemMessageText } from "@earendil-works/pi-ai";
 import { z } from "zod";
@@ -264,6 +264,7 @@ export async function syncApply(id: string, body: unknown) {
   const commandId = randomUUID();
   // Exclusive creation prevents two tabs from silently overwriting each other's commands.
   const commandFile = join(bridgeDir, `${keySchema.parse(id)}.command.json`);
+  await mkdir(dirname(commandFile), { recursive: true });
   try {
     await writeFile(
       commandFile,

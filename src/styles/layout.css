@@ -1,0 +1,34 @@
+.app-shell { display: flex; width: 100vw; height: 100vh; min-width: 0; min-height: 0; overflow: hidden; background: var(--app-bg); }
+.sidebar { z-index: 5; display: flex; width: var(--sidebar-width); min-width: var(--sidebar-width); height: 100%; flex-direction: column; gap: 14px; padding: 20px 14px 13px; overflow: hidden; background: var(--sidebar-bg); border-right: 1px solid var(--border); transition: width .18s ease, min-width .18s ease, padding .18s ease; }
+.sidebar.is-collapsed { width: 68px; min-width: 68px; align-items: center; padding: 16px 9px; }
+.app-main { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; background: var(--canvas); }
+.topbar { z-index: 4; display: flex; height: 52px; min-height: 52px; align-items: center; justify-content: space-between; gap: 10px; padding: 0 18px; border-bottom: 1px solid var(--border); background: var(--canvas); }
+.topbar-leading, .topbar-trailing { display: flex; min-width: 0; align-items: center; gap: 12px; }
+.topbar-leading { flex: 1 1 0; }
+.topbar-trailing { flex: 1 1 0; justify-content: flex-end; }
+.workspace-body { display: flex; min-width: 0; min-height: 0; flex: 1; overflow: hidden; }
+.conversation-pane { position: relative; display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; background: var(--canvas); }
+.message-stream, .scroll-view { position: relative; min-width: 0; min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.message-stream { background: var(--canvas); }
+.stream-inner { width: min(100%, 920px); min-height: 100%; margin: 0 auto; padding: 28px 42px 16px; }
+.stream-bottom-space { height: 14px; }
+.scroll-view { padding: 26px clamp(20px, 4vw, 52px); background: var(--canvas); }
+.right-panel { display: flex; width: var(--right-width); min-width: var(--right-width); height: 100%; flex-direction: column; gap: 0; overflow: auto; overscroll-behavior: contain; border-left: 1px solid var(--border); background: var(--sidebar-bg); scrollbar-gutter: stable; }
+.panel-section { padding: 19px 18px; border-bottom: 1px solid var(--border); }
+.primary-settings { background: var(--surface); }
+.worker-panel { padding: 17px 16px 19px; border-bottom: 1px solid var(--border); background: var(--sidebar-bg); }
+.advanced-section { padding: 0; background: var(--surface); }
+.right-footer { display: flex; align-items: center; gap: 7px; margin-top: auto; padding: 14px 17px; color: var(--text-subtle); font-size: 10px; }
+.footer-spacer { flex: 1; }
+.composer-bar { z-index: 2; flex: 0 0 auto; padding: 12px clamp(18px, 3vw, 38px) 16px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--canvas) 96%, var(--app-bg)); }
+.debug-overlay { position: fixed; inset: 0; z-index: 25; display: flex; justify-content: flex-end; background: rgba(18,19,22,.34); backdrop-filter: blur(2px); }
+.debug-drawer { display: flex; width: min(820px, 92vw); height: 100%; min-width: 0; flex-direction: column; overflow: hidden; border-left: 1px solid var(--border); background: var(--canvas); box-shadow: -16px 0 46px rgba(20,20,20,.18); }
+.debug-drawer > header { display: flex; min-height: 62px; align-items: center; justify-content: space-between; gap: 12px; padding: 0 22px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.debug-drawer > header small { color: var(--text-subtle); font: 8px var(--font-mono); letter-spacing: 1px; }
+.debug-drawer > header h2 { margin: 2px 0 0; font-size: 14px; font-weight: 650; }
+.debug-drawer-content { min-height: 0; flex: 1; padding: 21px clamp(18px, 3vw, 32px); overflow: auto; overscroll-behavior: contain; }
+.toast { position: fixed; z-index: 30; right: 24px; bottom: 24px; display: flex; max-width: min(680px, 90vw); align-items: center; gap: 10px; padding: 11px 14px; border: 1px solid var(--border-strong); border-radius: 11px; background: var(--surface); box-shadow: var(--shadow-md); color: var(--text); font-size: 12px; }
+.toast > span { max-height: 150px; overflow: auto; } .toast > svg { color: var(--accent); } .toast button { display: grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); }
+.app-loading { display: grid; width: 100vw; height: 100vh; place-content: center; gap: 12px; color: var(--text-muted); background: var(--app-bg); text-align: center; }
+.sidebar-compact .sidebar { width: 68px; min-width: 68px; align-items: center; padding: 16px 9px; }
+.sidebar-compact .sidebar-brand-row { width: 100%; justify-content: center; }

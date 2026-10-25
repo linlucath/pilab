@@ -7,6 +7,7 @@ import {
   validateTranscript,
   validateReasoningEffort,
   exactPayload,
+  prepareMessagesForModel,
 } from "../server/engine";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
@@ -26,10 +27,11 @@ const message = (
 ): Message => ({ id: crypto.randomUUID(), role, content, enabled });
 test("reasoning effort keeps legacy switch settings and rejects invalid values", () => {
   assert.equal(
-    getReasoningEffort(settingsSchema.parse({ ...defaults, reasoning: true })),
+    getReasoningEffort(settingsSchema.parse({ ...defaults, reasoningEffort: undefined, reasoning: true })),
     "medium",
   );
-  assert.equal(getReasoningEffort(settingsSchema.parse(defaults)), "off");
+  assert.equal(getReasoningEffort(settingsSchema.parse({ ...defaults, reasoningEffort: undefined })), "off");
+  assert.equal(getReasoningEffort(settingsSchema.parse(defaults)), "low");
   assert.equal(
     getReasoningEffort(
       settingsSchema.parse({
@@ -58,7 +60,7 @@ test("unsupported catalog efforts fail explicitly instead of silently clamping",
     reasoning: true,
     thinkingLevelMap: { off: null, minimal: "low", xhigh: "xhigh" },
   } as Model<Api>;
-  assert.throws(() => validateReasoningEffort(defaults, model), /不支持.*off/);
+  assert.throws(() => validateReasoningEffort({ ...defaults, reasoningEffort: "off" }, model), /不支持.*off/);
   assert.throws(
     () =>
       validateReasoningEffort({ ...defaults, reasoningEffort: "max" }, model),
@@ -185,7 +187,7 @@ test("Pi sends exact role order, filters disabled messages, streams output and r
     ];
     const events: Record<string, any>[] = [];
     await generate(
-      { settings: { ...defaults, baseUrl: mock.baseUrl }, messages },
+      { settings: { ...defaults, baseUrl: mock.baseUrl, reasoningEffort: "off" }, messages },
       (e) => events.push(e),
     );
     assert.deepEqual(
@@ -195,7 +197,7 @@ test("Pi sends exact role order, filters disabled messages, streams output and r
         .map(({ role, content }) => ({ role, content })),
     );
     assert.equal(sent.temperature, 0.7);
-    assert.equal(sent.max_tokens ?? sent.max_completion_tokens, 2048);
+    assert.equal(sent.max_tokens ?? sent.max_completion_tokens, 16384);
     assert.equal(
       events
         .filter((e) => e.type === "text")
@@ -272,6 +274,31 @@ test("provider failures are surfaced as errors, not a successful empty output", 
     await mock.close();
   }
 });
+test("model context dehydrates marked tool results while retaining valid call/result pairing", () => {
+  const summary = "Reviewed the release notes and identified three actionable changes.";
+  const assistant: Message = {
+    id: "assistant-call", role: "assistant", content: "", enabled: true,
+    compactedByModel: true, modelSummary: summary,
+    providerState: { api: "openai-completions", provider: "test", model: "test-model", thinking: [{ type: "thinking", thinking: "private reasoning ".repeat(300) }] },
+    toolCalls: [{ id: "call_worker", name: "gpt_session_send", arguments: JSON.stringify({ name: "worker", message: "detailed request ".repeat(120), mode: "steer" }) }],
+  };
+  const result: Message = { id: "tool-result", role: "tool", content: "private raw output ".repeat(500), enabled: true, toolCallId: "call_worker", toolName: "gpt_session_send", compactedByModel: true, modelSummary: summary };
+  const messages = [assistant, result];
+  const prepared = prepareMessagesForModel(messages);
+  assert.equal(prepared[0].content, "");
+  assert.deepEqual(prepared[0].providerState?.thinking, []);
+  assert.match(prepared[1].content, /^\[已脱水归档\] Reviewed/);
+  assert.ok(prepared[1].content.length < result.content.length);
+  const preparedCall = JSON.parse(prepared[0].toolCalls![0].arguments);
+  assert.match(preparedCall.message, /任务摘要：/);
+  assert.ok(preparedCall.message.length < JSON.parse(assistant.toolCalls![0].arguments).message.length);
+  assert.equal(result.content.startsWith("private raw output"), true);
+  const payload = exactPayload({}, { ...defaults, protocol: "openai-completions" }, messages) as any;
+  assert.equal(payload.messages[0].tool_calls[0].id, "call_worker");
+  assert.equal(payload.messages[1].tool_call_id, "call_worker");
+  assert.match(payload.messages[1].content, /^\[已脱水归档\]/);
+});
+
 test("Responses preserves developer and interleaved system instructions without injected instructions", () => {
   const settings = { ...defaults, protocol: "openai-responses" as const };
   const messages = [

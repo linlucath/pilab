@@ -1,9 +1,11 @@
 #!/bin/bash
-# Double-click launcher for macOS. Keep this file inside the project's scripts/ directory.
+# Double-click launcher for Pi Lab in /Users/linlu/Desktop/pilab.
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
 export PORT=3000
+export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+unset PI_LAB_GPT_WORKER PI_LAB_IMAGE_ROOT
 URL="http://127.0.0.1:$PORT"
 cd "$PROJECT_DIR"
 
@@ -15,6 +17,12 @@ fail() {
 trap 'fail "命令执行失败，请查看上方错误。"' ERR
 command -v node >/dev/null || fail '找不到 Node.js，请先安装 Node.js。'
 command -v npm >/dev/null || fail '找不到 npm，请检查 Node.js 安装。'
+command -v python3 >/dev/null || fail '找不到 Python 3，无法安全同步会话数据。'
+command -v curl >/dev/null || fail '找不到 curl，无法检查服务状态。'
+
+# Merge newer pi 2 state without discarding pilab-only or diverged local sessions.
+python3 "$PROJECT_DIR/scripts/sync-pi2-data.py" --if-source-newer || fail 'Pi 2 数据同步失败；为保护会话，未启动或停止任何服务。'
+python3 "$PROJECT_DIR/scripts/sync-pi2-gpt-sessions.py" || fail 'GPT 会话同步失败；为保护记录，未启动或停止任何服务。'
 
 is_ready() {
   local health
@@ -38,14 +46,17 @@ if is_ready; then
   open_page
   exit 0
 fi
-if /usr/sbin/lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-  fail "端口 $PORT 已被其他服务占用；请先关闭该服务，再重新启动。"
-fi
 [ -d node_modules ] || fail '项目依赖尚未安装，请在项目目录运行 npm ci。'
 printf '\nπ Pi Lab\n项目：%s\n正在构建…\n\n' "$PROJECT_DIR"
 npm run build
+if /usr/sbin/lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  printf '检测到 3000 端口仍由旧 pi 2 实例占用，正在尝试温和停止…\n'
+  python3 "$PROJECT_DIR/scripts/stop-old-pi2.py" --port "$PORT" --timeout 90 || fail '3000 端口不是可安全识别的 pi 2 实例，或其未能温和退出；未强制终止。'
+  # Capture any final messages flushed during graceful shutdown.
+  python3 "$PROJECT_DIR/scripts/sync-pi2-data.py" --force || fail '旧服务已停止，但最终数据合并失败；请检查日志后再启动。'
+  python3 "$PROJECT_DIR/scripts/sync-pi2-gpt-sessions.py" || fail '旧服务已停止，但最终 GPT 会话同步失败；请检查备份后再启动。'
+fi
 printf '\n启动后将自动打开 %s\n保持本窗口打开；退出请按 Control+C。\n\n' "$URL"
-# Open only after the server is ready. No API credentials are stored in this launcher.
 if [ "${PI_LAB_NO_OPEN:-0}" != 1 ]; then
   (
     for ((i=0; i<60; i++)); do

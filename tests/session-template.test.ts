@@ -1,0 +1,26 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { NEW_SESSION_SYSTEM_PROMPT, newSession, toolTitle } from "../src/utils/session";
+
+test("new sessions use the dual-model template and inherit the current workspace without history", () => {
+  const session = newSession("/tmp/project");
+  assert.equal(session.settings.protocol, "pi-subscription");
+  assert.equal(session.settings.model, "antigravity/gemini-3.8-flash");
+  assert.equal(session.settings.toolMode, "agent");
+  assert.equal(session.settings.reasoning, true);
+  assert.equal(session.settings.reasoningEffort, "high");
+  assert.equal(session.settings.maxTurns, 20);
+  assert.equal(session.settings.maxTokens, 16384);
+  assert.equal(session.settings.workingDirectory, "/tmp/project");
+  assert.equal(session.messages.length, 1);
+  assert.equal(session.messages[0].role, "system");
+  assert.equal(session.messages[0].content, NEW_SESSION_SYSTEM_PROMPT);
+  assert.equal(session.runs.length, 0);
+});
+
+test("tool titles rely on semantic icons instead of duplicate leading emoji", () => {
+  assert.equal(toolTitle("gpt_session_create", '{"name":"ppt_prep"}'), "创建并派发 GPT「ppt_prep」");
+  assert.equal(toolTitle("gpt_session_wait", '{"names":["ppt_prep"]}'), "等待 GPT 完成 · ppt_prep");
+  assert.equal(toolTitle("gpt_session_read", '{"name":"ppt_prep"}'), "读取 GPT「ppt_prep」 状态");
+  assert.equal(toolTitle("bash", "{}"), "调用工具 bash");
+});

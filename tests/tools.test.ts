@@ -2,11 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
 import { once } from "node:events";
-import { mkdtemp, readFile, writeFile, rm, access } from "node:fs/promises";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { generate, validateTranscript, exactPayload } from "../server/engine";
-import { defaults, fileSchema, type Message } from "../shared/schema";
+import { defaults, fileSchema, runStreamEventSchema, settingsSchema, type Message } from "../shared/schema";
 
 const user: Message = {
   id: "user",
@@ -81,29 +81,51 @@ async function provider(handler: (body: any, res: ServerResponse) => void) {
     },
   };
 }
-test("Agent executes real write/read/bash tools, feeds results back, and replays edited history", async () => {
+test("context_compact streams a UI event and feeds dehydrated summaries back into later model requests", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "pi-lab-context-compact-"));
+  const sent: any[] = [];
+  const mock = await provider((body, res) => {
+    sent.push(body);
+    if (sent.length === 1) reply(res, { id: "call_compact", name: "context_compact", arguments: {
+      toolCallIds: ["call_prior|0"], modelSummary: "Reviewed five sources; the latest release adds export and search support.",
+    } });
+    else reply(res);
+  });
+  const longTask = `Review the full release notes and compare every section. ${"Detailed instructions. ".repeat(160)}`;
+  const messages: Message[] = [user, {
+    id: "prior-call", role: "assistant", content: "", enabled: true,
+    toolCalls: [{ id: "call_prior|0", name: "gpt_session_send", arguments: JSON.stringify({ name: "research", message: longTask, mode: "steer" }) }],
+  }, {
+    id: "prior-result", role: "tool", content: "Raw research output. ".repeat(500), enabled: true,
+    toolCallId: "call_prior", toolName: "gpt_session_send",
+  }];
+  try {
+    const events: Record<string, any>[] = [];
+    await generate({ settings: { ...defaults, baseUrl: mock.baseUrl, toolMode: "agent", workingDirectory: cwd }, messages }, (event) => events.push(event));
+    assert.equal(sent.length, 2);
+    const before = sent[0].messages.find((item: any) => item.role === "assistant" && item.tool_calls?.some((call: any) => call.id === "call_prior"));
+    const after = sent[1].messages.find((item: any) => item.role === "assistant" && item.tool_calls?.some((call: any) => call.id === "call_prior"));
+    const result = sent[1].messages.find((item: any) => item.role === "tool" && item.tool_call_id === "call_prior");
+    assert.match(JSON.parse(before.tool_calls[0].function.arguments).message, /Detailed instructions/);
+    assert.match(JSON.parse(after.tool_calls[0].function.arguments).message, /任务摘要/);
+    assert.ok(JSON.parse(after.tool_calls[0].function.arguments).message.length < longTask.length);
+    assert.match(result.content, /^\[已脱水归档\] Reviewed five sources/);
+    assert.ok(events.some((event) => event.type === "context_compacted" && event.messageIds.includes("prior-call") && event.messageIds.includes("prior-result")));
+    assert.ok(events.some((event) => event.type === "context_compacted" && event.toolCallIds.some((id: string) => id.split("|")[0] === "call_prior")));
+    assert.equal(messages[2].content.startsWith("Raw research output."), true);
+  } finally {
+    await mock.close();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("Agent exposes GPT and image tools, feeds tool results back, and replays edited history", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "pi-lab-tools-"));
   const sent: any[] = [];
   const mock = await provider((body, res) => {
     sent.push(body);
     if (sent.length === 1)
-      reply(res, {
-        id: "call_write",
-        name: "write",
-        arguments: { path: "result.txt", content: "real file content" },
-      });
-    else if (sent.length === 2)
-      reply(res, {
-        id: "call_read",
-        name: "read",
-        arguments: { path: "result.txt" },
-      });
-    else if (sent.length === 3)
-      reply(res, {
-        id: "call_bash",
-        name: "bash",
-        arguments: { command: "cat result.txt", timeout: 5 },
-      });
+      reply(res, { id: "call_list", name: "gpt_session_list", arguments: {} });
     else reply(res);
   });
   try {
@@ -125,46 +147,44 @@ test("Agent executes real write/read/bash tools, feeds results back, and replays
       false,
       JSON.stringify(events),
     );
-    assert.equal(sent.length, 4);
-    assert.equal(
-      await readFile(path.join(cwd, "result.txt"), "utf8"),
-      "real file content",
-    );
+    assert.equal(sent.length, 2);
     assert.deepEqual(sent[0].tools.map((t: any) => t.function.name).sort(), [
-      "bash",
-      "edit",
-      "find",
-      "grep",
-      "ls",
-      "read",
-      "write",
+      "context_compact",
+      "gpt_session_batch",
+      "gpt_session_close",
+      "gpt_session_create",
+      "gpt_session_interrupt",
+      "gpt_session_list",
+      "gpt_session_logs",
+      "gpt_session_read",
+      "gpt_session_respond",
+      "gpt_session_send",
+      "gpt_session_wait",
+      "list_images",
+      "session_fork",
+      "view_images",
     ]);
     assert.equal(sent[0].messages[0].content, "Original system text.");
-    assert.equal(sent[1].messages[2].tool_calls[0].function.name, "write");
+    assert.equal(sent[1].messages[2].tool_calls[0].function.name, "gpt_session_list");
     assert.equal(sent[1].messages[3].role, "tool");
-    assert.equal(sent[1].messages[3].tool_call_id, "call_write");
-    assert.match(sent[2].messages.at(-1).content, /real file content/);
-    assert.match(sent[3].messages.at(-1).content, /real file content/);
-    assert.equal(
-      sent[3].messages.filter((m: any) => m.role === "user").length,
-      1,
-    );
+    assert.equal(sent[1].messages[3].tool_call_id, "call_list");
+    assert.equal(sent[1].messages.filter((m: any) => m.role === "user").length, 1);
     assert.equal(events.filter((e) => e.type === "done").length, 1);
     assert.deepEqual(events.find((e) => e.type === "done")?.usage, {
-      input: 28,
-      output: 12,
+      input: 14,
+      output: 6,
     });
-    assert.equal(events.find((e) => e.type === "done")?.turns, 4);
+    assert.equal(events.find((e) => e.type === "done")?.turns, 2);
     const trace = new Map<string, Message>();
     for (const e of events)
       if (e.type === "assistant" || e.type === "message")
         trace.set(e.message.id, e.message);
     assert.equal(
       [...trace.values()].filter((m) => m.role === "tool").length,
-      3,
+      1,
     );
     const messages = [user, ...trace.values()];
-    messages.find((m) => m.role === "tool" && m.toolName === "read")!.content =
+    messages.find((m) => m.role === "tool" && m.toolName === "gpt_session_list")!.content =
       "edited tool result";
     const imported = fileSchema.parse({
       version: 1,
@@ -197,45 +217,71 @@ test("Agent executes real write/read/bash tools, feeds results back, and replays
     await rm(cwd, { recursive: true, force: true });
   }
 });
-test("read-only mode rejects unavailable write tools and lets the model recover", async () => {
-  const cwd = await mkdtemp(path.join(tmpdir(), "pi-lab-readonly-"));
+test("Agent is the default and exposes the full tool set", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "pi-lab-agent-default-"));
   const sent: any[] = [];
   const mock = await provider((body, res) => {
     sent.push(body);
     if (sent.length === 1)
-      reply(res, {
-        name: "write",
-        arguments: { path: "forbidden.txt", content: "no" },
-      });
+      reply(res, { name: "gpt_session_list", arguments: {} });
+    else reply(res);
+  });
+  try {
+    assert.equal(defaults.toolMode, "agent");
+    assert.equal(settingsSchema.parse({ ...defaults, toolMode: undefined }).toolMode, "agent");
+    const events: Record<string, any>[] = [];
+    await generate(
+      { settings: { ...defaults, baseUrl: mock.baseUrl, workingDirectory: cwd }, messages: [user] },
+      (event) => events.push(event),
+    );
+    const names = sent[0].tools.map((tool: any) => tool.function.name).sort();
+    assert.deepEqual(names, [
+      "context_compact",
+      "gpt_session_batch",
+      "gpt_session_close",
+      "gpt_session_create",
+      "gpt_session_interrupt",
+      "gpt_session_list",
+      "gpt_session_logs",
+      "gpt_session_read",
+      "gpt_session_respond",
+      "gpt_session_send",
+      "gpt_session_wait",
+      "list_images",
+      "session_fork",
+      "view_images",
+    ]);
+    assert.equal(events.some((event) => event.type === "error"), false, JSON.stringify(events));
+    assert.equal(sent.length, 2);
+    assert.equal(events.at(-1)?.type, "done");
+  } finally {
+    mock.close();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+test("session_fork broadcasts the complete nested fork payload", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "pi-lab-fork-event-"));
+  const sent: any[] = [];
+  const mock = await provider((body, res) => {
+    sent.push(body);
+    if (sent.length === 1)
+      reply(res, { name: "session_fork", arguments: { title: "Audit branch", distilledMemory: "Keep the validated findings." } });
     else reply(res);
   });
   try {
     const events: Record<string, any>[] = [];
     await generate(
-      {
-        settings: {
-          ...defaults,
-          baseUrl: mock.baseUrl,
-          toolMode: "read-only",
-          workingDirectory: cwd,
-        },
-        messages: [user],
-      },
-      (e) => events.push(e),
+      { settings: { ...defaults, baseUrl: mock.baseUrl, workingDirectory: cwd }, messages: [user] },
+      (event) => events.push(event),
     );
-    assert.deepEqual(sent[0].tools.map((t: any) => t.function.name).sort(), [
-      "find",
-      "grep",
-      "ls",
-      "read",
-    ]);
-    await assert.rejects(access(path.join(cwd, "forbidden.txt")));
-    assert.equal(
-      events.find((e) => e.type === "message")?.message.isError,
-      true,
-    );
-    assert.equal(sent.length, 2);
-    assert.equal(events.at(-1)?.type, "done");
+    const event = events.find((item) => item.type === "session_forked");
+    assert.ok(event);
+    assert.doesNotThrow(() => runStreamEventSchema.parse(event));
+    assert.equal(event.fork.title, "Audit branch");
+    assert.equal(event.fork.forkSummary, "Keep the validated findings.");
+    assert.equal(event.fork.keepRecentTurns, 0);
+    assert.equal(event.fork.messages.length, 1);
+    assert.match(event.fork.messages[0].content, /Keep the validated findings/);
   } finally {
     mock.close();
     await rm(cwd, { recursive: true, force: true });
@@ -256,7 +302,7 @@ test("turn limit stops after a completed tool batch and leaves resumable history
         settings: {
           ...defaults,
           baseUrl: mock.baseUrl,
-          toolMode: "read-only",
+          toolMode: "agent",
           workingDirectory: cwd,
           maxTurns: 1,
         },
@@ -278,15 +324,13 @@ test("turn limit stops after a completed tool batch and leaves resumable history
     await rm(cwd, { recursive: true, force: true });
   }
 });
-test("stop cancels an executing Pi bash process without a successful done event", async () => {
+test("stop aborts an active model stream without a successful done event", async () => {
   const abort = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const mock = await provider((_body, res) =>
-    reply(res, {
-      name: "bash",
-      arguments: { command: "sleep 30", timeout: 35 },
-    }),
-  );
+  const mock = await provider((_body, res) => {
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", model: "gpt-4.1-mini", choices: [{ index: 0, delta: { role: "assistant", content: "partial" }, finish_reason: null }] })}\n\n`);
+  });
   const started = Date.now();
   try {
     const events: Record<string, any>[] = [];
@@ -297,7 +341,7 @@ test("stop cancels an executing Pi bash process without a successful done event"
       },
       (e) => {
         events.push(e);
-        if (e.type === "tool_activity")
+        if (e.type === "text")
           timer ??= setTimeout(() => abort.abort(), 150);
       },
       abort.signal,
@@ -307,10 +351,8 @@ test("stop cancels an executing Pi bash process without a successful done event"
       events.some((e) => e.type === "done"),
       false,
     );
-    assert.equal(
-      events.some((e) => e.type === "message" && e.message.role === "tool"),
-      true,
-    );
+    assert.equal(events.some((e) => e.type === "text" && e.delta === "partial"), true);
+    assert.equal(events.some((e) => e.type === "message" && e.message.role === "tool"), false);
   } finally {
     if (timer) clearTimeout(timer);
     mock.close();

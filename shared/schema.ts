@@ -20,12 +20,20 @@ export const toolCallSchema = z.object({
   id: z.string().min(1).max(300),
   name: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
   arguments: z.string().max(200_000),
+  thoughtSignature: z.string().max(1_000_000).optional(),
 });
 const thinkingSchema = z.object({
   type: z.literal("thinking"),
   thinking: z.string().max(200_000),
   thinkingSignature: z.string().max(1_000_000).optional(),
   redacted: z.boolean().optional(),
+});
+export const imageReferenceSchema = z.object({
+  file: z.string().regex(/^(files|previews)\/[a-f0-9]{64}\.(png|jpg|webp|gif|bmp)$/),
+  name: z.string().max(100), collection: z.string().max(100).optional(),
+  kind: z.enum(["image", "overview"]),
+  mimeType: z.enum(["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"]),
+  width: z.number().int().positive(), height: z.number().int().positive(),
 });
 export const messageSchema = z.object({
   id: z.string().min(1).max(100),
@@ -36,13 +44,25 @@ export const messageSchema = z.object({
   toolCallId: z.string().max(300).optional(),
   toolName: z.string().max(128).optional(),
   isError: z.boolean().optional(),
+  compactedByModel: z.boolean().optional(),
+  modelSummary: z.string().optional(),
+  gptReply: z.object({
+    session: z.string().regex(/^gpt-[a-f0-9-]+$/),
+    sequence: z.number().int().nonnegative(),
+    digest: z.string().regex(/^[a-f0-9]{64}$/),
+  }).optional(),
+  images: z.array(imageReferenceSchema).max(2).optional(),
   providerState: z
     .object({
       api: z.string().max(100),
       provider: z.string().max(100),
       model: z.string().max(200),
       thinking: z.array(thinkingSchema).max(100),
-      textSignature: z.string().max(20_000).optional(),
+      // Gemini/Argon may attach large opaque thought signatures to text blocks.
+      textSignature: z.string().max(1_000_000).optional(),
+      stopReason: z.enum(["pending", "stop", "length", "toolUse", "error", "aborted", "deferred"]).optional(),
+      rawStopReason: z.string().max(200).optional(),
+      errorMessage: z.string().max(12_000).optional(),
     })
     .optional(),
 });
@@ -66,7 +86,8 @@ export const settingsSchema = z.object({
   // Retain the old switch for v1 imports; an explicit effort takes precedence.
   reasoning: z.boolean().default(false),
   reasoningEffort: z.enum(reasoningEfforts).optional(),
-  toolMode: z.enum(["none", "read-only", "agent"]).default("none"),
+  // Unknown persisted values fall back to the full Agent tool set.
+  toolMode: z.enum(["none", "agent"]).default("agent").catch("agent"),
   workingDirectory: z.string().max(4000).default(""),
   maxTurns: z.number().int().min(1).max(50).default(12),
 });
@@ -74,11 +95,33 @@ export const runSchema = z.object({
   settings: settingsSchema,
   messages: z.array(messageSchema).min(1).max(500),
 });
+export const sessionForkArgsSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  distilledMemory: z.string().trim().min(1).max(20_000),
+  keepRecentTurns: z.number().int().min(0).max(20).default(0),
+});
+const sessionForkedRunStreamEventSchema = z.object({
+  type: z.literal("session_forked"),
+  fork: z.object({
+    id: z.string().min(1).max(100),
+    title: z.string().min(1).max(200),
+    forkSummary: z.string().min(1).max(20_000),
+    keepRecentTurns: z.number().int().min(0).max(20),
+    messages: z.array(messageSchema).max(500),
+  }),
+});
+export const runStreamEventSchema = z.union([
+  sessionForkedRunStreamEventSchema,
+  z.object({ type: z.string().min(1) }).passthrough().refine((event) => event.type !== "session_forked"),
+]);
 export const fileSchema = z.object({
   version: z.literal(1),
   title: z.string().max(200),
   settings: settingsSchema.omit({ apiKey: true }),
   messages: z.array(messageSchema).max(500),
+  parentSessionId: z.string().max(200).optional(),
+  parentSessionTitle: z.string().max(200).optional(),
+  forkSummary: z.string().max(20_000).optional(),
 });
 export type Message = z.infer<typeof messageSchema>;
 export type ToolCall = z.infer<typeof toolCallSchema>;
@@ -90,14 +133,14 @@ export function getReasoningEffort(
 }
 export const defaults: Settings = {
   protocol: "openai-completions",
-  baseUrl: "https://api.openai.com/v1",
-  model: "gpt-4.1-mini",
+  baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
+  model: "gemini-3.8-flash",
   apiKey: "",
   temperature: 0.7,
-  maxTokens: 2048,
+  maxTokens: 16384,
   reasoning: false,
-  reasoningEffort: undefined,
-  toolMode: "none",
+  reasoningEffort: "low",
+  toolMode: "agent",
   workingDirectory: "",
   maxTurns: 12,
 };

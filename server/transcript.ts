@@ -5,6 +5,8 @@ import type {
   Model,
 } from "@earendil-works/pi-ai";
 import type { Message, Settings, ToolCall } from "../shared/schema";
+import { imageReferences } from "../extensions/pi-gpt-subagent/images";
+import { replyDelivery } from "../extensions/pi-gpt-subagent/tools";
 
 export const wireCallId = (id: string) => id.split("|")[0];
 export function callArguments(call: ToolCall) {
@@ -62,6 +64,10 @@ export function toPiMessage(message: Message, model: Model<Api>): PiMessage {
       toolName: message.toolName!,
       content: [{ type: "text", text: message.content }],
       isError: message.isError || false,
+      ...(message.images?.length || message.gptReply ? { details: {
+        ...(message.images?.length ? { piLabImages: message.images } : {}),
+        ...(message.gptReply ? { piLabGptReply: message.gptReply } : {}),
+      } } : {}),
       timestamp: Date.now(),
     };
   if (message.role !== "assistant")
@@ -89,13 +95,14 @@ export function toPiMessage(message: Message, model: Model<Api>): PiMessage {
         id: call.id,
         name: call.name,
         arguments: callArguments(call),
+        ...(call.thoughtSignature ? { thoughtSignature: call.thoughtSignature } : {}),
       })),
     ],
     api: (state?.api || model.api) as Api,
     provider: state?.provider || model.provider,
     model: state?.model || model.id,
     timestamp: Date.now(),
-    stopReason: message.toolCalls?.length ? "toolUse" : "stop",
+    stopReason: message.toolCalls?.length ? "toolUse" : state?.stopReason === "length" ? "length" : "stop",
     usage: {
       input: 0,
       output: 0,
@@ -122,11 +129,15 @@ export function fromPiMessage(message: PiMessage, id: string): Message {
           id: b.id,
           name: b.name,
           arguments: JSON.stringify(b.arguments, null, 2),
+          ...(b.thoughtSignature ? { thoughtSignature: b.thoughtSignature } : {}),
         })),
       providerState: {
         api: message.api,
         provider: message.provider,
         model: message.model,
+        stopReason: message.stopReason,
+        ...(message.rawStopReason ? { rawStopReason: message.rawStopReason } : {}),
+        ...(message.errorMessage ? { errorMessage: message.errorMessage.slice(0, 12_000) } : {}),
         thinking: message.content.filter((b) => b.type === "thinking"),
         textSignature: message.content.find((b) => b.type === "text")
           ?.textSignature,
@@ -140,12 +151,15 @@ export function fromPiMessage(message: PiMessage, id: string): Message {
       toolCallId: message.toolCallId,
       toolName: message.toolName,
       isError: message.isError,
+      ...(replyDelivery(message.details) ? { gptReply: replyDelivery(message.details) } : {}),
+      ...(imageReferences(message.details).length ? { images: imageReferences(message.details) } : {}),
       content: message.content
         .map((b) =>
           b.type === "text"
             ? b.text
-            : "[工具返回图片；当前文本工作台未发送此图片]",
+            : imageReferences(message.details).length ? "" : "[图片]",
         )
+        .filter(Boolean)
         .join("\n"),
     };
   return {

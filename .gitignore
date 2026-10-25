@@ -21,6 +21,7 @@ coverage/
 /sessions/
 /exports/
 /pi-lab-sync/
+/.pi-lab/
 *.jsonl
 *.log
 *.tmp
