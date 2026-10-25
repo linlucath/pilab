@@ -1,5 +1,9 @@
 # 待修清单
 
+- [x] ISSUE-11 Antigravity Claude 回放失败 thinking 时被拒绝 · RUN-05 · 除未签名思考外，还需排除 error/aborted 运行遗留的已签名思考；后者会与成功重试的思考合并。真实订阅对照：旧回放复现 `messages.21.content.1.thinking.signature: Field required`，修复后的同一份 25 条历史直接续跑成功（约 13 秒，关闭工具执行）。保留网页原始记录与成功回复的签名；63 项测试、10 项隔离 E2E 与构建通过。
+
+- [x] ISSUE-10 Antigravity 连续 120 秒无数据后中止且提示不易理解 · RUN-05 · 默认空闲等待改为 10 分钟，保留显式环境变量覆盖，增加中文说明及原始错误；59 项测试、8 项隔离 E2E 与构建通过。此项缓解过早超时，不代表已修复上游推理/排队或网络停滞。
+
 - [ ] ISSUE-01 侧栏显示 ⌘N 但可能未实现快捷键 · LAY-04 · 静态代码审查（suspected-issues.md） · 核对 Cmd/Ctrl+N 是否新建会话；如未实现，补行为测试与快捷键。
 - [ ] ISSUE-02 历史消息可能缺少整条复制入口 · MSG-07 · 静态代码审查（suspected-issues.md） · 对照 README 的复制承诺，验证工具栏是否能复制完整纯文本。
 - [ ] ISSUE-03 推理强度档位与关闭入口可能不完整 · MOD-02 · 静态代码审查（suspected-issues.md） · 核对界面是否暴露模型支持的档位及关闭推理选项。
