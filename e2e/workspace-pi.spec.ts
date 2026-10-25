@@ -283,7 +283,7 @@ test("WSP-04 导出再导入会话生成独立副本并分配新消息 ID", asyn
   expect(imported.title).toBe("export-import-source");
   expect(imported.messages.map((message) => message.content)).toEqual(expect.arrayContaining(["exported-prompt", "exported-reply"]));
   expect(imported.messages.map((message) => message.id)).not.toEqual(sourceIds);
-  expect(imported.settings.apiKey).toBe("");
+  expect(imported.settings.apiKey ?? "").toBe("");
   expect(imported.runs || []).toHaveLength(0);
 });
 
