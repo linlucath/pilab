@@ -97,6 +97,28 @@ test("GPT-03 中断与关闭保留工兵历史且操作反馈对应状态", asyn
   await page.locator(".worker-history-item").getByRole("button", { name: "关闭会话" }).click();
   await expect(page.locator(".worker-history-item")).toContainText("已关闭");
   await expect(page.locator(".worker-history-item")).toContainText("resume-me");
+
+  await page.route("**/api/run", async (route) => {
+    current = { ...current, status: "idle", updatedAt: Date.now() };
+    const call = { id: "resume-call", name: "gpt_session_send", arguments: JSON.stringify({ name: "resume-me", message: "continue prior task" }) };
+    const events = [
+      { type: "assistant_start", id: "resume-tool-message" },
+      { type: "assistant", message: { id: "resume-tool-message", role: "assistant", content: "", enabled: true, toolCalls: [call] } },
+      { type: "message", message: { id: "resume-tool-result", role: "tool", content: "Existing GPT session resumed", enabled: true, toolCallId: call.id, toolName: call.name } },
+      { type: "assistant", message: { id: "resume-final", role: "assistant", content: "GPT-03 resumed existing worker", enabled: true } },
+      { type: "done", reason: "stop", turns: 1, usage: { input: 1, output: 1 } },
+    ];
+    await route.fulfill({ status: 200, headers: { "Content-Type": "application/x-ndjson" }, body: `${events.map((event) => JSON.stringify(event)).join("\n")}\n` });
+  });
+  await sendMessage(page, "continue the existing worker resume-me");
+  await expect(page.getByText("GPT-03 resumed existing worker", { exact: true })).toBeVisible();
+  await expect.poll(async () => {
+    const saved = await page.context().request.get(new URL("/api/workspace", page.url()).href).then((response) => response.json());
+    const messages = saved.workspace.sessions.find((session: { id: string }) => session.id === saved.workspace.active).messages;
+    return messages.some((message: { toolCalls?: { name: string; arguments: string }[] }) => message.toolCalls?.some((item) => item.name === "gpt_session_send" && item.arguments.includes("resume-me")));
+  }).toBe(true);
+  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await expect(page.locator(".worker-history-item")).toContainText("空闲");
 });
 
 test("GPT-04 有草稿时自动唤醒退让，人工审阅不覆盖草稿；取消唤醒不停止工兵", async ({ page }) => {
