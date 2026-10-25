@@ -66,6 +66,8 @@ remove_worker() {
   if [[ ! -d "$path" ]]; then
     echo "Worktree not found: $path" >&2; exit 1
   fi
+  # A shared node_modules symlink is local convenience state, not worker source.
+  if [[ -L "$path/node_modules" ]]; then rm "$path/node_modules"; fi
   if ! git -C "$ROOT" worktree remove "$path"; then
     echo "Worktree removal stopped; it may contain uncommitted changes. Nothing was force-deleted." >&2
     exit 1

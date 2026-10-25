@@ -404,7 +404,8 @@ if (process.env.NODE_ENV === "production") {
   const { createServer } = await import("vite");
   const vite = await createServer({
     root,
-    server: { middlewareMode: true },
+    ...(isE2eMode() ? { cacheDir: path.join(dataRoot, ".vite") } : {}),
+    server: { middlewareMode: true, ...(isE2eMode() ? { hmr: false } : {}) },
     appType: "spa",
   });
   app.use(vite.middlewares);
