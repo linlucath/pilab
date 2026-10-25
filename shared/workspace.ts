@@ -63,7 +63,16 @@ function mergeMessages(base: SavedSession["messages"], local: SavedSession["mess
   const before = new Map(base.map((message) => [message.id, message]));
   const left = new Map(local.map((message) => [message.id, message]));
   const right = new Map(remote.map((message) => [message.id, message]));
-  const order = [...remote.map((message) => message.id), ...local.map((message) => message.id).filter((id) => !right.has(id))];
+  const baseOrder = base.map((message) => message.id);
+  const localOrder = local.map((message) => message.id);
+  const remoteOrder = remote.map((message) => message.id);
+  // Keep a one-sided reorder; concurrent reorder conflicts prefer the latest remote order.
+  const localReordered = !equal(baseOrder.filter((id) => left.has(id)), localOrder.filter((id) => before.has(id)));
+  const remoteReordered = !equal(baseOrder.filter((id) => right.has(id)), remoteOrder.filter((id) => before.has(id)));
+  const primary = localReordered && !remoteReordered ? localOrder : remoteOrder;
+  const secondary = primary === localOrder ? remoteOrder : localOrder;
+  const primaryIds = new Set(primary);
+  const order = [...primary, ...secondary.filter((id) => !primaryIds.has(id))];
   const merged: SavedSession["messages"] = [];
   for (const id of order) {
     const b = before.get(id), l = left.get(id), r = right.get(id);
