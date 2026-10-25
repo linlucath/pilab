@@ -19,7 +19,11 @@ export function e2eSession(id: string, title: string, messages: Message[], setti
   return { id, title, settings: { ...defaults, ...settings }, messages };
 }
 
-export async function seedWorkspace(page: Page, sessions: SavedSession[], active = sessions[0]?.id) {
+export type SeedSession = Omit<Partial<SavedSession>, "id" | "title" | "messages" | "settings"> &
+  Pick<SavedSession, "id" | "title" | "messages"> & { settings?: Partial<Settings> };
+
+export async function seedWorkspace(page: Page, sessions: SeedSession[], active = sessions[0]?.id) {
+  if (!sessions.length) throw new Error("seedWorkspace requires at least one session");
   if (page.url() !== "about:blank") {
     await page.goto("about:blank");
     const drained = await page.context().request.get(endpoint(page, "/api/workspace"));
@@ -27,7 +31,15 @@ export async function seedWorkspace(page: Page, sessions: SavedSession[], active
   }
   await resetWorkspace(page);
   const response = await page.context().request.post(endpoint(page, "/api/workspace"), {
-    data: { sessions, active, hiddenPiSessions: [], followPi: false },
+    data: {
+      sessions: sessions.map((session) => ({
+        ...session,
+        settings: { ...defaults, ...session.settings, apiKey: "" },
+      })),
+      active,
+      hiddenPiSessions: [],
+      followPi: false,
+    },
   });
   expect(response.ok(), `workspace seed returned ${response.status()}: ${await response.text()}`).toBeTruthy();
 }
@@ -52,6 +64,13 @@ export function ui(page: Page) {
 export async function openWorkspace(page: Page) {
   await page.goto(`${serverOrigin()}/`);
   await expect(ui(page).composer).toBeVisible();
+}
+
+export async function prepareE2eWorkspace(page: Page, sessions: SeedSession[] = []) {
+  if (page.url() !== "about:blank") await page.goto("about:blank");
+  if (sessions.length) await seedWorkspace(page, sessions);
+  else await resetWorkspace(page);
+  await openWorkspace(page);
 }
 
 export async function sendMessage(page: Page, text: string) {
