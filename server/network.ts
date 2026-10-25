@@ -1,6 +1,12 @@
 import { EnvHttpProxyAgent, install, setGlobalDispatcher } from "undici";
 import { channel } from "node:diagnostics_channel";
 
+// Antigravity controls its SSE inactivity watchdog separately from timeoutMs.
+// Reasoning/queued turns can remain silent for over two minutes. Keep a finite
+// deadline, while respecting both current and legacy user overrides (including 0).
+process.env.ANTIGRAVITY_STREAM_STALL_TIMEOUT_MS ??=
+  process.env.NOAGY_STREAM_STALL_TIMEOUT_MS ?? "600000";
+
 let lastFailure: { at: number; host: string; codes: string[] } | undefined;
 function errorCodes(error: unknown, seen = new Set<unknown>()): string[] {
   if (!error || typeof error !== "object" || seen.has(error) || seen.size >= 10) return [];
@@ -27,6 +33,11 @@ channel("undici:request:error").subscribe((event) => {
 });
 
 export function modelRequestError(message: string, model: { provider: string; baseUrl: string }) {
+  const stalled = /stream stalled: no data for (\d+)ms/i.exec(message);
+  if (stalled) {
+    const seconds = Number(stalled[1]) / 1000;
+    return `模型流式响应连续 ${seconds} 秒未收到数据，已中止等待。可能是上游推理、排队或网络连接停滞；已收到的内容会保留。原始错误：${message}`;
+  }
   if (!/fetch failed|failed to fetch|terminated|ECONNRESET|ECONNREFUSED|ETIMEDOUT|UND_ERR_/i.test(message)) return message;
   const provider = model.provider === "antigravity" ? "Gemini" : model.provider === "openai-codex" ? "GPT" : model.provider;
   let host = "";

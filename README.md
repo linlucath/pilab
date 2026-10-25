@@ -37,6 +37,10 @@ npm run dev
 
 Pi 本地登录模式要求 system 消息位于开头。OpenAI Codex 会将其作为 instructions 发送；其他提供商使用各自的原生协议。订阅模式不发送 Temperature，最大输出 Tokens 可编辑，新实验默认 16384；Gemini 的思考也占用输出额度，开启高强度推理时过小的上限可能让正文中途停止。达到上限会显示状态并随消息保存。请求检查依赖提供商是否提供原始请求回调。
 
+Antigravity 流式请求默认允许连续 10 分钟没有数据，避免长推理或排队被扩展原有的 120 秒空闲限制过早中止。这是无数据等待上限，不是整次 Agent 运行时长；收到数据后重新计时。可在启动前设置 `ANTIGRAVITY_STREAM_STALL_TIMEOUT_MS`（毫秒，兼容旧变量 `NOAGY_STREAM_STALL_TIMEOUT_MS`）；已有显式设置优先，修改后重启服务生效。达到上限仍会报错并保留已收到的内容；延长等待不能修复上游或代理断线。
+
+Antigravity 的 Claude 续聊会在发送前排除缺少签名的 thinking 块，以及 error/aborted 运行遗留的思考（即使已带签名），避免失败思考和重试思考被合并后触发 `thinking.signature: Field required`。原始思考仍保存在网页历史中；完整成功回复的签名、正文与工具调用不变，不伪造签名。
+
 「推理强度 / Reasoning effort」可选 off、minimal、low、medium、high、xhigh、max，Pi 订阅按当前模型能力列出档位；存在映射时直接显示实际发送值（如 minimal → low）。切换至不支持原档位的模型时，会调整到 medium 或首个支持的档位并提示。自定义接口由 Pi 转换为对应协议的参数，服务商决定实际支持范围。启用推理时省略 Temperature。推理强度随实验保存、导入导出，并记录在运行快照中；旧版开关设置兼容为 off / medium。最大输出数由 Pi 和供应商协议共同限制。编辑器支持文本消息和工具图片预览；支持图片的 Pi 订阅模型可恢复最近一次看图。OAuth 登录复用 Pi CLI，网页不单独发起登录。
 
 ### Pi Lab Agent 工具

@@ -56,6 +56,17 @@ export function validateToolHistory(messages: Message[]) {
     );
 }
 
+export function preparePiMessageForModel(message: PiMessage, model: Model<Api>, sourceStopReason?: string): PiMessage {
+  if (message.role !== "assistant" || model.provider !== "antigravity" || !model.id.startsWith("claude-"))
+    return message;
+  // A failed stream may already have a signature, but its thinking is still an
+  // incomplete turn. Replaying it beside the successful retry can merge both
+  // into one Claude turn. Keep failed thinking in UI history, not on the wire.
+  const incomplete = ["error", "aborted"].includes(sourceStopReason || message.stopReason);
+  return { ...message, content: message.content.filter((block) =>
+    block.type !== "thinking" || (!incomplete && !!block.thinkingSignature?.trim())) };
+}
+
 export function toPiMessage(message: Message, model: Model<Api>): PiMessage {
   if (message.role === "tool")
     return {
@@ -77,7 +88,7 @@ export function toPiMessage(message: Message, model: Model<Api>): PiMessage {
       timestamp: Date.now(),
     };
   const state = message.providerState;
-  return {
+  return preparePiMessageForModel({
     role: "assistant",
     content: [
       ...(state?.thinking || []),
@@ -111,7 +122,7 @@ export function toPiMessage(message: Message, model: Model<Api>): PiMessage {
       totalTokens: 0,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     },
-  };
+  }, model, state?.stopReason);
 }
 export function fromPiMessage(message: PiMessage, id: string): Message {
   if (message.role === "assistant")

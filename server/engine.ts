@@ -29,6 +29,7 @@ import { latestImageContext, retainToolImages } from "../extensions/pi-gpt-subag
 import {
   exactPayload as serializeExactPayload,
   fromPiMessage,
+  preparePiMessageForModel,
   validateToolHistory,
 } from "./transcript";
 
@@ -244,6 +245,8 @@ export async function generate(
   let requestCount = 0;
   const streamFn: StreamFn = (chosen, context, options) => {
     requestCount++;
+    // Also normalize newly generated Agent turns, not just persisted history.
+    context = { ...context, messages: context.messages.map((message) => preparePiMessageForModel(message, chosen)) };
     const currentMessages = prepareMessagesForModel([...active, ...generatedTranscript]);
     const requestOptions: SimpleStreamOptions = {
       ...options,
