@@ -54,6 +54,7 @@ function summarize(manager: GptSessionManager, session: SessionInfo): GptSession
     status: session.status,
     model: session.model,
     updatedAt: session.updatedAt,
+    ...(typeof session.replySequence === "number" ? { replySequence: session.replySequence } : {}),
     hasUnreadReply: !!session.lastText && (session.replySequence ?? 0) > (session.lastDeliveredReplySequence ?? 0),
     pendingQuestionCount: session.pendingInput.length,
     recentTools: summarizeRecentTools(recent),

@@ -8,6 +8,7 @@ export const savedSessionSchema = fileSchema.omit({ version: true }).extend({
     id, sessionId: id.optional(), revision: z.string().max(200),
     dirty: z.boolean(), pending: id.optional(),
   }).optional(),
+  reviewedWorkerSignatures: z.array(z.string().max(5_000)).max(1_000).optional(),
 });
 // This is the persisted experiment-session model used by the current workspace store.
 export const experimentSessionSchema = savedSessionSchema;
@@ -52,6 +53,8 @@ function mergeRecord(base: DataRecord = {}, local: DataRecord, remote: DataRecor
     let value: unknown;
     if (key === "messages" && Array.isArray(left) && Array.isArray(right))
       value = mergeMessages(Array.isArray(before) ? before as SavedSession["messages"] : [], left as SavedSession["messages"], right as SavedSession["messages"]);
+    else if (key === "reviewedWorkerSignatures" && Array.isArray(left) && Array.isArray(right))
+      value = [...new Set([...right, ...left])].slice(-1_000);
     else if (["settings", "piSync"].includes(key) && left && right && typeof left === "object" && typeof right === "object")
       value = mergeRecord(before && typeof before === "object" ? before as DataRecord : {}, left as DataRecord, right as DataRecord);
     else value = mergeField(before, left, right);

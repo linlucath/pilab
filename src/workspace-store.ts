@@ -26,7 +26,7 @@ function changes(before: WorkspaceData, after: WorkspaceData): WorkspaceChanges 
       const old = previous.get(session.id);
       if (!old) return [session];
       const patch: Record<string, unknown> = { id: session.id };
-      for (const key of ["title", "messages", "settings", "piSync", "parentSessionId", "parentSessionTitle", "forkSummary"] as const)
+      for (const key of ["title", "messages", "settings", "piSync", "parentSessionId", "parentSessionTitle", "forkSummary", "reviewedWorkerSignatures"] as const)
         if (JSON.stringify(old[key]) !== JSON.stringify(session[key])) patch[key] = session[key];
       return Object.keys(patch).length > 1 ? [patch as WorkspaceChanges["sessions"][number]] : [];
     }),

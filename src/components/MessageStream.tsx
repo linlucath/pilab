@@ -473,7 +473,7 @@ export function MessageStream(props: Props) {
     const message = props.messages[index];
     const wakeNotice = message.role === "user" ? systemWakeNotice(message.content) : undefined;
     if (wakeNotice) {
-      content.push(<div key={`worker-wake-${message.id}`} className="system-worker-wake-notice" role="status" data-message-id={message.id} title="这是后台工兵完成后的系统唤醒请求">{wakeNotice}</div>);
+      content.push(<div key={`worker-wake-${message.id}`} className="system-worker-wake-notice" role="status" data-message-id={message.id} title="这是后台工兵完成后的系统唤醒请求"><span>{wakeNotice}</span><button type="button" aria-label="删除工兵交卷通知" title="删除此通知" disabled={disabled} onClick={() => props.onDelete(message.id)}><X size={12} /></button></div>);
       index++; continue;
     }
     if (message.role === "tool" && message.toolCallId && matched.has(wireToolCallId(message.toolCallId))) { index++; continue; }

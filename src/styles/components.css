@@ -311,7 +311,11 @@
 .session-fork-created-card small { color: var(--text-subtle); font-size: 8px; }
 .session-fork-created-card button { min-height: 31px; flex: 0 0 auto; padding: 0 10px; border: 1px solid var(--accent); border-radius: 8px; color: #fff; background: var(--accent); font-size: 9px; font-weight: 650; }
 .session-fork-created-card button:disabled { opacity: .45; cursor: not-allowed; }
-.system-worker-wake-notice { width: max-content; max-width: min(100%, 680px); margin: 4px auto 12px; padding: 5px 10px; overflow: hidden; border: 1px solid var(--border); border-radius: 99px; color: var(--text-subtle); background: var(--surface-soft); font-size: 8px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.system-worker-wake-notice { display: flex; width: max-content; max-width: min(100%, 680px); align-items: center; gap: 6px; margin: 4px auto 12px; padding: 4px 5px 4px 10px; overflow: hidden; border: 1px solid var(--border); border-radius: 99px; color: var(--text-subtle); background: var(--surface-soft); font-size: 8px; line-height: 1.45; white-space: nowrap; }
+.system-worker-wake-notice > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.system-worker-wake-notice > button { display: grid; width: 22px; height: 22px; flex: 0 0 auto; place-items: center; padding: 0; border: 0; border-radius: 50%; color: var(--text-subtle); background: transparent; cursor: pointer; }
+.system-worker-wake-notice > button:hover { color: var(--danger); background: var(--surface-hover); }
+.system-worker-wake-notice > button:disabled { opacity: .45; cursor: not-allowed; }
 .diagnostics-view { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; gap: 12px; padding: 20px clamp(16px, 3vw, 36px) 14px; overflow: hidden; background: var(--canvas); }
 .diagnostics-header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 14px; }
 .diagnostics-header h1 { margin: 0; color: var(--text); font-size: 16px; }.diagnostics-header p { margin: 4px 0 0; color: var(--text-subtle); font-size: 9px; }

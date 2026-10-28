@@ -48,6 +48,16 @@ test("stale server updates are rebased onto the newest on-disk workspace revisio
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test("three-way workspace merge unions worker completion signatures across tabs", () => {
+  const base = projectWorkspaceSchema.parse({ ...workspace(), version: 1, revision: 2, deletedSessionIds: [] });
+  const local: ProjectWorkspace = structuredClone(base);
+  const remote: ProjectWorkspace = structuredClone(base);
+  local.sessions[0].reviewedWorkerSignatures = ["previous", "local-worker-turn"];
+  remote.sessions[0].reviewedWorkerSignatures = ["previous", "remote-worker-turn"];
+  const merged = mergeProjectWorkspace(base, local, remote);
+  assert.deepEqual(merged.sessions[0].reviewedWorkerSignatures, ["previous", "remote-worker-turn", "local-worker-turn"]);
+});
+
 test("three-way workspace merge preserves disjoint edits and favors disk on same-field conflicts", () => {
   const base = projectWorkspaceSchema.parse({ ...workspace(), version: 1, revision: 4, deletedSessionIds: [] });
   const local: ProjectWorkspace = structuredClone(base);

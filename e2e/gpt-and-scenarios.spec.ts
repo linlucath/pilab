@@ -1,8 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openWorkspace, resetWorkspace, sendMessage, setMockScript, ui } from "./fixtures/index";
+import { openWorkspace, resetWorkspace, seedWorkspace, sendMessage, setMockScript, ui } from "./fixtures/index";
 
 type Worker = {
-  id: string; name: string; role: string; status: string; model: string; updatedAt: number;
+  id: string; name: string; role: string; status: string; model: string; updatedAt: number; replySequence?: number;
   hasUnreadReply: boolean; pendingQuestionCount: number;
   recentTools: { name: string; status: "running" | "completed" | "error"; at: number }[];
   lastReplyPreview: string;
@@ -122,6 +122,15 @@ test("GPT-03 中断与关闭保留工兵历史且操作反馈对应状态", asyn
 });
 
 test("GPT-04 有草稿时自动唤醒退让，人工审阅不覆盖草稿；取消唤醒不停止工兵", async ({ page }) => {
+  const dispatches = ["manual-review", "cancel-wake"].map((name, index) => ({
+    id: `wake-call-${index}`, name: "gpt_session_create", arguments: JSON.stringify({ name, message: "background task" }),
+  }));
+  await seedWorkspace(page, [{ id: "wake-owner", title: "工兵唤醒会话", messages: [
+    { id: "wake-system", role: "system", content: "system", enabled: true },
+    { id: "wake-dispatch", role: "assistant", content: "", enabled: true, toolCalls: dispatches },
+    ...dispatches.map((call, index) => ({ id: `wake-result-${index}`, role: "tool" as const, content: "started", enabled: true, toolCallId: call.id, toolName: call.name })),
+  ] }], "wake-owner");
+  await openWorkspace(page);
   let workers = [worker("manual-review", "running")];
   await mockWorkerList(page, () => workers);
   const autoWake = page.getByRole("checkbox", { name: /工兵交卷自动唤醒/ });
@@ -158,6 +167,83 @@ test("GPT-04 有草稿时自动唤醒退让，人工审阅不覆盖草稿；取�
   await page.waitForTimeout(1_700);
   expect(runPayloads).toHaveLength(1);
   expect(workers.some((item) => item.name === "cancel-wake")).toBe(true);
+});
+
+test("GPT-04 工兵交卷系统消息可从消息流直接删除", async ({ page }) => {
+  const notice = "后台 GPT 工兵已交卷：「dismiss-worker」。请使用 gpt_session_read 读取这些工兵的新回复，核对完成情况；如有失败、问题或待决策事项，请明确指出。";
+  await seedWorkspace(page, [{ id: "dismiss-session", title: "可删除通知", messages: [
+    { id: "dismiss-system", role: "system", content: "system", enabled: true },
+    { id: "dismiss-notice", role: "user", content: notice, enabled: true },
+  ] }], "dismiss-session");
+  await openWorkspace(page);
+  const card = page.locator(".system-worker-wake-notice");
+  await expect(card).toContainText("dismiss-worker");
+  await card.getByRole("button", { name: "删除工兵交卷通知" }).click();
+  await expect(card).toHaveCount(0);
+});
+
+test("GPT-04 工兵交卷只唤醒派出会话，删除后同一回复签名不再复活", async ({ page }) => {
+  const dispatch = { id: "owned-call", name: "gpt_session_create", arguments: JSON.stringify({ name: "owned-worker", message: "do owned work" }) };
+  await seedWorkspace(page, [
+    { id: "unrelated-session", title: "当前会话", messages: [{ id: "unrelated-system", role: "system", content: "system", enabled: true }] },
+    { id: "owning-session", title: "派出会话", messages: [
+      { id: "owner-system", role: "system", content: "system", enabled: true },
+      { id: "owner-dispatch", role: "assistant", content: "", enabled: true, toolCalls: [dispatch] },
+      { id: "owner-result", role: "tool", content: "started", enabled: true, toolCallId: dispatch.id, toolName: dispatch.name },
+    ] },
+  ], "unrelated-session");
+  await openWorkspace(page);
+
+  const replySequence = 7;
+  const replyAt = Date.now();
+  let workers = [
+    worker("owned-worker", "running", { replySequence, updatedAt: replyAt }),
+    worker("unowned-worker", "running", { replySequence: replySequence + 1, updatedAt: replyAt + 1 }),
+  ];
+  await mockWorkerList(page, () => workers);
+  workers = [
+    worker("owned-worker", "running", { hasUnreadReply: true, replySequence, updatedAt: replyAt }),
+    worker("unowned-worker", "running", { hasUnreadReply: true, replySequence: replySequence + 1, updatedAt: replyAt + 1 }),
+  ];
+  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
+  workers = [
+    worker("owned-worker", "idle", { hasUnreadReply: true, replySequence, updatedAt: replyAt }),
+    worker("unowned-worker", "idle", { hasUnreadReply: true, replySequence: replySequence + 1, updatedAt: replyAt + 1 }),
+  ];
+  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
+
+  await page.locator('[data-session-id="owning-session"] .session-main').click();
+  await expect(page.locator(".worker-wake-banner")).toContainText("owned-worker");
+  await expect(page.locator(".worker-wake-banner")).not.toContainText("unowned-worker");
+  await setMockScript(page, [{ type: "text", text: "OWNED-WORKER-REVIEWED" }]);
+  await page.getByRole("button", { name: /让 Gemini 审阅汇报/ }).click();
+  await expect(page.getByText("OWNED-WORKER-REVIEWED", { exact: true })).toBeVisible();
+  await expect(page.locator(".composer-running")).toHaveCount(0);
+  const wakeCard = page.locator(".system-worker-wake-notice");
+  await expect(wakeCard).toContainText("owned-worker");
+  await wakeCard.getByRole("button", { name: "删除工兵交卷通知" }).click();
+  await expect(wakeCard).toHaveCount(0);
+
+  // The same unread reply can reappear in polling data (for example after a cwd/session refresh).
+  // Its stable worker/reply signature must not create another wake after processing/dismissal.
+  workers = [worker("owned-worker", "idle", { hasUnreadReply: false, replySequence, updatedAt: replyAt })];
+  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  workers = [worker("owned-worker", "idle", { hasUnreadReply: true, replySequence, updatedAt: replyAt })];
+  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
+  await expect(page.locator(".system-worker-wake-notice")).toHaveCount(0);
+
+  const saved = await page.context().request.get(new URL("/api/workspace", page.url()).href).then((response) => response.json());
+  const unrelated = saved.workspace.sessions.find((item: { id: string }) => item.id === "unrelated-session");
+  const owner = saved.workspace.sessions.find((item: { id: string }) => item.id === "owning-session");
+  expect(unrelated.messages.some((message: { content: string }) => message.content.includes("后台 GPT 工兵已交卷"))).toBe(false);
+  expect(owner.messages.some((message: { content: string }) => message.content.includes("后台 GPT 工兵已交卷"))).toBe(false);
+  await expect.poll(async () => {
+    const latest = await page.context().request.get(new URL("/api/workspace", page.url()).href).then((response) => response.json());
+    return latest.workspace.sessions.find((item: { id: string }) => item.id === "owning-session")?.reviewedWorkerSignatures?.length || 0;
+  }).toBe(1);
 });
 
 test("E2E-01 从提示消息分支并运行后，两个分支内容和回复互不覆盖", async ({ page }) => {
