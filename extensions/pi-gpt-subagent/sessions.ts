@@ -400,8 +400,10 @@ export class GptSessionManager {
 
   recentEvents(name: string): ProgressEvent[] { return structuredClone(this.get(name).events); }
 
+  hasActiveWaiter(id: string): boolean { return !!this.waiters.get(this.get(id))?.size; }
+
   /** Wait on state changes, without polling files or holding the command queue. */
-  async wait(names: string[], timeoutMs = GPT_WAIT_TIMEOUT_SECONDS * 1_000, signal?: AbortSignal, mode: "any" | "all" = "any"): Promise<{
+  async wait(names: string[], timeoutMs = GPT_WAIT_TIMEOUT_SECONDS * 1_000, signal?: AbortSignal, mode: "any" | "all" = "any", startAfter?: Promise<unknown>): Promise<{
     session?: SessionInfo; sessions: SessionInfo[]; timedOut: boolean; completed: boolean;
   }> {
     if (!names.length || names.length > 8 || new Set(names.map((name) => name.trim())).size !== names.length)
@@ -411,6 +413,7 @@ export class GptSessionManager {
     const entries = names.map((name) => this.get(name));
     return new Promise((resolve, reject) => {
       let finished = false;
+      let armed = !startAfter;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const cleanup = () => {
         if (timer) clearTimeout(timer);
@@ -430,7 +433,7 @@ export class GptSessionManager {
       };
       const abort = () => finish(undefined, new Error("等待已取消；GPT 仍可继续在后台工作。"));
       const check = () => {
-        if (finished) return;
+        if (finished || !armed) return;
         if (signal?.aborted) return abort();
         if (this.disposed) return finish(undefined, new Error("GPT 会话管理器已关闭，等待已结束。"));
         const ready = (entry: ManagedSession) => !["starting", "running"].includes(entry.info.status) &&
@@ -445,13 +448,16 @@ export class GptSessionManager {
         if (needsAttention) { finish(needsAttention); return; }
         if (entries.every(ready)) finish(undefined, undefined, true);
       };
+      if (signal?.aborted) return abort();
       for (const entry of entries) {
         if (!this.waiters.has(entry)) this.waiters.set(entry, new Set());
         this.waiters.get(entry)!.add(check);
       }
       signal?.addEventListener("abort", abort, { once: true });
       timer = setTimeout(() => { check(); finish(undefined, undefined, false, true); }, timeoutMs);
-      check();
+      if (startAfter) {
+        void startAfter.then(() => { armed = true; check(); }, (error) => finish(undefined, error instanceof Error ? error : new Error(String(error))));
+      } else check();
     });
   }
 

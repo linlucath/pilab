@@ -3,14 +3,14 @@ import { openWorkspace, resetWorkspace, seedWorkspace, sendMessage, setMockScrip
 
 type Worker = {
   id: string; name: string; role: string; status: string; model: string; updatedAt: number; replySequence?: number;
-  hasUnreadReply: boolean; pendingQuestionCount: number;
+  hasUnreadReply: boolean; hasActiveWaiter?: boolean; pendingQuestionCount: number;
   recentTools: { name: string; status: "running" | "completed" | "error"; at: number }[];
   lastReplyPreview: string;
 };
 
 const worker = (name: string, status: string, overrides: Partial<Worker> = {}): Worker => ({
   id: name, name, role: "implementer", status, model: "codex-mock", updatedAt: Date.now(),
-  hasUnreadReply: false, pendingQuestionCount: 0, recentTools: [], lastReplyPreview: `${name} preview`, ...overrides,
+  hasUnreadReply: false, hasActiveWaiter: false, pendingQuestionCount: 0, recentTools: [], lastReplyPreview: `${name} preview`, ...overrides,
 });
 async function prepare(page: Page) {
   await resetWorkspace(page);
@@ -121,52 +121,108 @@ test("GPT-03 中断与关闭保留工兵历史且操作反馈对应状态", asyn
   await expect(page.locator(".worker-history-item")).toContainText("空闲");
 });
 
-test("GPT-04 有草稿时自动唤醒退让，人工审阅不覆盖草稿；取消唤醒不停止工兵", async ({ page }) => {
-  const dispatches = ["manual-review", "cancel-wake"].map((name, index) => ({
-    id: `wake-call-${index}`, name: "gpt_session_create", arguments: JSON.stringify({ name, message: "background task" }),
-  }));
+test("GPT-04 交卷提醒只是 UI 状态，草稿保留且只有手动点击才运行", async ({ page }) => {
+  const dispatch = { id: "wake-call", name: "gpt_session_create", arguments: JSON.stringify({ name: "manual-review", message: "background task" }) };
   await seedWorkspace(page, [{ id: "wake-owner", title: "工兵唤醒会话", messages: [
     { id: "wake-system", role: "system", content: "system", enabled: true },
-    { id: "wake-dispatch", role: "assistant", content: "", enabled: true, toolCalls: dispatches },
-    ...dispatches.map((call, index) => ({ id: `wake-result-${index}`, role: "tool" as const, content: "started", enabled: true, toolCallId: call.id, toolName: call.name })),
+    { id: "wake-dispatch", role: "assistant", content: "", enabled: true, toolCalls: [dispatch] },
+    { id: "wake-result", role: "tool", content: "started", enabled: true, toolCallId: dispatch.id, toolName: dispatch.name },
   ] }], "wake-owner");
   await openWorkspace(page);
   let workers = [worker("manual-review", "running")];
   await mockWorkerList(page, () => workers);
-  const autoWake = page.getByRole("checkbox", { name: /工兵交卷自动唤醒/ });
-  await autoWake.check();
-  await ui(page).composer.fill("keep-this-user-draft");
-  const runPayloads: { messages: { content: string }[] }[] = [];
+  const runPayloads: { messages: { role: string; content: string }[] }[] = [];
   await page.route("**/api/run", async (route) => {
-    if (route.request().method() === "POST") runPayloads.push(route.request().postDataJSON());
+    runPayloads.push(route.request().postDataJSON());
     await route.continue();
   });
-  await setMockScript(page, [{ type: "text", text: "manual-review-complete" }]);
+  await ui(page).composer.fill("keep-this-user-draft");
   workers = [worker("manual-review", "idle", { hasUnreadReply: true, lastReplyPreview: "delivered report" })];
   await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
-  await expect(page.locator(".worker-wake-banner")).toContainText("当前有运行/输入");
+  await expect(page.locator(".worker-wake-banner")).toContainText("审阅不会清除输入草稿");
   await expect(ui(page).composer).toHaveValue("keep-this-user-draft");
   await page.waitForTimeout(1_700);
   expect(runPayloads).toHaveLength(0);
-  await page.getByRole("button", { name: /让 Gemini 审阅汇报/ }).click();
-  await expect(page.getByText("manual-review-complete", { exact: true })).toBeVisible();
-  expect(runPayloads).toHaveLength(1);
-  expect(runPayloads[0].messages.some((message) => message.content.includes("gpt_session_read"))).toBe(true);
-  await expect(ui(page).composer).toHaveValue("keep-this-user-draft");
+  await expect(page.getByRole("button", { name: /工兵交卷自动唤醒/ })).toHaveCount(0);
+});
 
-  // A second delivery with an empty composer can be cancelled before the 1.5s automatic wake.
-  workers = [worker("manual-review", "idle", { hasUnreadReply: true })];
-  await ui(page).composer.fill("");
+test("GPT-04 主模型运行时不排队唤醒；运行结束后再次手动点击才审阅", async ({ page }) => {
+  const dispatch = { id: "busy-wake-call", name: "gpt_session_create", arguments: JSON.stringify({ name: "busy-review", message: "background task" }) };
+  await seedWorkspace(page, [{ id: "busy-owner", title: "忙碌中的工兵", messages: [
+    { id: "busy-system", role: "system", content: "system", enabled: true },
+    { id: "busy-dispatch", role: "assistant", content: "", enabled: true, toolCalls: [dispatch] },
+    { id: "busy-result", role: "tool", content: "started", enabled: true, toolCallId: dispatch.id, toolName: dispatch.name },
+  ] }], "busy-owner");
+  await openWorkspace(page);
+  let workers = [worker("busy-review", "running")];
+  await mockWorkerList(page, () => workers);
+  let releaseFirstRun!: () => void;
+  const firstRunGate = new Promise<void>((resolve) => { releaseFirstRun = resolve; });
+  const runPayloads: { messages: { role: string; content: string }[] }[] = [];
+  await page.route("**/api/run", async (route) => {
+    runPayloads.push(route.request().postDataJSON());
+    if (runPayloads.length === 1) await firstRunGate;
+    const text = runPayloads.length === 1 ? "main-run-finished" : "manual-review-finished";
+    const events = [
+      { type: "assistant_start", id: `busy-run-${runPayloads.length}` },
+      { type: "assistant", message: { id: `busy-run-${runPayloads.length}`, role: "assistant", content: text, enabled: true } },
+      { type: "done", reason: "stop", turns: 1, usage: { input: 1, output: 1 } },
+    ];
+    await route.fulfill({ status: 200, headers: { "Content-Type": "application/x-ndjson" }, body: `${events.map((event) => JSON.stringify(event)).join("\n")}\n` });
+  });
+
+  await sendMessage(page, "keep the main model busy");
+  await expect(page.locator(".composer-running")).toBeVisible();
+  workers = [worker("busy-review", "idle", { hasUnreadReply: true })];
   await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
-  workers = [...workers, worker("cancel-wake", "running")];
-  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
-  workers = [...workers.filter((item) => item.name !== "cancel-wake"), worker("cancel-wake", "idle", { hasUnreadReply: true })];
-  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
-  await expect(page.locator(".worker-wake-banner")).toContainText("自动唤醒 Gemini");
-  await page.getByRole("button", { name: "取消自动唤醒" }).click();
+  await expect(page.locator(".worker-wake-banner")).toContainText("主模型运行中");
+  await expect(page.getByRole("button", { name: /让 Gemini 审阅汇报/ })).toBeDisabled();
   await page.waitForTimeout(1_700);
   expect(runPayloads).toHaveLength(1);
-  expect(workers.some((item) => item.name === "cancel-wake")).toBe(true);
+  expect(runPayloads[0].messages.some((message) => message.content.includes("后台 GPT 工兵已交卷"))).toBe(false);
+  releaseFirstRun();
+  await expect(page.getByText("main-run-finished", { exact: true })).toBeVisible();
+  await expect(page.locator(".composer-running")).toHaveCount(0);
+  expect(runPayloads, "finishing the main run must not drain a queued worker review").toHaveLength(1);
+
+  await page.getByRole("button", { name: /让 Gemini 审阅汇报/ }).click();
+  await expect(page.getByText("manual-review-finished", { exact: true })).toBeVisible();
+  expect(runPayloads).toHaveLength(2);
+  expect(runPayloads[1].messages.some((message) => message.role === "user" && message.content.includes("后台 GPT 工兵已交卷"))).toBe(true);
+});
+
+test("GPT-04 已读回复或 waitAndReport 接管时不提醒，忽略提醒不停止工兵", async ({ page }) => {
+  const dispatch = { id: "claimed-call", name: "gpt_session_create", arguments: JSON.stringify({ name: "claimed-worker", message: "background task" }) };
+  await seedWorkspace(page, [{ id: "claimed-owner", title: "被等待的工兵", messages: [
+    { id: "claimed-system", role: "system", content: "system", enabled: true },
+    { id: "claimed-dispatch", role: "assistant", content: "", enabled: true, toolCalls: [dispatch] },
+    { id: "claimed-result", role: "tool", content: "started", enabled: true, toolCallId: dispatch.id, toolName: dispatch.name },
+  ] }], "claimed-owner");
+  await openWorkspace(page);
+  let workers = [worker("claimed-worker", "running")];
+  await mockWorkerList(page, () => workers);
+  workers = [worker("claimed-worker", "idle", { hasUnreadReply: true, hasActiveWaiter: true })];
+  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
+  workers = [worker("claimed-worker", "idle", { hasUnreadReply: true })];
+  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await expect(page.locator(".worker-wake-banner")).toContainText("claimed-worker");
+  workers = [worker("claimed-worker", "idle", { hasUnreadReply: true, hasActiveWaiter: true })];
+  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
+  workers = [worker("claimed-worker", "idle", { hasUnreadReply: false })];
+  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
+  workers = [worker("claimed-worker", "idle", { hasUnreadReply: true })];
+  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await expect(page.locator(".worker-wake-banner")).toContainText("claimed-worker");
+  await page.getByRole("button", { name: "忽略工兵交卷提醒" }).click();
+  workers = [worker("claimed-worker", "idle", { hasUnreadReply: false })];
+  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  workers = [worker("claimed-worker", "idle", { hasUnreadReply: true })];
+  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
+  expect(workers[0].status).toBe("idle");
 });
 
 test("GPT-04 工兵交卷系统消息可从消息流直接删除", async ({ page }) => {

@@ -23,6 +23,47 @@ test("reply budgets include a context-protection note", () => {
   assert.throws(() => clipReply("reply", 200), /预算必须/);
 });
 
+test("gpt_session_send(wait=true) registers its waiter before a fast prompt can notify the parent", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "pilab-send-wait-race-"));
+  let notices = 0;
+  let promptSawWaiter = false;
+  let manager!: GptSessionManager;
+  manager = new GptSessionManager({
+    storageDir: path.join(directory, "sessions"), cwd: directory, onNotice: () => { notices++; },
+    createTransport: (spec, onEvent): RpcTransport => ({
+      async request<T = any>(type: string): Promise<T> {
+        let result: any = {};
+        if (type === "get_state") result = { model: { provider: "openai-codex", id: model } };
+        if (type === "prompt") {
+          promptSawWaiter = manager.hasActiveWaiter(spec.id);
+          onEvent({ type: "agent_start" });
+          onEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "finished immediately" }] } });
+          onEvent({ type: "agent_settled" });
+          result = { disposition: "accepted" };
+        }
+        return result as T;
+      }, async reply() {}, async stop() {},
+    }),
+  });
+  try {
+    await manager.create({ name: "fast-worker", model });
+    await until(() => manager.list().some((session) => session.name === "fast-worker" && session.status === "idle"));
+    const tools = createSessionTools(async () => ({ manager, resolveModel: () => model }));
+    const send = tools.find((tool) => tool.name === "gpt_session_send")!;
+    const result = await send.execute("send", { name: "fast-worker", message: "finish immediately", wait: true, timeoutSeconds: 2 });
+    const details = result.details as any;
+    assert.equal(promptSawWaiter, true, "waitAndReport must claim the session before prompt dispatch begins");
+    assert.equal(notices, 0, "a waited reply must not also queue a parent notification");
+    assert.equal(details.completed, true);
+    assert.equal(details.sessions[0].reply, "finished immediately");
+    assert.equal(manager.hasActiveWaiter("fast-worker"), false);
+    assert.equal(manager.read("fast-worker").session.lastDeliveredReplySequence, manager.read("fast-worker").session.replySequence);
+  } finally {
+    await manager.shutdown();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("batch GPT tool starts parallel sessions and aggregates replies when wait=all is requested", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "pilab-batch-"));
   const manager = new GptSessionManager({ storageDir: path.join(directory, "sessions"), cwd: directory,

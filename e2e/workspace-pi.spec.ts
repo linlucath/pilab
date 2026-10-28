@@ -322,13 +322,11 @@ test("WSP-06 页面 API Key 不落盘，浏览器偏好刷新后恢复", async (
   await page.locator("#api-key").fill(secret);
   await page.getByRole("button", { name: "切换深色模式" }).click();
   await page.getByRole("button", { name: "展开工具" }).click();
-  const autoWake = page.getByRole("checkbox", { name: /工兵交卷自动唤醒/ });
-  await autoWake.check();
   await waitForWorkspace(page, (workspace) => workspace.sessions[0]?.settings.protocol === "openai-completions");
   expect(bodies.join("\n")).not.toContain(secret);
   const locals = await page.evaluate(() => Object.values(localStorage).join("\n"));
   expect(locals).not.toContain(secret);
-  await expect.poll(() => page.evaluate(() => ({ theme: localStorage.getItem("pilab-theme-v2"), compact: localStorage.getItem("pilab-tools-compact-v1"), wake: localStorage.getItem("pilab-gpt-auto-wake-v2") }))).toEqual({ theme: "dark", compact: "false", wake: "true" });
+  await expect.poll(() => page.evaluate(() => ({ theme: localStorage.getItem("pilab-theme-v2"), compact: localStorage.getItem("pilab-tools-compact-v1") }))).toEqual({ theme: "dark", compact: "false" });
 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出会话 JSON" }).click();
@@ -341,7 +339,6 @@ test("WSP-06 页面 API Key 不落盘，浏览器偏好刷新后恢复", async (
   await expect(page.locator("#api-key")).toHaveValue("");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await expect(page.getByRole("button", { name: "收起工具" })).toBeVisible();
-  await expect(page.getByRole("checkbox", { name: /工兵交卷自动唤醒/ })).toBeChecked();
 });
 
 test("PI-01 登录状态区分已连接、未登录和状态读取失败且不显示 Token", async ({ page }) => {

@@ -10,7 +10,6 @@ type Props = {
   piDefaultModel?: string; activeRun?: Run; onSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => void; onNotice: (message: string) => void;
   onApiKey: (key: string) => void; onRefreshAuth: () => void; onExport: () => void; onImport: (file?: File) => void;
   onSessionsChange?: (sessions: GptSessionSummary[]) => void;
-  autoWakeEnabled: boolean; onAutoWake: (enabled: boolean) => void;
 };
 const effortOrder: ReasoningEffort[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const effortLabels: Record<ReasoningEffort, string> = { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "XHigh", max: "Max" };
@@ -116,7 +115,6 @@ export function RightPanel(props: Props) {
     </section>
     <section className="worker-panel" style={{ order: 0 }}>
       <header className="worker-heading"><div><span className="worker-icon">✦</span><div><strong>GPT 工兵实况</strong><small>{sessions.length} 个会话 · {activeWorkers ? `${activeSessions.length} 个正在工作` : "后台待命"}</small></div></div><div className="worker-heading-actions"><button className="worker-cleanup-button" disabled={!cleanupSessions.length || cleaningIdle} onClick={() => void cleanupIdle()} title="关闭空闲、挂起、中断或异常的 GPT 工兵"><Trash2 size={13} />{cleaningIdle ? "清理中…" : `清理空闲${cleanupSessions.length ? ` · ${cleanupSessions.length}` : ""}`}</button><button className={`icon-button ${loading ? "spinning" : ""}`} onClick={() => void refresh()} title="刷新 GPT 会话" aria-label="刷新 GPT 会话"><RefreshCw size={15} /></button></div></header>
-      <label className="worker-auto-wake" title="空闲且输入框为空时，交卷后自动让 Gemini 读取并汇报"><input type="checkbox" checked={props.autoWakeEnabled} onChange={(event) => props.onAutoWake(event.target.checked)} />🔔 工兵交卷自动唤醒</label>
       {cleanupMessage && <div className="worker-cleanup-message" role="status">{cleanupMessage}</div>}
       {error && <div className="worker-error"><span>{error}</span><button onClick={() => setError("")} aria-label="清除错误"><X size={13} /></button></div>}
       {!sessions.length ? <div className="worker-empty"><span>🛠️</span><strong>暂未派出 GPT 工兵</strong><p>直接给 Gemini 发消息即可自动调度。</p></div> : <div className="worker-list">

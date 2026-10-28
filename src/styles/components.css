@@ -265,8 +265,6 @@
 .session-lineage-label { max-width: 100%; overflow: hidden; color: var(--accent); font-size: 8px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 .right-panel[hidden] { display: none; }
 .worker-role-badge { max-width: 84px; overflow: hidden; padding: 3px 6px; border-radius: 99px; color: var(--accent); background: var(--accent-soft); font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
-.worker-auto-wake { display: flex; align-items: center; gap: 7px; margin: -3px 0 10px; color: var(--text-muted); font-size: 8px; }
-.worker-auto-wake input { accent-color: var(--accent); }
 .background-task-bar { display: flex; width: min(100%, 920px); min-height: 32px; max-height: 32px; flex-wrap: nowrap; align-items: center; gap: 8px; margin: 0 auto 5px; padding: 0 10px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border)); border-radius: 9px; color: var(--text-muted); background: color-mix(in srgb, var(--accent-soft) 22%, var(--surface)); box-shadow: none; font-size: 12.5px; }
 .background-task-bar > strong { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; color: var(--accent); font-size: 12.5px; white-space: nowrap; }
 .background-task-bar > div { display: flex; min-width: 0; flex: 1; flex-wrap: nowrap; gap: 6px; overflow: hidden; }
@@ -279,8 +277,7 @@
 .worker-wake-banner > div { flex: 0 0 auto; }
 .worker-wake-banner button { min-height: 25px; padding: 0 7px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-muted); background: var(--surface); font-size: 8px; white-space: nowrap; }
 .worker-wake-banner .wake-review-button { color: #fff; border-color: var(--accent); background: var(--accent); font-weight: 650; }
-.worker-wake-banner.automatic { border-color: color-mix(in srgb, var(--accent) 28%, var(--border)); background: color-mix(in srgb, var(--accent-soft) 36%, var(--surface)); }
-.worker-wake-banner.automatic > span > svg { color: var(--accent); }
+.worker-wake-banner .wake-review-button:disabled { opacity: .55; cursor: not-allowed; }
 .session-fork-overlay { position: fixed; inset: 0; z-index: 45; display: grid; place-items: center; padding: 20px; background: rgba(15, 16, 20, .46); backdrop-filter: blur(5px); }
 .session-fork-modal { width: min(100%, 560px); padding: 20px; border: 1px solid var(--border-strong); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow-md); }
 .session-fork-modal > header { display: flex; align-items: center; gap: 11px; margin-bottom: 17px; }

@@ -43,14 +43,8 @@ export default function piGptSessions(pi: ExtensionAPI) {
   }
   function notice(session: SessionInfo) {
     footer();
-    pi.sendMessage({
-      customType: "gpt-session-update", display: true,
-      content: JSON.stringify({
-        source: "GPT conversation", ...conversationSummary(session),
-        instruction: "This is a status update from another conversation. Use its name with gpt_session_read for unread replies or gpt_session_send to continue. A settled turn does not prove task success. Do not resume user-interrupted work without instruction.",
-      }),
-      details: { name: session.name, status: session.status },
-    }, { triggerTurn: true, deliverAs: "followUp" });
+    const status = session.status === "idle" ? "已交卷" : session.status === "waiting_input" ? "等待你处理" : session.status === "error" ? "遇到错误" : "状态更新";
+    context?.ui.notify(`GPT 工兵「${session.name}」${status}；需要审阅时可使用 /gpt read ${session.name}。`, session.status === "error" ? "error" : "info");
   }
   async function access(ctx?: ExtensionContext): Promise<SessionAccess> {
     if (!ctx) throw new Error("Pi session context is unavailable.");

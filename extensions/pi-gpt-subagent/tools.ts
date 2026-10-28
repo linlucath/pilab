@@ -204,10 +204,11 @@ export function createSessionTools(
   };
   const waitAndReport = async (manager: GptSessionManager, names: string[], options: {
     timeoutSeconds?: number; mode?: "any" | "all"; maxChars?: number;
-  }, signal?: AbortSignal, ctx?: ExtensionToolContext, extra: Record<string, unknown> = {}) => {
+  }, signal?: AbortSignal, ctx?: ExtensionToolContext,
+  extra: Record<string, unknown> | (() => Record<string, unknown>) = {}, startAfter?: Promise<unknown>) => {
     if (signal?.aborted) throw new Error("等待已取消；GPT 仍可继续在后台工作。");
     const mode = options.mode ?? "any";
-    const waited = await manager.wait(names, (options.timeoutSeconds ?? GPT_WAIT_TIMEOUT_SECONDS) * 1_000, signal, mode);
+    const waited = await manager.wait(names, (options.timeoutSeconds ?? GPT_WAIT_TIMEOUT_SECONDS) * 1_000, signal, mode, startAfter);
     if (signal?.aborted) throw new Error("等待已取消；GPT 仍可继续在后台工作。");
     const reports = waited.sessions.map((session) => unreadReport(manager, session.name, { maxChars: options.maxChars }, ctx));
     const reportText = reports.map((report) => report.content.map((block) => block.type === "text" ? block.text : "").filter(Boolean).join("\n")).join("\n\n---\n\n");
@@ -217,8 +218,9 @@ export function createSessionTools(
       : !waited.completed && waited.session
         ? `\n\n因「${waited.session.name}」${states[waited.session.status]}，提前结束等待；其他会话仍可在后台继续。`
         : "";
+    const extraDetails = typeof extra === "function" ? extra() : extra;
     return response({
-      ...extra, mode, completed: waited.completed, timedOut: waited.timedOut,
+      ...extraDetails, mode, completed: waited.completed, timedOut: waited.timedOut,
       ...(waited.session ? { trigger: conversationSummary(waited.session) } : {}),
       sessions: reports.map((report) => report.details),
     }, [reportText || statusText || "暂无会话状态。", note].join(""));
@@ -324,8 +326,14 @@ export function createSessionTools(
       execute: async (_id, args, signal, _onUpdate, ctx) => {
         if (signal?.aborted) throw new Error("Message was cancelled before delivery.");
         const { manager } = await getAccess(ctx);
-        const sent = await manager.send(args.name, withFeynmanReport(args.message, args.rolePreset), args.mode ?? "steer", args.rolePreset);
-        if (args.wait) return waitAndReport(manager, [args.name], { mode: "any", timeoutSeconds: args.timeoutSeconds, maxChars: args.maxChars }, signal, ctx, { operation: "send", delivery: sent.disposition ?? "accepted" });
+        const sentPromise = manager.send(args.name, withFeynmanReport(args.message, args.rolePreset), args.mode ?? "steer", args.rolePreset);
+        if (args.wait) {
+          let sent: Awaited<typeof sentPromise> | undefined;
+          const dispatchReady = sentPromise.then((result) => { sent = result; });
+          return waitAndReport(manager, [args.name], { mode: "any", timeoutSeconds: args.timeoutSeconds, maxChars: args.maxChars }, signal, ctx,
+            () => ({ operation: "send", delivery: sent?.disposition ?? "accepted" }), dispatchReady);
+        }
+        const sent = await sentPromise;
         return response({ ...conversationSummary(sent.session), delivery: sent.disposition ?? "accepted" });
       },
     },

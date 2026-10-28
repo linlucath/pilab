@@ -30,8 +30,8 @@ type PiConnection = {
 };
 type ToolActivity = { name: string; arguments: unknown; output: string };
 type CompactedMessage = Message & { compactedByModel?: boolean; modelSummary?: string };
-type WorkerWakeNotice = { sessionId: string; cwd: string; names: string[]; automatic: boolean; dueAt: number };
-type QueuedWorkerReview = Pick<WorkerWakeNotice, "sessionId" | "cwd" | "names">;
+type WorkerWakeNotice = { sessionId: string; cwd: string; names: string[] };
+type WorkerReview = Pick<WorkerWakeNotice, "sessionId" | "cwd" | "names">;
 type ForkNotice = { sourceId: string; forkId: string; title: string };
 const activeWorkerStatuses = new Set(["starting", "running", "waiting_input"]);
 const pretty = (value: unknown) => JSON.stringify(value, null, 2);
@@ -127,15 +127,7 @@ export default function App() {
   const [piSessions, setPiSessions] = useState<PiLiveSession[]>([]);
   const [gptSessionSnapshot, setGptSessionSnapshot] = useState<{ cwd: string; sessions: GptSessionSummary[] }>({ cwd: "", sessions: [] });
   const [composerText, setComposerText] = useState("");
-  const composerTextRef = useRef("");
-  const [autoWakeEnabled, setAutoWakeEnabled] = useState(() => { try { return localStorage.getItem("pilab-gpt-auto-wake-v2") === "true"; } catch { return false; } });
-  const autoWakeEnabledRef = useRef(autoWakeEnabled);
-  autoWakeEnabledRef.current = autoWakeEnabled;
-  const busyStateRef = useRef(busy);
-  busyStateRef.current = busy;
   const [workerWakeNotices, setWorkerWakeNotices] = useState<WorkerWakeNotice[]>([]);
-  const [queuedWorkerReviews, setQueuedWorkerReviews] = useState<QueuedWorkerReview[]>([]);
-  const reviewWorkersRef = useRef<(review: QueuedWorkerReview) => void>(() => {});
   const workerSnapshotsRef = useRef(new Map<string, Map<string, GptSessionSummary>>());
   const [forkModalOpen, setForkModalOpen] = useState(false);
   const [forkNotice, setForkNotice] = useState<ForkNotice | null>(null);
@@ -170,92 +162,58 @@ export default function App() {
     const previous = workerSnapshotsRef.current.get(cwdKey);
     const nextById = new Map(sessions.map((worker) => [worker.id, worker]));
     workerSnapshotsRef.current.set(cwdKey, nextById);
+    const workersByName = new Map(sessions.map((worker) => [worker.name, worker]));
+    const pruneResolvedNotices = (notices: WorkerWakeNotice[]) => notices.flatMap((notice) => {
+      if (normalizedWorkerCwd(notice.cwd) !== cwdKey) return [notice];
+      const names = notice.names.filter((name) => {
+        const worker = workersByName.get(name);
+        return !worker || (worker.hasUnreadReply && !worker.hasActiveWaiter);
+      });
+      return names.length ? [{ ...notice, names }] : [];
+    });
+    setWorkerWakeNotices(pruneResolvedNotices);
     const completed = sessions.filter((worker) => {
       const old = previous?.get(worker.id);
-      const finishedTurn = !!old && activeWorkerStatuses.has(old.status) && ["idle", "error"].includes(worker.status);
-      const newlyUnread = worker.hasUnreadReply && (!old || !old.hasUnreadReply);
-      return finishedTurn || newlyUnread;
+      return worker.hasUnreadReply && !worker.hasActiveWaiter && (!old || !old.hasUnreadReply || !!old.hasActiveWaiter);
     });
     if (!completed.length) return;
 
-    const ownerGroups = new Map<string, { sessionId: string; cwd: string; names: string[]; signatures: string[] }>();
+    const ownerGroups = new Map<string, { sessionId: string; cwd: string; names: string[] }>();
     const currentWorkspace = workspaceRef.current;
     for (const worker of completed) {
       const signature = workerSignature(worker, effectiveCwd);
       for (const owner of currentWorkspace.sessions) {
         if (!sessionOwnsWorker(owner, worker.name, effectiveCwd, runtimeCwd) || owner.reviewedWorkerSignatures?.includes(signature)) continue;
         const key = `${owner.id}\\0${cwdKey}`;
-        const group = ownerGroups.get(key) || { sessionId: owner.id, cwd: effectiveCwd, names: [], signatures: [] };
+        const group = ownerGroups.get(key) || { sessionId: owner.id, cwd: effectiveCwd, names: [] };
         if (!group.names.includes(worker.name)) group.names.push(worker.name);
-        if (!group.signatures.includes(signature)) group.signatures.push(signature);
         ownerGroups.set(key, group);
       }
     }
     if (!ownerGroups.size) return;
 
-    setWorkspace((current) => ({
-      ...current,
-      sessions: current.sessions.map((owner) => {
-        const signatures = [...ownerGroups.values()].filter((group) => group.sessionId === owner.id).flatMap((group) => group.signatures);
-        if (!signatures.length) return owner;
-        return { ...owner, reviewedWorkerSignatures: [...new Set([...(owner.reviewedWorkerSignatures || []), ...signatures])].slice(-1_000) };
-      }),
-    }));
-    const automatic = autoWakeEnabledRef.current && !busyStateRef.current && !composerTextRef.current.trim();
     setWorkerWakeNotices((current) => {
-      const next = [...current];
+      const next = pruneResolvedNotices(current);
       for (const group of ownerGroups.values()) {
-        const incoming: WorkerWakeNotice = { ...group, automatic, dueAt: Date.now() + 1_500 };
-        const existingIndex = next.findIndex((notice) => notice.sessionId === incoming.sessionId && normalizedWorkerCwd(notice.cwd) === cwdKey);
-        if (existingIndex < 0) next.push(incoming);
-        else {
-          const existing = next[existingIndex];
-          next[existingIndex] = {
-            ...existing,
-            names: [...new Set([...existing.names, ...incoming.names])],
-            automatic: existing.automatic && incoming.automatic,
-            dueAt: existing.automatic ? existing.dueAt : incoming.dueAt,
-          };
-        }
+        const existingIndex = next.findIndex((notice) => notice.sessionId === group.sessionId && normalizedWorkerCwd(notice.cwd) === cwdKey);
+        if (existingIndex < 0) next.push(group);
+        else next[existingIndex] = { ...next[existingIndex], names: [...new Set([...next[existingIndex].names, ...group.names])] };
       }
       return next;
     });
-  }, [effectiveCwd, runtimeCwd, setWorkspace, workspaceRef]);
+  }, [effectiveCwd, runtimeCwd, workspaceRef]);
   const visibleGptSessions = gptSessionSnapshot.cwd === effectiveCwd ? gptSessionSnapshot.sessions : [];
   const activeWakeNotices = workerWakeNotices.filter((notice) => notice.sessionId === session.id);
   const workerWakeNotice = activeWakeNotices.length ? {
     names: [...new Set(activeWakeNotices.flatMap((notice) => notice.names))],
-    automatic: activeWakeNotices.every((notice) => notice.automatic),
-    dueAt: Math.min(...activeWakeNotices.map((notice) => notice.dueAt)),
   } : null;
-  const updateComposerText = (value: string) => { composerTextRef.current = value; setComposerText(value); };
+  const updateComposerText = (value: string) => setComposerText(value);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     try { localStorage.setItem("pilab-theme-v2", theme); } catch { /* storage is optional */ }
   }, [theme]);
   useEffect(() => { try { localStorage.setItem("pilab-tools-compact-v1", String(compactTools)); } catch { /* storage is optional */ } }, [compactTools]);
-  useEffect(() => { try { localStorage.setItem("pilab-gpt-auto-wake-v2", String(autoWakeEnabled)); } catch { /* storage is optional */ } }, [autoWakeEnabled]);
-  useEffect(() => {
-    if (autoWakeEnabled && !busy && !composerText.trim()) return;
-    setWorkerWakeNotices((current) => current.map((notice) => notice.automatic ? { ...notice, automatic: false } : notice));
-  }, [autoWakeEnabled, busy, composerText]);
-  useEffect(() => {
-    const timers = workerWakeNotices.filter((notice) => notice.automatic).map((notice) => window.setTimeout(() => {
-      if (!autoWakeEnabled || runLockRef.current || composerTextRef.current.trim()) {
-        setWorkerWakeNotices((current) => current.map((item) => item.sessionId === notice.sessionId && normalizedWorkerCwd(item.cwd) === normalizedWorkerCwd(notice.cwd) ? { ...item, automatic: false } : item));
-        return;
-      }
-      reviewWorkersRef.current({ sessionId: notice.sessionId, cwd: notice.cwd, names: notice.names });
-    }, Math.max(0, notice.dueAt - Date.now())));
-    return () => timers.forEach((timer) => window.clearTimeout(timer));
-  }, [workerWakeNotices, autoWakeEnabled]);
-  useEffect(() => {
-    if (busy || !queuedWorkerReviews.length) return;
-    const [review, ...remaining] = queuedWorkerReviews;
-    setQueuedWorkerReviews(remaining);
-    reviewWorkersRef.current(review);
-  }, [busy, queuedWorkerReviews]);
   useEffect(() => { fetch("/api/health").then((response) => response.json()).then((data) => setRuntimeCwd(data.workingDirectory || "")).catch(() => {}); }, []);
   useEffect(() => {
     if (!ready || !runtimeCwd || session.settings.workingDirectory || session.messages.length !== 1 || session.messages[0]?.role !== "system" || session.title !== "新建对话") return;
@@ -380,11 +338,6 @@ export default function App() {
         if (notice.sessionId !== activeId) return [notice];
         const names = notice.names.filter((name) => !dismissedNames.includes(name));
         return names.length ? [{ ...notice, names }] : [];
-      }));
-      setQueuedWorkerReviews((current) => current.flatMap((review) => {
-        if (review.sessionId !== activeId) return [review];
-        const names = review.names.filter((name) => !dismissedNames.includes(name));
-        return names.length ? [{ ...review, names }] : [];
       }));
     }
     updateActive((current) => ({
@@ -788,43 +741,51 @@ export default function App() {
     setForkModalOpen(false);
     setNotice(switchAfterCreate ? "Gemini 正在提纯；完成后将切换到新分身。" : "Gemini 正在提纯记忆结晶，完成后会在原会话中提供切换卡片。");
   }
-  function reviewWorkers(review: QueuedWorkerReview) {
+  function rememberReviewedWorkers(sessionId: string, cwd: string, names: string[]) {
+    const owner = workspaceRef.current.sessions.find((item) => item.id === sessionId);
+    if (!owner) return;
+    const signatures = visibleGptSessions
+      .filter((worker) => names.includes(worker.name) && sessionOwnsWorker(owner, worker.name, cwd, runtimeCwd))
+      .map((worker) => workerSignature(worker, cwd));
+    if (!signatures.length) return;
+    setWorkspace((current) => ({
+      ...current,
+      sessions: current.sessions.map((item) => item.id === sessionId
+        ? { ...item, reviewedWorkerSignatures: [...new Set([...(item.reviewedWorkerSignatures || []), ...signatures])].slice(-1_000) }
+        : item),
+    }));
+  }
+  function reviewWorkers(review: WorkerReview) {
     const target = workspaceRef.current.sessions.find((item) => item.id === review.sessionId);
     const unique = target ? [...new Set(review.names.filter((name) => sessionOwnsWorker(target, name, review.cwd, runtimeCwd)))] : [];
-    const matchesNotice = (notice: WorkerWakeNotice | QueuedWorkerReview) => notice.sessionId === review.sessionId && normalizedWorkerCwd(notice.cwd) === normalizedWorkerCwd(review.cwd);
+    const matchesNotice = (notice: WorkerWakeNotice | WorkerReview) => notice.sessionId === review.sessionId && normalizedWorkerCwd(notice.cwd) === normalizedWorkerCwd(review.cwd);
     if (!target || !unique.length) {
       setWorkerWakeNotices((current) => current.filter((notice) => !matchesNotice(notice)));
       return;
     }
-    const preserveManualNotice = () => setWorkerWakeNotices((current) => current.map((notice) => matchesNotice(notice) ? { ...notice, automatic: false } : notice));
     if (target.piSync) {
-      preserveManualNotice();
       setNotice("该工兵属于 Pi 同步只读会话；请先应用或放弃同步修改，再审阅交卷。");
       return;
     }
     if (runLockRef.current) {
-      setQueuedWorkerReviews((current) => {
-        const existing = current.find((item) => matchesNotice(item));
-        if (!existing) return [...current, { ...review, names: unique }];
-        return current.map((item) => matchesNotice(item) ? { ...item, names: [...new Set([...item.names, ...unique])] } : item);
-      });
-      preserveManualNotice();
+      setNotice("Gemini 正在运行；工兵交卷提醒已保留，运行结束后请再次点击审阅。");
       return;
     }
     const prompt = `后台 GPT 工兵已交卷：${unique.map((name) => `「${name}」`).join("、")}。请使用 gpt_session_read 读取这些工兵的新回复，核对完成情况，给用户一份简洁、准确的中文汇报；如有失败、问题或待决策事项，请明确指出。不要重启或打断仍在运行的工兵。`;
     if (!sendMessage(prompt, "user", true, target.id)) {
-      preserveManualNotice();
       setNotice("已保留工兵交卷提醒，但所属会话暂时不能运行；可稍后再次点击审阅。");
       return;
     }
+    rememberReviewedWorkers(target.id, review.cwd, unique);
     setWorkerWakeNotices((current) => current.filter((notice) => !matchesNotice(notice)));
   }
-  reviewWorkersRef.current = reviewWorkers;
   function reviewCurrentSessionWorkers(sessionId: string) {
     for (const notice of workerWakeNotices.filter((item) => item.sessionId === sessionId))
-      reviewWorkersRef.current({ sessionId: notice.sessionId, cwd: notice.cwd, names: notice.names });
+      reviewWorkers({ sessionId: notice.sessionId, cwd: notice.cwd, names: notice.names });
   }
   function dismissSessionWorkerWake(sessionId: string) {
+    for (const item of workerWakeNotices.filter((notice) => notice.sessionId === sessionId))
+      rememberReviewedWorkers(item.sessionId, item.cwd, item.names);
     setWorkerWakeNotices((current) => current.filter((notice) => notice.sessionId !== sessionId));
   }
   const inspectorDraft = {
@@ -845,9 +806,9 @@ export default function App() {
         <section className="conversation-pane">
           <MessageStream sessionId={session.id} scrollRequest={scrollRequest} directoryOpen={directoryOpen} onDirectoryOpenChange={setDirectoryOpen} archiveRequest={archiveToolRequest} onArchiveableGroupsChange={reportArchiveableToolGroups} messages={session.messages} busy={busy} compactTools={compactTools} streamingId={streamingId} streamingThinking={streamingThinking} toolActivity={toolActivity} gptWorkers={visibleGptSessions} lineage={session.parentSessionId ? { parentSessionId: session.parentSessionId, parentSessionTitle: session.parentSessionTitle, forkSummary: session.forkSummary } : undefined} forkNotice={forkNotice?.sourceId === session.id ? { forkId: forkNotice.forkId, title: forkNotice.title } : undefined} onSwitchFork={selectSession} onJumpToSession={selectSession} onFork={() => setForkModalOpen(true)} onMessage={updateMessage} onCall={updateCall} onAdd={addMessage} onMove={moveMessage} onDelete={deleteMessage} onDeleteCall={deleteToolCall} onAddToolResult={addManualToolResult} onBranch={branchAt} onCopy={(text) => void copyText(text)} />
           {runError?.sessionId === session.id && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>本次运行失败</strong><span>{runError.message}</span></div><button onClick={() => setRunError(null)} aria-label="关闭运行错误">关闭<X size={14} /></button></div>}
-          <ComposerBar busy={busy} blocked={!!session.piSync} toolName={toolActivity?.name} messageCount={session.messages.length} contextTokens={contextMetrics.context} savedPercent={contextMetrics.savedPercent} draft={composerText} onDraftChange={updateComposerText} backgroundWorkers={visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={workerWakeNotice} autoWakeEnabled={autoWakeEnabled} onCancelWake={() => dismissSessionWorkerWake(session.id)} onEnableAutoWake={() => setAutoWakeEnabled(true)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={sendMessage} onRun={() => void run()} onStop={() => controller.current?.abort()} />
+          <ComposerBar busy={busy} blocked={!!session.piSync} toolName={toolActivity?.name} messageCount={session.messages.length} contextTokens={contextMetrics.context} savedPercent={contextMetrics.savedPercent} draft={composerText} onDraftChange={updateComposerText} backgroundWorkers={visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={workerWakeNotice} onDismissWake={() => dismissSessionWorkerWake(session.id)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={sendMessage} onRun={() => void run()} onStop={() => controller.current?.abort()} />
         </section>
-        <RightPanel hidden={!rightOpen} onClose={() => setRightOpen(false)} session={session} busy={busy} runtimeCwd={runtimeCwd} onSessionsChange={reportGptSessions} autoWakeEnabled={autoWakeEnabled} onAutoWake={setAutoWakeEnabled} apiKey={currentApiKey} models={piConnection?.models || []} piConnected={piConnection?.connected} piDefaultModel={piConnection?.defaultModel} activeRun={activeRun} onSetting={updateSetting} onNotice={setNotice} onApiKey={(key) => setApiKeys((current) => ({ ...current, [session.id]: key }))} onRefreshAuth={() => void refreshPiStatus()} onExport={exportSession} onImport={(file) => void importSession(file)} />
+        <RightPanel hidden={!rightOpen} onClose={() => setRightOpen(false)} session={session} busy={busy} runtimeCwd={runtimeCwd} onSessionsChange={reportGptSessions} apiKey={currentApiKey} models={piConnection?.models || []} piConnected={piConnection?.connected} piDefaultModel={piConnection?.defaultModel} activeRun={activeRun} onSetting={updateSetting} onNotice={setNotice} onApiKey={(key) => setApiKeys((current) => ({ ...current, [session.id]: key }))} onRefreshAuth={() => void refreshPiStatus()} onExport={exportSession} onImport={(file) => void importSession(file)} />
       </div>
     </main>
     {debugPanel && <div className="debug-overlay" role="presentation" onClick={() => setDebugPanel(null)}>

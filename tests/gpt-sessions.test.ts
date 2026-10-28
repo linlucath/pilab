@@ -206,19 +206,17 @@ test("native GPT conversations run concurrently, accept steering, interrupt real
   } finally { await manager.shutdown(); await f.cleanup(); }
 });
 
-test("installed Pi extension lets the coordinator continue chatting and wakes it on a child reply", { timeout: 45_000 }, async () => {
+test("installed Pi extension keeps child completion as UI-only notice until the coordinator resumes", { timeout: 45_000 }, async () => {
   let releaseChild: (() => void) | undefined;
   const f = await fixture((body, res) => {
-    const serialized = JSON.stringify(body.messages);
     const users = body.messages.filter((message: any) => message.role === "user").map((message: any) => text(message.content));
     if (users[0].includes("CHILD_AUTO")) {
       assert.ok(!body.tools.some((entry: any) => entry.function.name.startsWith("gpt_session_")));
       releaseChild = () => finish(res, "child finished successfully");
       return;
     }
-    if (serialized.includes('"source":"GPT conversation"') || serialized.includes('\\"source\\":\\"GPT conversation\\"'))
-      return finish(res, "coordinator received child update");
     if (users.at(-1) === "USER_STILL_TALKING") return finish(res, "coordinator is still available");
+    if (users.at(-1) === "USER_MANUALLY_REVIEWING") return finish(res, "coordinator manually chose to review");
     if (body.messages.some((message: any) => message.role === "tool")) return finish(res, "coordinator free while child works");
     assert.ok(body.tools.some((entry: any) => entry.function.name === "gpt_session_create"));
     tool(res, "gpt_session_create", { name: "parallel child", message: "CHILD_AUTO", model });
@@ -244,8 +242,13 @@ test("installed Pi extension lets the coordinator continue chatting and wakes it
     assert.equal(created.status, "starting");
     await parent.request("prompt", { message: "USER_STILL_TALKING", streamingBehavior: "steer" });
     await until(() => assistantSaid("coordinator is still available"), () => events.slice(-5));
+    const requestsBeforeCompletion = f.requests.length;
     releaseChild!();
-    await until(() => assistantSaid("coordinator received child update"), () => ({ errors, events: events.slice(-5) }));
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    assert.equal(f.requests.length, requestsBeforeCompletion, "a child completion must not start another parent model turn");
+    assert.equal(assistantSaid("coordinator received child update"), false);
+    await parent.request("prompt", { message: "USER_MANUALLY_REVIEWING", streamingBehavior: "steer" });
+    await until(() => assistantSaid("coordinator manually chose to review"), () => ({ errors, events: events.slice(-5) }));
     const state = await parent.request("get_state");
     assert.equal(state.model.provider, "openai-codex");
     await parent.request("prompt", { message: `/gpt stop ${created.name}` });
