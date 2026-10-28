@@ -8,7 +8,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import type { SessionTool } from "./tools.ts";
 
 export interface ImageReference {
-  file: string; name: string; collection?: string; kind: "image" | "overview";
+  file: string; id?: string; size?: number; name: string; collection?: string; kind: "image" | "overview";
   mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "image/bmp"; width: number; height: number;
 }
 interface Asset {
@@ -62,9 +62,10 @@ export class LocalImageStore {
     try { width = image.get_width(); height = image.get_height(); }
     finally { image.free(); }
     if (!width || !height || width * height > 40_000_000) throw new Error("图片像素过大，请先缩小至 4,000 万像素以内。");
-    const file = `${kind === "overview" ? "previews" : "files"}/${hash(bytes)}.${extension}`;
+    const id = hash(bytes);
+    const file = `${kind === "overview" ? "previews" : "files"}/${id}.${extension}`;
     await atomic(this.filePath(file), bytes);
-    return { file, name, kind, mimeType, width, height, ...(collection ? { collection } : {}) };
+    return { file, id, size: bytes.byteLength, name, kind, mimeType, width, height, ...(collection ? { collection } : {}) };
   }
   async present(collection: string, images: PresentedImage[], cwd: string) {
     collection = title(collection);
@@ -174,6 +175,8 @@ export function imageReferences(details: unknown): ImageReference[] {
   return Array.isArray(refs) ? refs.filter((ref): ref is ImageReference =>
     !!ref && typeof ref.file === "string" && imageFilePattern.test(ref.file) && typeof ref.name === "string" &&
     ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"].includes(ref.mimeType) &&
+    (ref.id === undefined || (typeof ref.id === "string" && /^[a-f0-9]{64}$/.test(ref.id))) &&
+    (ref.size === undefined || (Number.isInteger(ref.size) && ref.size > 0 && ref.size <= maxFileBytes)) &&
     (ref.kind === "image" || ref.kind === "overview") && Number.isInteger(ref.width) && ref.width > 0 && Number.isInteger(ref.height) && ref.height > 0) : [];
 }
 

@@ -41,7 +41,7 @@ Antigravity 流式请求默认允许连续 10 分钟没有数据，避免长推�
 
 Antigravity 的 Claude 续聊会在发送前排除缺少签名的 thinking 块，以及 error/aborted 运行遗留的思考（即使已带签名），避免失败思考和重试思考被合并后触发 `thinking.signature: Field required`。原始思考仍保存在网页历史中；完整成功回复的签名、正文与工具调用不变，不伪造签名。
 
-「推理强度 / Reasoning effort」可选 off、minimal、low、medium、high、xhigh、max，Pi 订阅按当前模型能力列出档位；存在映射时直接显示实际发送值（如 minimal → low）。切换至不支持原档位的模型时，会调整到 medium 或首个支持的档位并提示。自定义接口由 Pi 转换为对应协议的参数，服务商决定实际支持范围。启用推理时省略 Temperature。推理强度随实验保存、导入导出，并记录在运行快照中；旧版开关设置兼容为 off / medium。最大输出数由 Pi 和供应商协议共同限制。编辑器支持文本消息和工具图片预览；支持图片的 Pi 订阅模型可恢复最近一次看图。OAuth 登录复用 Pi CLI，网页不单独发起登录。
+「推理强度 / Reasoning effort」可选 off、minimal、low、medium、high、xhigh、max，Pi 订阅按当前模型能力列出档位；存在映射时直接显示实际发送值（如 minimal → low）。切换至不支持原档位的模型时，会调整到 medium 或首个支持的档位并提示。自定义接口由 Pi 转换为对应协议的参数，服务商决定实际支持范围。启用推理时省略 Temperature。推理强度随实验保存、导入导出，并记录在运行快照中；旧版开关设置兼容为 off / medium。最大输出数由 Pi 和供应商协议共同限制。编辑器支持文本和图片消息、图片预览；订阅模型按目录能力判断图片支持，自定义协议使用相应的多模态序列化。OAuth 登录复用 Pi CLI，网页不单独发起登录。
 
 ### Pi Lab Agent 工具
 
@@ -122,6 +122,10 @@ GPT 直接使用自己的 `read`、`grep`、`find`、`ls`、`bash`、`edit`、`w
 用法直接写在模型每次请求收到的工具声明中：`gpt_session_wait` 的说明含调用示例，参数结构规定会话名字、等待秒数及范围；`create`、`send`、`read` 的说明也引导等待结果时使用 `wait`。终端 Pi 还会将该工具的简短使用规则加入系统提示。Gemini 无需额外读取 README，也不需要用户每次重复说明。
 
 ### Gemini 看图
+
+在输入框粘贴截图、拖入图片或使用「添加图片」。暂存托盘会显示预览、上传状态和删除操作；上传失败可重试，文本为空时按 Backspace 移除最后一张。单条消息最多 8 张、总计 40 MiB，单张最多 20 MiB；支持 PNG、JPEG、WebP、GIF、BMP。图片二进制通过独立上传接口保存，工作区消息只保留图片引用，不会把 Base64 塞入 `/api/run` JSON。请求检查会隐藏图片 Base64，只显示其类型和大致大小。
+
+默认 Gemini 地址使用 Google 的 OpenAI 兼容 Chat Completions API，因此图片按 OpenAI 多模态 `image_url` Data URL 格式发送；它不是原生 Gemini `generateContent` 的 `inlineData/parts` 请求。Pi 订阅使用模型目录对应的原生协议序列化。模型不支持图片时会明确报错，不会静默丢弃附件。
 
 使用支持图片的 Pi 订阅模型，并将工具模式设为 Agent。可以直接告诉 Gemini：
 

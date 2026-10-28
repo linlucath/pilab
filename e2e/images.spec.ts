@@ -1,9 +1,9 @@
 import { test, expect } from "@playwright/test";
-import { prepareE2eWorkspace } from "./fixtures/index";
+import { prepareE2eWorkspace, setMockScript } from "./fixtures/index";
 
 const imageFile = `files/${"a".repeat(64)}.png`;
 const missingImageFile = `files/${"b".repeat(64)}.png`;
-const validPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/XioAAAAASUVORK5CYII=", "base64");
+const validPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", "base64");
 const images = [
   { file: imageFile, name: "IMG-REFRESH-IMAGE", collection: "IMG-FIXTURE", kind: "image" as const, mimeType: "image/png" as const, width: 1, height: 1 },
   { file: missingImageFile, name: "IMG-MISSING-IMAGE", collection: "IMG-FIXTURE", kind: "image" as const, mimeType: "image/png" as const, width: 1, height: 1 },
@@ -54,6 +54,118 @@ test("IMG-02 消息缩略图可放大并关闭，图片加载失败不阻塞文�
   await page.locator(".image-lightbox").click({ position: { x: 3, y: 3 } });
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.locator(".message-row--user-bubble p").filter({ hasText: "IMG-02-TEXT-REMAINS" })).toBeVisible();
+});
+
+test("IMG-05 粘贴、拖放、退格移除并发送图片引用", async ({ page }) => {
+  await prepareE2eWorkspace(page, [{
+    id: "image-input-session",
+    title: "image-input-session",
+    messages: [{ id: "existing-user", role: "user", content: "IMG-05-START", enabled: true }],
+  }]);
+  await setMockScript(page, [{ type: "text", text: "固定图片回复" }]);
+  const controls = page.getByRole("textbox", { name: "撰写新消息" });
+  const base64 = validPng.toString("base64");
+  const textPastePrevented = await controls.evaluate((element) => {
+    const transfer = new DataTransfer();
+    transfer.setData("text/plain", "ordinary pasted text");
+    const event = new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer });
+    element.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(textPastePrevented).toBe(false);
+  const uploadUrl = new URL(`/api/images/upload?name=${encodeURIComponent("direct.png")}`, page.url()).href;
+  const uploadResponse = await page.request.post(uploadUrl, { headers: { "Content-Type": "application/octet-stream" }, data: validPng });
+  expect(uploadResponse.status()).toBe(201);
+  const uploaded = (await uploadResponse.json()).image as { id: string; mimeType: string; size: number; file: string };
+  expect(uploaded).toMatchObject({ id: expect.any(String), mimeType: "image/png", size: validPng.length });
+  expect(uploaded.file).toContain(uploaded.id);
+  const rejectedUpload = await page.request.post(new URL("/api/images/upload?name=invalid.txt", page.url()).href, {
+    headers: { "Content-Type": "application/octet-stream" }, data: Buffer.from("not an image"),
+  });
+  expect(rejectedUpload.status()).toBe(400);
+  expect((await rejectedUpload.json()).error).toContain("PNG、JPEG、WebP、GIF 或 BMP");
+  const largeBinary = await page.request.post(new URL("/api/images/upload?name=large-invalid.bin", page.url()).href, {
+    headers: { "Content-Type": "application/octet-stream" }, data: Buffer.alloc(6 * 1024 * 1024),
+  });
+  expect(largeBinary.status()).toBe(400);
+  expect((await largeBinary.json()).error).toContain("PNG、JPEG、WebP、GIF 或 BMP");
+  const runBodies: Record<string, any>[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/run" && request.method() === "POST") {
+      const body = request.postDataJSON() as Record<string, any>;
+      runBodies.push(body);
+    }
+  });
+
+  await controls.evaluate((element, value) => {
+    const bytes = Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([bytes], "clipboard.png", { type: "image/png" }));
+    element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }));
+  }, base64);
+  const tray = page.locator(".composer-image-tray");
+  await expect(tray.locator(".staged-image[data-status=ready]")).toHaveCount(1);
+  await expect(tray.getByRole("img", { name: "clipboard.png" })).toBeVisible();
+  await controls.focus();
+  await controls.press("Backspace");
+  await expect(page.locator(".staged-image")).toHaveCount(0);
+
+  const composer = page.locator(".composer-card");
+  await composer.evaluate((element) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["not an image"], "not-image.txt", { type: "text/plain" }));
+    element.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+  });
+  await expect(page.getByRole("alert").filter({ hasText: "不是支持的" })).toBeVisible();
+  await composer.evaluate((element, value) => {
+    const bytes = Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([bytes], "drop-a.png", { type: "image/png" }));
+    transfer.items.add(new File([bytes], "drop-b.png", { type: "image/png" }));
+    element.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+  }, base64);
+  await expect(composer).toHaveClass(/is-drag-over/);
+  await composer.evaluate((element, value) => {
+    const bytes = Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([bytes], "drop-a.png", { type: "image/png" }));
+    transfer.items.add(new File([bytes], "drop-b.png", { type: "image/png" }));
+    element.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+  }, base64);
+  await expect(tray.locator(".staged-image[data-status=ready]")).toHaveCount(2);
+
+  await tray.getByRole("button", { name: "移除图片 1" }).click();
+  await expect(tray.locator(".staged-image[data-status=ready]")).toHaveCount(1);
+  await controls.focus();
+  await controls.press("Backspace");
+  await expect(page.locator(".staged-image")).toHaveCount(0);
+
+  await page.route("**/api/images/upload**", async (route) => {
+    if (new URL(route.request().url()).searchParams.get("name") === "send.png") await new Promise((resolve) => setTimeout(resolve, 350));
+    await route.continue();
+  });
+  await controls.evaluate((element, value) => {
+    const bytes = Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([bytes], "send.png", { type: "image/png" }));
+    element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }));
+  }, base64);
+  await expect(tray.locator(".staged-image[data-status=uploading]")).toHaveCount(1);
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.locator(".composer-image-error")).toContainText("仍在上传");
+  await expect(tray.locator(".staged-image[data-status=ready]")).toHaveCount(1);
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.locator(".message-row").filter({ hasText: "IMG-05-START" })).toBeVisible();
+  await expect(page.getByText("固定图片回复")).toBeVisible();
+  await expect(page.locator(".staged-image")).toHaveCount(0);
+
+  const body = runBodies.at(-1);
+  expect(body).toBeTruthy();
+  const sent = body!.messages.find((message: any) => message.content === "" && message.images?.length);
+  expect(sent.images).toHaveLength(1);
+  expect(sent.images[0]).toMatchObject({ id: expect.any(String), size: validPng.length, mimeType: "image/png" });
+  expect(JSON.stringify(body)).not.toContain("data:image/");
+  expect(JSON.stringify(body)).not.toContain(base64);
 });
 
 test("IMG-03 刷新及导入后恢复项目图片引用，导出不内嵌原图", async ({ page }) => {

@@ -275,7 +275,7 @@ test("WSP-04 导出再导入会话生成独立副本并分配新消息 ID", asyn
   expect(sourcePath).toBeTruthy();
   const sourceJson = JSON.parse(await readFile(sourcePath!, "utf8")) as { title: string; messages: { id: string; content: string }[] };
   const sourceIds = sourceJson.messages.map((message) => message.id);
-  await page.locator('input[type="file"]').setInputFiles(sourcePath!);
+  await page.locator('input[type="file"][accept=".json,application/json"]').setInputFiles(sourcePath!);
   await expect(page.getByText("会话已导入。", { exact: false })).toBeVisible();
   await waitForWorkspace(page, (workspace) => workspace.sessions.length === 2);
   const workspace = await savedWorkspace(page);
@@ -289,7 +289,7 @@ test("WSP-04 导出再导入会话生成独立副本并分配新消息 ID", asyn
 
 test("WSP-05 拒绝过大、损坏和结构错误导入且恢复后可再次选择合法文件", async ({ page }) => {
   await advancedSettings(page);
-  const file = page.locator('input[type="file"]');
+  const file = page.locator('input[type="file"][accept=".json,application/json"]');
   const before = (await savedWorkspace(page)).sessions.length;
   for (const [name, buffer] of [
     ["too-large.json", Buffer.alloc(5_000_001, 32)],

@@ -602,7 +602,7 @@ export default function App() {
     if (activeSession.piSync) { setNotice("请先在 Pi CLI 同步菜单中应用或放弃本地修改。"); return; }
     const runMessages = messagesToRun || activeSession.messages;
     const activeMessages = runMessages.filter((message) => message.enabled);
-    if (!activeMessages.length || !activeMessages.some((message) => message.content.trim() || message.toolCalls?.length || message.role === "tool")) {
+    if (!activeMessages.length || !activeMessages.some((message) => message.content.trim() || message.images?.length || message.toolCalls?.length || message.role === "tool")) {
       const message = "请先添加至少一条有内容且已启用的消息。";
       setRunError({ sessionId: activeSession.id, message }); return;
     }
@@ -761,12 +761,14 @@ export default function App() {
       if (forkSwitchSourceRef.current === sessionId) forkSwitchSourceRef.current = null;
     }
   }
-  const sendMessage = (content: string, role: Message["role"], shouldRun: boolean, targetSessionId?: string): boolean => {
+  const sendMessage = (content: string, role: Message["role"], shouldRun: boolean, targetSessionOrImages?: string | Message["images"]): boolean => {
+    const targetSessionId = typeof targetSessionOrImages === "string" ? targetSessionOrImages : undefined;
+    const images = Array.isArray(targetSessionOrImages) ? targetSessionOrImages : undefined;
     if (runLockRef.current || !ready) return false;
     const activeId = targetSessionId || workspaceRef.current.active;
     const activeSession = workspaceRef.current.sessions.find((item) => item.id === activeId);
     if (!activeSession || activeSession.piSync) return false;
-    const message: Message = { id: uid(), role, content, enabled: true };
+    const message: Message = { id: uid(), role, content, enabled: true, ...(images?.length ? { images } : {}) };
     const nextWorkspace = setWorkspace((current) => {
       const target = current.sessions.find((item) => item.id === activeId);
       if (!target || target.piSync) return current;

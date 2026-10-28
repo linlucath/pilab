@@ -33,6 +33,16 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json({ limit: "5mb" }));
+app.post("/api/images/upload", express.raw({ type: "application/octet-stream", limit: "20mb" }), async (req, res) => {
+  try {
+    if (!Buffer.isBuffer(req.body) || !req.body.length) throw new Error("图片上传内容为空。");
+    const name = typeof req.query.name === "string" && req.query.name.trim() ? req.query.name : "粘贴图片";
+    const image = await projectImages.saveImage(req.body, name);
+    res.status(201).set("Cache-Control", "no-store").json({ image });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "图片上传失败。" });
+  }
+});
 app.get("/api/images/file", (req, res) => {
   try {
     if (typeof req.query.file !== "string") throw new Error("图片引用无效。");

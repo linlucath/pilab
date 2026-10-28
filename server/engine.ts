@@ -36,6 +36,16 @@ import {
 } from "./transcript";
 
 export type Emit = (event: Record<string, unknown>) => void;
+function inspectorPayload(value: unknown): unknown {
+  if (typeof value === "string") {
+    const match = /^data:(image\/[^;]+);base64,([\s\S]*)$/i.exec(value);
+    return match ? `data:${match[1]};base64,[base64 image omitted; approximately ${Math.floor(match[2].length * 3 / 4)} bytes]` : value;
+  }
+  if (Array.isArray(value)) return value.map(inspectorPayload);
+  if (value && typeof value === "object")
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, inspectorPayload(item)]));
+  return value;
+}
 export function validateReasoningEffort(settings: Settings, model: Model<Api>) {
   const effort = getReasoningEffort(settings);
   if (!getSupportedThinkingLevels(model).includes(effort))
@@ -143,7 +153,7 @@ export function validateTranscript(settings: Settings, messages: Message[]) {
   if (
     !active.length ||
     !active.some(
-      (m) => m.content.trim() || m.toolCalls?.length || m.role === "tool",
+      (m) => m.content.trim() || m.images?.length || m.toolCalls?.length || m.role === "tool",
     )
   )
     throw new Error("请添加至少一条有内容且已启用的消息。");
@@ -226,12 +236,15 @@ export async function generate(
     ...(settings.protocol !== "anthropic-messages"
       ? { thinkingLevelMap: { xhigh: "xhigh", max: "max" } }
       : {}),
-    input: ["text"],
+    // Custom API protocols have multimodal serializers; the selected model is ultimately validated upstream.
+    input: ["text", "image"],
     contextWindow: 1_000_000,
     maxTokens: settings.maxTokens,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   };
   if (subscribedModel) validateReasoningEffort(settings, subscribedModel);
+  if (active.some((message) => message.images?.length) && !model.input.includes("image"))
+    throw new Error(`模型 ${model.id} 不支持图片输入，请切换支持图片的模型。`);
   const generatedTranscript: Message[] = [];
   const history = () => [...active, ...generatedTranscript];
   const onEvent = (event: Record<string, unknown>) => {
@@ -279,7 +292,7 @@ export async function generate(
         const exact = hasImages || (subscription && chosen.api !== "openai-codex-responses")
           ? payload
           : exactPayload(payload, settings, currentMessages);
-        emit({ type: "request", turn: requestCount, payload: exact });
+        emit({ type: "request", turn: requestCount, payload: inspectorPayload(exact) });
         return exact;
       },
     };

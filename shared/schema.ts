@@ -28,12 +28,22 @@ const thinkingSchema = z.object({
   thinkingSignature: z.string().max(1_000_000).optional(),
   redacted: z.boolean().optional(),
 });
+export const MAX_MESSAGE_IMAGES = 8;
+export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+export const MAX_MESSAGE_IMAGE_BYTES = 40 * 1024 * 1024;
 export const imageReferenceSchema = z.object({
   file: z.string().regex(/^(files|previews)\/[a-f0-9]{64}\.(png|jpg|webp|gif|bmp)$/),
+  id: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   name: z.string().max(100), collection: z.string().max(100).optional(),
   kind: z.enum(["image", "overview"]),
   mimeType: z.enum(["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"]),
   width: z.number().int().positive(), height: z.number().int().positive(),
+  size: z.number().int().positive().max(MAX_IMAGE_BYTES).optional(),
+});
+const messageImagesSchema = z.array(imageReferenceSchema).max(MAX_MESSAGE_IMAGES).superRefine((images, context) => {
+  const knownBytes = images.reduce((total, image) => total + (image.size || 0), 0);
+  if (knownBytes > MAX_MESSAGE_IMAGE_BYTES)
+    context.addIssue({ code: "custom", message: `单条消息图片总大小不能超过 ${MAX_MESSAGE_IMAGE_BYTES / (1024 * 1024)} MiB。` });
 });
 export const messageSchema = z.object({
   id: z.string().min(1).max(100),
@@ -51,7 +61,7 @@ export const messageSchema = z.object({
     sequence: z.number().int().nonnegative(),
     digest: z.string().regex(/^[a-f0-9]{64}$/),
   }).optional(),
-  images: z.array(imageReferenceSchema).max(2).optional(),
+  images: messageImagesSchema.optional(),
   providerState: z
     .object({
       api: z.string().max(100),
