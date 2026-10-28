@@ -15,3 +15,4 @@
 - [x] ISSUE-09 运行中分段控件对比度过低 · MOD-02、MOD-06 · UI 评审 · 思考强度和工具模式控件禁用时几乎不可辨认；保持禁用语义，同时确保文字与背景对比度可读。
 - [x] ISSUE-200 模型工作台缺少 reasoning=off 入口，模型切换后不调整不支持的档位 · MOD-02 · Playwright mock（e2e/models.spec.ts）与 `tests/engine.test.ts` · 已提供 Off，切换到不支持档位时按最近支持档位校正并提示；关闭推理后 Temperature 可用并进入请求。
 - [x] ISSUE-201 运行失败同时出现横幅和 toast 重复提示 · RUN-05 · Playwright mock（e2e/runs.spec.ts） · 错误信息保留在运行横幅，移除重复 toast；连接失败、模型失败和流中断均验证无 toast。
+- [x] ISSUE-202 Markdown 段落刷新误推进行游标导致后续内容不显示 · MSG-09 · `flush()` 改用独立 `blockKey`；空行、列表、标题、分隔线、闭合/未闭合代码块经单测与 Playwright 回归验证。

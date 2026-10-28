@@ -52,14 +52,15 @@ export function Markdown({ content, highlight = "", trailing }: { content: strin
   const blocks: ReactNode[] = [];
   let paragraph: string[] = [];
   let index = 0;
-  const flush = () => { if (paragraph.length) { blocks.push(<p key={`p-${index++}`}>{paragraph.map((line, i) => <Fragment key={i}>{i > 0 && <br />}{inline(line, highlight)}</Fragment>)}</p>); paragraph = []; } };
+  let blockKey = 0;
+  const flush = () => { if (paragraph.length) { blocks.push(<p key={`p-${blockKey++}`}>{paragraph.map((line, i) => <Fragment key={i}>{i > 0 && <br />}{inline(line, highlight)}</Fragment>)}</p>); paragraph = []; } };
   while (index < lines.length) {
     const line = lines[index];
     if (/^\s*```/.test(line)) {
       flush(); const code = [line]; index++;
       while (index < lines.length && !/^\s*```/.test(lines[index])) code.push(lines[index++]);
       if (index < lines.length) code.push(lines[index++]);
-      blocks.push(<CodeBlock key={`code-${index}`} source={code.join("\n")} />); continue;
+      blocks.push(<CodeBlock key={`code-${blockKey++}`} source={code.join("\n")} />); continue;
     }
     const trimmed = line.trim();
     if (!trimmed) { flush(); index++; continue; }
@@ -76,18 +77,18 @@ export function Markdown({ content, highlight = "", trailing }: { content: strin
           ? rows.filter((_, rowIndex) => rowIndex !== separator && (!hasHeader || rowIndex !== 0)).map(cells)
           : rows.slice(1).map(cells);
         const columnCount = Math.max(header?.length || 0, ...dataRows.map((row) => row.length), 1);
-        blocks.push(<div className="table-scroll" key={`table-${end}`}><table>{header && <thead><tr>{Array.from({ length: columnCount }, (_, column) => <th key={column}>{inline(header[column] || "", highlight)}</th>)}</tr></thead>}<tbody>{dataRows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, column) => <td key={column}>{inline(cell, highlight)}</td>)}</tr>)}</tbody></table></div>);
+        blocks.push(<div className="table-scroll" key={`table-${blockKey++}`}><table>{header && <thead><tr>{Array.from({ length: columnCount }, (_, column) => <th key={column}>{inline(header[column] || "", highlight)}</th>)}</tr></thead>}<tbody>{dataRows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, column) => <td key={column}>{inline(cell, highlight)}</td>)}</tr>)}</tbody></table></div>);
         index = end; continue;
       }
     }
     const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
-    if (heading) { flush(); const Tag = heading[1].length === 1 ? "h1" : heading[1].length === 2 ? "h2" : heading[1].length === 3 ? "h3" : "h4"; blocks.push(<Tag key={`h-${index}`}>{inline(heading[2], highlight)}</Tag>); index++; continue; }
-    if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed)) { flush(); blocks.push(<hr key={`hr-${index++}`} />); continue; }
+    if (heading) { flush(); const Tag = heading[1].length === 1 ? "h1" : heading[1].length === 2 ? "h2" : heading[1].length === 3 ? "h3" : "h4"; blocks.push(<Tag key={`h-${blockKey++}`}>{inline(heading[2], highlight)}</Tag>); index++; continue; }
+    if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed)) { flush(); blocks.push(<hr key={`hr-${blockKey++}`} />); index++; continue; }
     const bullet = /^(?:[-*+]\s+)(.+)$/.exec(trimmed);
     const numbered = /^\d+[.)]\s+(.+)$/.exec(trimmed);
     if (bullet || numbered) { flush(); const list: ReactNode[] = []; const ordered = !!numbered;
-      while (index < lines.length) { const current = lines[index].trim(); const item = ordered ? /^\d+[.)]\s+(.+)$/.exec(current) : /^(?:[-*+]\s+)(.+)$/.exec(current); if (!item) break; list.push(<li key={index}>{inline(item[1], highlight)}</li>); index++; }
-      blocks.push(ordered ? <ol key={`list-${index}`}>{list}</ol> : <ul key={`list-${index}`}>{list}</ul>); continue;
+      while (index < lines.length) { const current = lines[index].trim(); const item = ordered ? /^\d+[.)]\s+(.+)$/.exec(current) : /^(?:[-*+]\s+)(.+)$/.exec(current); if (!item) break; list.push(<li key={list.length}>{inline(item[1], highlight)}</li>); index++; }
+      blocks.push(ordered ? <ol key={`list-${blockKey++}`}>{list}</ol> : <ul key={`list-${blockKey++}`}>{list}</ul>); continue;
     }
     paragraph.push(trimmed); index++;
   }

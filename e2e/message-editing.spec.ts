@@ -352,3 +352,26 @@ test("MSG-09 安全渲染 Markdown、表格和代码并只复制代码内容", a
   await expect(target.locator(".markdown-code .code-head button")).toContainText("已复制");
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(codeText);
 });
+
+test("MSG-09 Markdown 块边界和空行不吞掉用户正文", async ({ page }) => {
+  await openSeed(page, [
+    msg("msg-09-boundary-system", "system", "system"),
+    msg("msg-09-boundary-blank", "user", "PARAGRAPH\n\nAFTER_BLANK\nEND_BLANK"),
+    msg("msg-09-boundary-list", "user", "Intro\n- FIRST_ITEM\n- SECOND_ITEM\nAFTER_LIST"),
+    msg("msg-09-boundary-code", "user", "Intro\n```\nconst a = 1;\n```\nAFTER_CODE"),
+    msg("msg-09-boundary-heading", "user", "Intro\n## Heading\nBODY_AFTER_HEADING"),
+    msg("msg-09-boundary-rule", "user", "Intro\n---\nBODY_AFTER_RULE"),
+    msg("msg-09-boundary-unclosed-code", "user", "Intro\n```\nconst unclosed = true;"),
+  ]);
+
+  await expect(row(page, "msg-09-boundary-blank").locator(".message-content")).toContainText("AFTER_BLANK");
+  await expect(row(page, "msg-09-boundary-list").locator(".markdown-body > ul > li")).toHaveText(["FIRST_ITEM", "SECOND_ITEM"]);
+  await expect(row(page, "msg-09-boundary-list").locator(".message-content")).toContainText("AFTER_LIST");
+  await expect(row(page, "msg-09-boundary-code").locator(".markdown-code pre code")).toHaveText("const a = 1;");
+  await expect(row(page, "msg-09-boundary-code").locator(".message-content")).toContainText("AFTER_CODE");
+  await expect(row(page, "msg-09-boundary-heading").getByRole("heading", { name: "Heading" })).toBeVisible();
+  await expect(row(page, "msg-09-boundary-heading").locator(".message-content")).toContainText("BODY_AFTER_HEADING");
+  await expect(row(page, "msg-09-boundary-rule").locator("hr")).toBeVisible();
+  await expect(row(page, "msg-09-boundary-rule").locator(".message-content")).toContainText("BODY_AFTER_RULE");
+  await expect(row(page, "msg-09-boundary-unclosed-code").locator(".markdown-code pre code")).toHaveText("const unclosed = true;");
+});
