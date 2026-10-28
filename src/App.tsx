@@ -7,7 +7,7 @@ import {
 import type { PiLiveDetail, PiLiveSession } from "../shared/pi-sync";
 import type { GptSessionSummary } from "../shared/gpt-sessions";
 import { piSessionIdentity } from "../shared/workspace";
-import { completeToolBranchEnd, deleteMessageWithToolPairs, deleteToolCallWithResult, patchMessageWithToolPairs, patchToolCallWithResult, toolHistoryError } from "../shared/tool-history";
+import { addToolResult as createToolResult, completeToolBranchEnd, deleteMessageWithToolPairs, deleteToolCallWithResult, patchMessageWithToolPairs, patchToolCallWithResult, toolHistoryError } from "../shared/tool-history";
 import { useProjectWorkspace, type Run, type Session, type Workspace } from "./workspace-store";
 import { newSession, uid, loadLegacyWorkspace, parseToolArguments } from "./utils/session";
 import { contextTokenMetrics } from "./utils/context-tokens";
@@ -401,6 +401,26 @@ export default function App() {
       messages: deleteToolCallWithResult(current.messages, assistantId, callId),
       ...(current.piSync ? { piSync: { ...current.piSync, dirty: true } } : {}),
     }));
+  };
+  const addManualToolResult = (assistantId: string, callId: string, content: string, isError: boolean): boolean => {
+    if (currentRunLocksActiveSession()) return false;
+    const active = workspaceRef.current.sessions.find((item) => item.id === workspaceRef.current.active);
+    if (!active) return false;
+    let messages: Message[];
+    try { messages = createToolResult(active.messages, assistantId, callId, content, isError); }
+    catch (error) { setNotice(error instanceof Error ? error.message : String(error)); return false; }
+    const nextWorkspace = setWorkspace((current) => ({
+      ...current,
+      sessions: current.sessions.map((item) => item.id !== active.id ? item : {
+        ...item, messages, ...(item.piSync ? { piSync: { ...item.piSync, dirty: true } } : {}),
+      }),
+    }));
+    const updated = nextWorkspace.sessions.find((item) => item.id === active.id);
+    if (!updated) return false;
+    if (!toolHistoryError(updated.messages.filter((message) => message.enabled)))
+      setRunError((current) => current?.sessionId === active.id && /工具调用|工具结果|Call ID/.test(current.message) ? null : current);
+    setScrollRequest((value) => value + 1);
+    return true;
   };
   const createSession = (copy?: Session) => {
     if (runLockRef.current) return;
@@ -823,7 +843,7 @@ export default function App() {
       <div className="workspace-body">
         {rightOpen && <button type="button" className="right-panel-backdrop" aria-label="关闭工作台遮罩" onClick={() => setRightOpen(false)} />}
         <section className="conversation-pane">
-          <MessageStream sessionId={session.id} scrollRequest={scrollRequest} directoryOpen={directoryOpen} onDirectoryOpenChange={setDirectoryOpen} archiveRequest={archiveToolRequest} onArchiveableGroupsChange={reportArchiveableToolGroups} messages={session.messages} busy={busy} compactTools={compactTools} streamingId={streamingId} streamingThinking={streamingThinking} toolActivity={toolActivity} gptWorkers={visibleGptSessions} lineage={session.parentSessionId ? { parentSessionId: session.parentSessionId, parentSessionTitle: session.parentSessionTitle, forkSummary: session.forkSummary } : undefined} forkNotice={forkNotice?.sourceId === session.id ? { forkId: forkNotice.forkId, title: forkNotice.title } : undefined} onSwitchFork={selectSession} onJumpToSession={selectSession} onFork={() => setForkModalOpen(true)} onMessage={updateMessage} onCall={updateCall} onAdd={addMessage} onMove={moveMessage} onDelete={deleteMessage} onDeleteCall={deleteToolCall} onBranch={branchAt} onCopy={(text) => void copyText(text)} />
+          <MessageStream sessionId={session.id} scrollRequest={scrollRequest} directoryOpen={directoryOpen} onDirectoryOpenChange={setDirectoryOpen} archiveRequest={archiveToolRequest} onArchiveableGroupsChange={reportArchiveableToolGroups} messages={session.messages} busy={busy} compactTools={compactTools} streamingId={streamingId} streamingThinking={streamingThinking} toolActivity={toolActivity} gptWorkers={visibleGptSessions} lineage={session.parentSessionId ? { parentSessionId: session.parentSessionId, parentSessionTitle: session.parentSessionTitle, forkSummary: session.forkSummary } : undefined} forkNotice={forkNotice?.sourceId === session.id ? { forkId: forkNotice.forkId, title: forkNotice.title } : undefined} onSwitchFork={selectSession} onJumpToSession={selectSession} onFork={() => setForkModalOpen(true)} onMessage={updateMessage} onCall={updateCall} onAdd={addMessage} onMove={moveMessage} onDelete={deleteMessage} onDeleteCall={deleteToolCall} onAddToolResult={addManualToolResult} onBranch={branchAt} onCopy={(text) => void copyText(text)} />
           {runError?.sessionId === session.id && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>本次运行失败</strong><span>{runError.message}</span></div><button onClick={() => setRunError(null)} aria-label="关闭运行错误">关闭<X size={14} /></button></div>}
           <ComposerBar busy={busy} blocked={!!session.piSync} toolName={toolActivity?.name} messageCount={session.messages.length} contextTokens={contextMetrics.context} savedPercent={contextMetrics.savedPercent} draft={composerText} onDraftChange={updateComposerText} backgroundWorkers={visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={workerWakeNotice} autoWakeEnabled={autoWakeEnabled} onCancelWake={() => dismissSessionWorkerWake(session.id)} onEnableAutoWake={() => setAutoWakeEnabled(true)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={sendMessage} onRun={() => void run()} onStop={() => controller.current?.abort()} />
         </section>

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  addToolResult,
   completeToolBranchEnd,
   deleteMessageWithToolPairs,
   deleteToolCallWithResult,
@@ -24,6 +25,36 @@ const result = (id: string, callId: string, name = "lookup"): Message => ({
 
 test("tool history accepts consecutive user messages and correctly paired calls", () => {
   assert.equal(toolHistoryError([user("u1"), user("u2"), call("c1"), result("r1", "c1")]), null);
+});
+
+test("manually adding a result completes an isolated pending tool call", () => {
+  const assistant = call("manual-call");
+  const messages = [user("before"), assistant, user("after")];
+  const completed = addToolResult(messages, assistant.id, "manual-call", "{\"ok\":true}", false);
+  assert.deepEqual(completed.slice(0, 2).map((message) => message.id), ["before", assistant.id]);
+  assert.equal(completed[2].role, "tool");
+  assert.equal(completed[2].toolCallId, "manual-call");
+  assert.equal(completed[2].toolName, "lookup");
+  assert.equal(completed[2].content, "{\"ok\":true}");
+  assert.equal(completed[2].enabled, assistant.enabled);
+  assert.equal(completed[3].id, "after");
+  assert.equal(toolHistoryError(completed), null);
+});
+
+test("manually completing concurrent calls appends after prior tool results in the call group", () => {
+  const assistant: Message = { ...call("parallel-a"), toolCalls: [
+    { id: "parallel-a", name: "lookup", arguments: "{}" },
+    { id: "parallel-b|provider", name: "search", arguments: "{}" },
+    { id: "parallel-c", name: "fetch", arguments: "{}" },
+  ] };
+  const messages = [user("before-parallel"), assistant, result("result-a", "parallel-a"), user("after-parallel")];
+  const withB = addToolResult(messages, assistant.id, "parallel-b|request", "B", false);
+  const completed = addToolResult(withB, assistant.id, "parallel-c", "C", true);
+  assert.deepEqual(completed.slice(2, 5).map((message) => message.toolCallId), ["parallel-a", "parallel-b|provider", "parallel-c"]);
+  assert.deepEqual(completed.slice(2, 5).map((message) => message.content), ["ok", "B", "C"]);
+  assert.equal(completed[4].isError, true);
+  assert.equal(completed[5].id, "after-parallel");
+  assert.equal(toolHistoryError(completed), null);
 });
 
 test("tool history explains orphan and incomplete tool messages", () => {

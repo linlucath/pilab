@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { openRequestInspector, openWorkspace, resetWorkspace, setMockScript, toolSummary, ui } from "./fixtures/index";
+import { e2eSession, openRequestInspector, openWorkspace, resetWorkspace, seedWorkspace, setMockScript, toolSummary, ui } from "./fixtures/index";
+import type { Message } from "../shared/schema";
 
 async function ready(page: Page) {
   await openWorkspace(page);
@@ -66,6 +67,63 @@ test("TOOL-01 正文不随工具折叠消失，显示调用状态、配对结果
   await openToolBody(steps.nth(0));
   const renderedTrajectory = await page.locator(".message-stream").innerText();
   expect(renderedTrajectory.indexOf("TOOL01-RESULT-FIRST")).toBeLessThan(renderedTrajectory.indexOf("TOOL01-RESULT-SECOND"));
+});
+
+test("TOOL-03 手动添加待返回结果可解除校验、编辑并继续运行", async ({ page }) => {
+  const sessionId = "manual-tool-result-session";
+  const messages: Message[] = [
+    { id: "manual-system", role: "system", content: "You are a test assistant.", enabled: true },
+    { id: "manual-user", role: "user", content: "Please finish the pending tool calls.", enabled: true },
+    { id: "manual-assistant", role: "assistant", content: "", enabled: true, toolCalls: [
+      { id: "manual-call-1", name: "e2e_mock_tool", arguments: "{\"input\":\"one\"}" },
+      { id: "manual-call-2", name: "e2e_mock_tool", arguments: "{\"input\":\"two\"}" },
+    ] },
+  ];
+  await seedWorkspace(page, [e2eSession(sessionId, "Manual tool result", messages)]);
+  await openWorkspace(page);
+
+  await runCurrent(page);
+  await expect(ui(page).alerts).toContainText("添加工具结果");
+  const tools = page.locator(".tool-step[data-tool-name='e2e_mock_tool']");
+  await expect(tools).toHaveCount(2);
+  await openToolBody(tools.nth(0));
+  await tools.nth(0).getByRole("button", { name: "添加结果" }).click();
+  const firstEditor = tools.nth(0).getByRole("textbox", { name: "工具结果内容" });
+  await firstEditor.fill("discard draft");
+  await firstEditor.press("Escape");
+  await expect(firstEditor).toHaveCount(0);
+  await tools.nth(0).getByRole("button", { name: "添加结果" }).click();
+  await firstEditor.fill("MANUAL-RESULT-ONE");
+  await firstEditor.press("Control+Enter");
+  await expect(tools.nth(0).locator(".tool-state")).toHaveText("完成");
+  await expect(ui(page).alerts).toContainText("添加工具结果");
+
+  await openToolBody(tools.nth(1));
+  await tools.nth(1).getByRole("button", { name: "添加结果" }).click();
+  await tools.nth(1).getByRole("textbox", { name: "工具结果内容" }).fill('{"ok":true}');
+  await tools.nth(1).getByRole("checkbox", { name: /标记为错误/ }).check();
+  await tools.nth(1).getByRole("button", { name: /保存/ }).click();
+  await openToolGroups(page);
+  await expect(tools.nth(1).locator(".tool-state")).toHaveText("失败");
+  await expect(ui(page).alerts).toHaveCount(0);
+
+  await openRaw(tools.nth(0));
+  await tools.nth(0).locator(".tool-raw-fields label").filter({ hasText: "工具结果" }).locator("textarea").fill("MANUAL-RESULT-EDITED");
+  await tools.nth(0).getByRole("button", { name: "收起原始参数" }).click();
+  await setMockScript(page, [{ type: "text", text: "TOOL03-MANUAL-RESULT-RUN" }]);
+  await runCurrent(page);
+  await expect(page.getByText("TOOL03-MANUAL-RESULT-RUN", { exact: true })).toBeVisible();
+
+  await expect.poll(async () => {
+    const response = await page.request.get("/api/workspace");
+    const data = await response.json();
+    const session = data.workspace.sessions.find((item: { id: string }) => item.id === sessionId);
+    return session?.messages.find((message: { role: string; toolCallId?: string }) => message.role === "tool" && message.toolCallId === "manual-call-1")?.content;
+  }).toBe("MANUAL-RESULT-EDITED");
+
+  await openToolBody(tools.nth(0));
+  await tools.nth(0).getByRole("button", { name: "删除此步骤及配对结果" }).click();
+  await expect(tools).toHaveCount(1);
 });
 
 test("TOOL-01 运行中的工具显示待返回状态，完成后状态更新", async ({ page }) => {

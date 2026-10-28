@@ -21,6 +21,7 @@ type Props = {
   onAdd: (after?: number, role?: Message["role"]) => void;
   onMove: (index: number, delta: number) => void; onDelete: (id: string) => void;
   onDeleteCall: (assistantId: string, callId: string) => void;
+  onAddToolResult: (assistantId: string, callId: string, content: string, isError: boolean) => boolean;
   onBranch: (message: Message, index: number) => void;
   directoryOpen?: boolean; onDirectoryOpenChange?: (open: boolean) => void;
   archiveRequest?: number; onArchiveableGroupsChange?: (count: number) => void;
@@ -165,10 +166,15 @@ function readGptReply(content: string) {
   return (section?.[1] || content).trim();
 }
 
-function ToolStep({ assistant, call, callIndex, result, stepNumber, onCall, onResult, onImage, onDeleteCall, disabled, searchTerm, jumpedId }: { assistant: Message; call: ToolCall; callIndex: number; result?: Message; stepNumber?: number; onCall: Props["onCall"]; onResult: Props["onMessage"]; onImage: (file: string, name: string) => void; onDeleteCall: Props["onDeleteCall"]; disabled?: boolean; searchTerm?: string; jumpedId?: string }) {
+function ToolStep({ assistant, call, callIndex, result, stepNumber, onCall, onResult, onImage, onDeleteCall, onAddToolResult, disabled, searchTerm, jumpedId }: { assistant: Message; call: ToolCall; callIndex: number; result?: Message; stepNumber?: number; onCall: Props["onCall"]; onResult: Props["onMessage"]; onImage: (file: string, name: string) => void; onDeleteCall: Props["onDeleteCall"]; onAddToolResult: Props["onAddToolResult"]; disabled?: boolean; searchTerm?: string; jumpedId?: string }) {
   const [expanded, setExpanded] = useState(false);
   const [raw, setRaw] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualContent, setManualContent] = useState("");
+  const [manualIsError, setManualIsError] = useState(false);
+  const manualEditor = useRef<HTMLTextAreaElement>(null);
   useEffect(() => { if (jumpedId && jumpedId === result?.id) setExpanded(true); }, [jumpedId, result?.id]);
+  useEffect(() => { if (result) setManualOpen(false); }, [result?.id]);
   const args = parseToolArguments(call.arguments);
   const dispatchesToGpt = call.name === "gpt_session_create" || call.name === "gpt_session_send";
   const readsFromGpt = call.name === "gpt_session_wait" || call.name === "gpt_session_read";
@@ -176,6 +182,19 @@ function ToolStep({ assistant, call, callIndex, result, stepNumber, onCall, onRe
   const status = result ? result.isError ? "失败" : "完成" : "待返回";
   const reply = result?.content ? readGptReply(result.content) : "";
   const hasGptReport = readsFromGpt && !!reply && !/暂无新回复|暂时还没有发来回复|还没有发来回复/.test(reply);
+  const saveManualResult = () => {
+    if (disabled) return;
+    if (onAddToolResult(assistant.id, call.id, manualContent, manualIsError)) {
+      setManualOpen(false);
+      setManualContent("");
+      setManualIsError(false);
+    }
+  };
+  const cancelManualResult = () => { setManualOpen(false); setManualContent(""); setManualIsError(false); };
+  const onManualKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Escape") { event.preventDefault(); cancelManualResult(); }
+    else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); saveManualResult(); }
+  };
   return <details className={`tool-step tool-step-row ${result?.isError ? "failed" : ""}`} title="工具调用及其结果不能直接更改角色，以免破坏工具配对。" data-tool-name={call.name} data-message-id={assistant.id} data-result-id={result?.id} data-has-report={hasGptReport ? "true" : undefined} data-has-thinking={thinking ? "true" : undefined} open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
     <summary>{typeof stepNumber === "number" && <span className="tool-step-number">{String(stepNumber).padStart(2, "0")}</span>}<span className="tool-step-icon">{toolIcon(call.name)}</span><strong>{toolTitle(call.name, call.arguments)}</strong><span className={`tool-state ${result ? result.isError ? "error" : "complete" : "pending"}`}>{status}</span><ChevronDown size={14} /></summary>
     {expanded && <div className="tool-step-body">
@@ -184,6 +203,14 @@ function ToolStep({ assistant, call, callIndex, result, stepNumber, onCall, onRe
       {!dispatchesToGpt && !readsFromGpt && result?.content && <section className={`tool-readable-block ${result.isError ? "error" : ""}`}><strong>工具结果</strong><Markdown content={result.content} highlight={searchTerm} /></section>}
       {thinking && <details className="tool-step-thinking"><summary><Brain size={13} />Gemini 思考过程</summary><div className="tool-readable-block"><Markdown content={thinking} /></div></details>}
       {!!result?.images?.length && <div className="image-gallery tool-image-gallery">{result.images.map((image) => <button key={image.file} title={image.name} onClick={() => onImage(image.file, image.name)}><img src={imageUrl(image.file)} alt={image.name} loading="lazy" /></button>)}</div>}
+      {!result && <section className="manual-tool-result">
+        {!manualOpen ? <button type="button" className="manual-tool-result-button" disabled={disabled} onClick={() => { setManualOpen(true); requestAnimationFrame(() => manualEditor.current?.focus()); }}>添加结果</button> : <div className="manual-tool-result-editor">
+          <label htmlFor={`manual-tool-result-${assistant.id}-${call.id}`}>手动添加「{call.name}」的结果 <small>可输入普通文本或 JSON；不会重新执行工具。</small></label>
+          <textarea ref={manualEditor} id={`manual-tool-result-${assistant.id}-${call.id}`} aria-label="工具结果内容" maxLength={200_000} disabled={disabled} value={manualContent} onChange={(event) => setManualContent(event.target.value)} onKeyDown={onManualKeyDown} placeholder="输入工具返回内容…" />
+          <label className="manual-tool-result-error"><input type="checkbox" disabled={disabled} checked={manualIsError} onChange={(event) => setManualIsError(event.target.checked)} />标记为错误 (isError)</label>
+          <div className="manual-tool-result-actions"><button type="button" disabled={disabled} onClick={saveManualResult}>保存 <kbd>⌘/Ctrl+Enter</kbd></button><button type="button" className="cancel" disabled={disabled} onClick={cancelManualResult}>取消 <kbd>Esc</kbd></button></div>
+        </div>}
+      </section>}
       <div className="tool-step-actions"><button className="raw-toggle" disabled={disabled} onClick={() => setRaw((value) => !value)}>{raw ? "收起原始参数" : "查看/编辑原始参数"}</button><button className="raw-toggle danger" disabled={disabled} onClick={() => onDeleteCall(assistant.id, call.id)}>删除此步骤及配对结果</button></div>
       {raw && <div className="tool-raw-fields">
         <label>工具名称<input disabled={disabled} value={call.name} onChange={(event) => onCall(assistant, callIndex, { name: event.target.value })} /></label>
@@ -238,14 +265,15 @@ function collectToolGroups(messages: Message[], start: number, byCallId: Map<str
   return groups;
 }
 
-function ToolStepGroup({ steps, compact, onCall, onMessage, onImage, onDeleteCall, live = false, disabled, searchTerm, jumpedId }: { steps: { assistant: Message; call: ToolCall; callIndex: number; result?: Message }[]; compact: boolean; onCall: Props["onCall"]; onMessage: Props["onMessage"]; onImage: (file: string, name: string) => void; onDeleteCall: Props["onDeleteCall"]; live?: boolean; disabled?: boolean; searchTerm?: string; jumpedId?: string }) {
+function ToolStepGroup({ steps, compact, onCall, onMessage, onImage, onDeleteCall, onAddToolResult, live = false, disabled, searchTerm, jumpedId }: { steps: { assistant: Message; call: ToolCall; callIndex: number; result?: Message }[]; compact: boolean; onCall: Props["onCall"]; onMessage: Props["onMessage"]; onImage: (file: string, name: string) => void; onDeleteCall: Props["onDeleteCall"]; onAddToolResult: Props["onAddToolResult"]; live?: boolean; disabled?: boolean; searchTerm?: string; jumpedId?: string }) {
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   const [hovered, setHovered] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [editingSummary, setEditingSummary] = useState(false);
   const [summaryDraft, setSummaryDraft] = useState("");
   useEffect(() => { setManualOpen(null); }, [compact]);
-  const open = live || (manualOpen ?? !compact);
+  const pendingCount = steps.filter((step) => !step.result).length;
+  const open = live || (manualOpen ?? (!compact || pendingCount > 0));
   const images = steps.flatMap((step) => step.result?.images || []);
   const groupMessages = [...new Map(steps.flatMap((step) => [step.assistant, ...(step.result ? [step.result] : [])]).map((message) => [message.id, message] as const)).values()];
   const compactedMessages = groupMessages.map((message) => message as CompactedMessage);
@@ -287,14 +315,14 @@ function ToolStepGroup({ steps, compact, onCall, onMessage, onImage, onDeleteCal
     <details open={open} onToggle={(event) => { const nextOpen = event.currentTarget.open; if (live) { if (!nextOpen) event.currentTarget.open = true; return; } if (nextOpen !== open) setManualOpen(nextOpen); }} style={{ border: 0, background: "transparent" }}>
       <summary style={{ display: "flex", minHeight: 32, alignItems: "center", gap: 8, padding: "3px 0", border: 0, borderRadius: 0, background: "transparent", color: "var(--text-subtle)", cursor: "pointer", listStyle: "none" }}>
         <Wrench size={13} style={{ flex: "0 0 auto", color: "var(--text-subtle)" }} />
-        <strong style={{ minWidth: 0, flex: "1 1 auto", overflow: "hidden", color: "var(--text-subtle)", fontSize: 9, fontWeight: 550, textOverflow: "ellipsis", whiteSpace: "nowrap" }}>已执行 {steps.length} 个工具步骤（{toolGroupSummary(steps)}）</strong>
+        <strong style={{ minWidth: 0, flex: "1 1 auto", overflow: "hidden", color: pendingCount ? "var(--warning)" : "var(--text-subtle)", fontSize: 9, fontWeight: 550, textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pendingCount ? `待补全 ${pendingCount} 个结果` : `已执行 ${steps.length} 个工具步骤（${toolGroupSummary(steps)}）`}</strong>
         {partialArchive && <span style={{ color: "var(--text-subtle)", fontSize: 8 }}>部分排除</span>}
         {archived && <span style={{ color: "var(--text-subtle)", fontSize: 8 }}>已归档</span>}
         {compacted && <><button type="button" className="tool-group-badge compacted" style={quietPill} onClick={revealSummary}>🧹 已精简上下文</button><button type="button" style={{ ...actionStyle, opacity: hovered ? 1 : 0 }} onClick={revealSummary}>查看摘要</button></>}
         <button type="button" className="tool-group-archive" disabled={disabled || live || steps.some((step) => !step.result)} onClick={toggleArchive} style={{ ...actionStyle, marginLeft: "auto", opacity: hovered ? 1 : 0 }}>{archived ? "恢复" : compacted ? "还原" : "🧹 精简"}</button>
         <span aria-hidden="true" style={{ flex: "0 0 auto", marginLeft: compacted ? 0 : "auto", color: "var(--text-subtle)", fontSize: 14 }}>{open ? "▾" : "▸"}</span>
       </summary>
-      {open && <div className="tool-timeline-thread" style={{ margin: "2px 0 5px 6px", padding: "2px 0 3px 12px", borderLeft: "1px solid var(--border)", background: "transparent" }}>{steps.map((step, index) => <ToolStep key={`${step.call.id}-${step.assistant.id}`} {...step} stepNumber={index + 1} onCall={onCall} onResult={onMessage} onImage={onImage} onDeleteCall={onDeleteCall} disabled={disabled} searchTerm={searchTerm} jumpedId={jumpedId} />)}</div>}
+      {open && <div className="tool-timeline-thread" style={{ margin: "2px 0 5px 6px", padding: "2px 0 3px 12px", borderLeft: "1px solid var(--border)", background: "transparent" }}>{steps.map((step, index) => <ToolStep key={`${step.call.id}-${step.assistant.id}`} {...step} stepNumber={index + 1} onCall={onCall} onResult={onMessage} onImage={onImage} onDeleteCall={onDeleteCall} onAddToolResult={onAddToolResult} disabled={disabled} searchTerm={searchTerm} jumpedId={jumpedId} />)}</div>}
     </details>
     {summaryOpen && <section className="tool-summary-card" style={{ margin: "3px 0 8px 21px", padding: "10px 12px", border: "1px solid color-mix(in srgb, var(--success) 22%, var(--border))", borderRadius: 10, background: "color-mix(in srgb, var(--success-soft) 40%, var(--surface))", boxShadow: "none" }}>
       <header style={{ display: "flex", minHeight: 24, alignItems: "center", gap: 8, marginBottom: 5 }}><strong style={{ color: "var(--text-muted)", fontSize: 9 }}>工具组摘要</strong><span style={{ color: "var(--text-subtle)", fontSize: 8 }}>保留在模型上下文中</span><div style={{ display: "flex", gap: 5, marginLeft: "auto" }}>{editingSummary ? <><button disabled={disabled} onClick={saveSummary}>保存</button><button disabled={disabled} onClick={() => { setSummaryDraft(summaryText); setEditingSummary(false); }}>取消</button></> : <button disabled={disabled} onClick={() => { setSummaryDraft(summaryText); setEditingSummary(true); }}>编辑</button>}<button disabled={disabled} aria-label="收起摘要" title="收起摘要" onClick={() => setSummaryOpen(false)}>×</button></div></header>
@@ -458,7 +486,7 @@ export function MessageStream(props: Props) {
   };
   const renderGroup = (steps: { assistant: Message; call: ToolCall; callIndex: number; result?: Message }[]) => {
     const live = props.busy && steps.some((step) => !step.result || step.assistant.id === props.streamingId);
-    return <ToolStepGroup key={`group-${steps[0].assistant.id}`} steps={steps} compact={props.compactTools} onCall={props.onCall} onMessage={props.onMessage} onImage={openImage} onDeleteCall={props.onDeleteCall} live={live} disabled={disabled} searchTerm={visibleSearchTerm} jumpedId={jumpedId} />;
+    return <ToolStepGroup key={`group-${steps[0].assistant.id}`} steps={steps} compact={props.compactTools} onCall={props.onCall} onMessage={props.onMessage} onImage={openImage} onDeleteCall={props.onDeleteCall} onAddToolResult={props.onAddToolResult} live={live} disabled={disabled} searchTerm={visibleSearchTerm} jumpedId={jumpedId} />;
   };
   const toggleDirectory = () => setDirectoryOpenState(!directoryOpen);
   const content: React.ReactNode[] = [<div className="stream-tools" key="stream-tools" style={{ position: "sticky", top: 7, zIndex: 20, height: 0, margin: 0, padding: 0, overflow: "visible", background: "transparent", pointerEvents: "none" }}>
@@ -483,7 +511,7 @@ export function MessageStream(props: Props) {
       // applies only to tool details; it must never hide text emitted alongside calls.
       if (!message.images?.length && message.content.trim()) {
         const liveThinking = props.streamingThinking && props.busy && props.streamingId === message.id ? <div className="live-thinking" role="status"><details><summary><Brain size={14} />思考过程 · 实时</summary><pre>{props.streamingThinking}</pre></details></div> : null;
-        const callView = <div className="assistant-tool-steps">{own.map((step) => <ToolStep key={step.call.id} {...step} onCall={props.onCall} onResult={props.onMessage} onImage={openImage} onDeleteCall={props.onDeleteCall} disabled={disabled} searchTerm={visibleSearchTerm} jumpedId={jumpedId} />)}{liveThinking}</div>;
+        const callView = <div className="assistant-tool-steps">{own.map((step) => <ToolStep key={step.call.id} {...step} onCall={props.onCall} onResult={props.onMessage} onImage={openImage} onDeleteCall={props.onDeleteCall} onAddToolResult={props.onAddToolResult} disabled={disabled} searchTerm={visibleSearchTerm} jumpedId={jumpedId} />)}{liveThinking}</div>;
         content.push(renderCard(message, index, callView)); index++; continue;
       }
       if (!message.images?.length) {
@@ -499,7 +527,7 @@ export function MessageStream(props: Props) {
         content.push(renderGroup(steps)); index = cursor; continue;
       }
       const liveThinking = props.streamingThinking && props.busy && props.streamingId === message.id ? <div className="live-thinking" role="status"><details><summary><Brain size={14} />思考过程 · 实时</summary><pre>{props.streamingThinking}</pre></details></div> : null;
-      const callView = <div className="assistant-tool-steps">{own.map((step) => <ToolStep key={step.call.id} {...step} onCall={props.onCall} onResult={props.onMessage} onImage={openImage} onDeleteCall={props.onDeleteCall} disabled={disabled} searchTerm={visibleSearchTerm} jumpedId={jumpedId} />)}{liveThinking}</div>;
+      const callView = <div className="assistant-tool-steps">{own.map((step) => <ToolStep key={step.call.id} {...step} onCall={props.onCall} onResult={props.onMessage} onImage={openImage} onDeleteCall={props.onDeleteCall} onAddToolResult={props.onAddToolResult} disabled={disabled} searchTerm={visibleSearchTerm} jumpedId={jumpedId} />)}{liveThinking}</div>;
       content.push(renderCard(message, index, callView)); index++; continue;
     }
     if (message.role === "assistant" && props.busy && props.streamingId === message.id) {

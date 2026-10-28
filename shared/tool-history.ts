@@ -4,6 +4,58 @@ export function wireToolCallId(id: string) {
   return id.split("|")[0];
 }
 
+export function addToolResult(
+  messages: Message[],
+  assistantId: string,
+  callId: string,
+  content: string,
+  isError: boolean,
+): Message[] {
+  const assistantIndex = messages.findIndex((message) => message.id === assistantId);
+  const assistant = messages[assistantIndex];
+  if (!assistant || assistant.role !== "assistant" || messages.filter((message) => message.id === assistantId).length !== 1)
+    throw new Error("找不到唯一对应的 assistant 工具调用。");
+
+  const requestedId = wireToolCallId(callId);
+  const matchingCalls = messages.flatMap((message) => (message.toolCalls || []).map((item) => ({ owner: message, call: item })))
+    .filter(({ call: item }) => wireToolCallId(item.id) === requestedId);
+  if (!requestedId || matchingCalls.length !== 1 || matchingCalls[0].owner.id !== assistant.id)
+    throw new Error("该 assistant 消息中找不到唯一对应的工具调用。");
+  const call = matchingCalls[0].call;
+  if (messages.some((message) => message.role === "tool" && wireToolCallId(message.toolCallId || "") === requestedId))
+    throw new Error("该工具调用已经有结果，不能重复补全。");
+
+  const siblingCalls = new Map((assistant.toolCalls || []).map((item) => [wireToolCallId(item.id), item]));
+  let insertAt = assistantIndex + 1;
+  const seenResultIds = new Set<string>();
+  while (insertAt < messages.length && messages[insertAt].role === "tool") {
+    const next = messages[insertAt];
+    const nextId = wireToolCallId(next.toolCallId || "");
+    const sibling = siblingCalls.get(nextId);
+    if (!sibling || sibling.name !== next.toolName || next.enabled !== assistant.enabled || seenResultIds.has(nextId))
+      throw new Error("现有工具结果与该调用不匹配，不能安全插入结果。");
+    seenResultIds.add(nextId);
+    insertAt++;
+  }
+  if (messages.some((message, index) => message.role === "tool" && siblingCalls.has(wireToolCallId(message.toolCallId || "")) && (index <= assistantIndex || index >= insertAt)))
+    throw new Error("现有工具结果不在调用对应的位置，不能安全插入结果。");
+
+  let id = globalThis.crypto.randomUUID();
+  while (messages.some((message) => message.id === id)) id = globalThis.crypto.randomUUID();
+  const result: Message = {
+    id,
+    role: "tool",
+    content,
+    enabled: assistant.enabled,
+    toolCallId: call.id,
+    toolName: call.name,
+    isError,
+  };
+  const next = [...messages];
+  next.splice(insertAt, 0, result);
+  return next;
+}
+
 export function toolHistoryError(messages: Message[]): string | null {
   const pending = new Map<string, string>();
   const seen = new Set<string>();
