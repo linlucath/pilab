@@ -16,6 +16,52 @@ async function until(check: () => boolean) {
   }
 }
 
+test("session waits have no default timeout and explicit deadlines reject instead of returning timedOut", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "pilab-indefinite-wait-"));
+  const releases: (() => void)[] = [];
+  const manager = new GptSessionManager({
+    storageDir: path.join(directory, "sessions"), cwd: directory,
+    createTransport: (_spec, onEvent): RpcTransport => ({
+      async request<T = any>(type: string): Promise<T> {
+        if (type === "get_state") return { model: { provider: "openai-codex", id: model } } as T;
+        if (type === "prompt") {
+          onEvent({ type: "agent_start" });
+          await new Promise<void>((resolve) => releases.push(resolve));
+          onEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "round complete" }] } });
+          onEvent({ type: "agent_settled" });
+          return { disposition: "accepted" } as T;
+        }
+        return {} as T;
+      }, async reply() {}, async stop() {},
+    }),
+  });
+  try {
+    await manager.create({ name: "worker", model });
+    await until(() => manager.read("worker").session.status === "idle");
+
+    const firstSend = manager.send("worker", "wait without deadline");
+    await until(() => releases.length === 1);
+    let resolved = false;
+    const indefinite = manager.wait(["worker"]).then((result) => { resolved = true; return result; });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(resolved, false, "omitting timeoutMs must keep waiting for the current turn");
+    releases.shift()!();
+    assert.equal((await indefinite).completed, true);
+    await firstSend;
+
+    const secondSend = manager.send("worker", "wait with deadline");
+    await until(() => releases.length === 1);
+    await assert.rejects(manager.wait(["worker"], 30), /同步等待超过 0\.03 秒/);
+    assert.equal(manager.hasActiveWaiter("worker"), false, "timeout must unregister the waiter");
+    releases.shift()!();
+    await secondSend;
+    assert.equal((await manager.wait(["worker"])).completed, true);
+  } finally {
+    await manager.shutdown();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("reply budgets include a context-protection note", () => {
   const clipped = clipReply("x".repeat(DEFAULT_REPLY_MAX_CHARS + 100), DEFAULT_REPLY_MAX_CHARS);
   assert.equal(clipped.length, DEFAULT_REPLY_MAX_CHARS);
@@ -165,14 +211,13 @@ test("GPT aggregation joins assistant text segments, removes adjacent duplicates
     await until(() => finish.size === 2 && manager.list().every((session) => session.status === "running"));
     assert.equal(manager.cleanupCandidates().length, 0, "running sessions must never be offered for cleanup");
     let resolved = false;
-    const all = manager.wait(["aggregate", "second"], 2_000, undefined, "all").then((result) => { resolved = true; return result; });
+    const all = manager.wait(["aggregate", "second"], undefined, undefined, "all").then((result) => { resolved = true; return result; });
     finish.get("second")!();
     await new Promise((resolve) => setTimeout(resolve, 25));
     assert.equal(resolved, false, "all mode must not return on the first completed session");
     finish.get("aggregate")!();
     const result = await all;
     assert.equal(result.completed, true);
-    assert.equal(result.timedOut, false);
     assert.equal(result.session, undefined);
     assert.equal(manager.read("aggregate").session.lastText, "Research complete.\n\n8 screenshots saved.");
     assert.equal(manager.read("aggregate").session.replySequence, manager.read("aggregate").events.find((event) => event.type === "assistant")?.sequence);

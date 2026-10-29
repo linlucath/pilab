@@ -100,6 +100,8 @@ test("the model surface is exactly three active native tools; legacy names remai
     assert.ok(findTool(tools, "gpt_session_send"), "saved transcripts/integrations retain a direct compatibility alias");
     assert.equal(findTool(tools, "gpt_session_send").defaultActive, false);
     assert.equal(typeof findTool(tools, "subagent_dispatch").parameters, "object");
+    assert.match(findTool(tools, "subagent_dispatch").description, /no default timeout/i);
+    assert.match(findTool(tools, "subagent_dispatch").description, /Do not call wait or query repeatedly/i);
     assert.equal(subagentToolUi.subagent_dispatch.summarizeInput({ task: { name: "scout-a" } }), "派发工兵「scout-a」任务");
     assert.match(subagentToolUi.subagent_dispatch.summarizeResult({ mode: "async", started: [{}] }), /后台派发/);
     assert.equal(manager.list(owner).length, 0);
@@ -126,10 +128,11 @@ test("dispatch supports background batches and synchronous Feynman handoff; quer
 
     const syncResult = await dispatch.execute("sync", {
       task: { name: "sync-worker", message: "Return an evidenced report.", rolePreset: "implementer" },
-      mode: "sync", timeoutSeconds: 2,
+      mode: "sync",
     });
     const syncDetails = details(syncResult);
     assert.equal(syncDetails.completed, true);
+    assert.equal("timedOut" in syncDetails, false);
     const reports = syncDetails.sessions as { name: string; reply?: string; rolePreset?: string }[];
     assert.match(reports[0].reply || "", /Feynman report for sync-worker/);
     assert.equal(reports[0].rolePreset, "implementer");
@@ -141,6 +144,60 @@ test("dispatch supports background batches and synchronous Feynman handoff; quer
     assert.match(String(details(reread).reply), /Feynman report/);
     const list = await query.execute("query-list", { action: "list" });
     assert.equal((details(list).sessions as unknown[]).length, 3);
+  } finally {
+    await manager.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("synchronous dispatch quietly waits for its current worker turn with no default deadline", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "subagent-sync-wait-"));
+  let release!: () => void;
+  let promptStarted = false;
+  let notices = 0;
+  const manager = new GptSessionManager({
+    storageDir: path.join(root, "sessions"), cwd: root, onNotice: () => { notices++; },
+    createTransport: (_spec, onEvent): RpcTransport => ({
+      async request<T = unknown>(type: string): Promise<T> {
+        if (type === "get_state") return { model: { provider: "openai-codex", id: model } } as T;
+        if (type === "prompt") {
+          promptStarted = true;
+          onEvent({ type: "agent_start" });
+          await new Promise<void>((resolve) => {
+            release = () => {
+              onEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "finished after quiet wait" }] } });
+              onEvent({ type: "agent_settled" });
+              resolve();
+            };
+          });
+          return { disposition: "accepted" } as T;
+        }
+        return {} as T;
+      }, async reply() {}, async stop() {},
+    }),
+  });
+  const originalWait = manager.wait.bind(manager);
+  let observedTimeout: number | undefined = 0;
+  manager.wait = (async (...args: Parameters<typeof manager.wait>) => {
+    observedTimeout = args[1];
+    return originalWait(...args);
+  }) as typeof manager.wait;
+  try {
+    const dispatch = findTool(createSessionTools(async () => ({ manager, resolveModel: () => model }), undefined, owner), "subagent_dispatch");
+    let settled = false;
+    const resultPromise = dispatch.execute("sync-block", {
+      task: { name: "quiet-worker", message: "Finish this turn." }, mode: "sync",
+    }).then((result) => { settled = true; return result; });
+    await until(() => promptStarted && manager.read("quiet-worker").session.status === "running");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(settled, false, "sync dispatch must remain blocked until the worker turn finishes");
+    assert.equal(observedTimeout, undefined, "omitting timeoutSeconds must pass no wait deadline");
+    assert.equal(manager.hasActiveWaiter("quiet-worker"), true);
+    assert.equal(notices, 0, "a synchronous handoff must not queue a duplicate parent notification");
+    release();
+    const result = await resultPromise;
+    assert.equal(details(result).completed, true);
+    assert.equal(notices, 0);
   } finally {
     await manager.shutdown();
     await rm(root, { recursive: true, force: true });

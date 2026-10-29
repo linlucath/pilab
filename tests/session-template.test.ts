@@ -15,6 +15,9 @@ test("new sessions use the dual-model template and inherit the current workspace
   assert.equal(session.messages.length, 1);
   assert.equal(session.messages[0].role, "system");
   assert.equal(session.messages[0].content, NEW_SESSION_SYSTEM_PROMPT);
+  assert.match(NEW_SESSION_SYSTEM_PROMPT, /省略 timeoutSeconds 即无限等待/);
+  assert.match(NEW_SESSION_SYSTEM_PROMPT, /同步派发期间无需也绝不能反复调用 wait 或 query 轮询/);
+  assert.doesNotMatch(NEW_SESSION_SYSTEM_PROMPT, /设置合理 timeoutSeconds/);
   assert.equal(session.runs.length, 0);
 });
 

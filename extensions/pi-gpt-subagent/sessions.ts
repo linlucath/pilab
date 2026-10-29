@@ -17,6 +17,7 @@ export type SendMode = "steer" | "followUp" | "interrupt";
 export const rolePresets = ["scout", "experimenter", "implementer"] as const;
 export type GptRolePreset = (typeof rolePresets)[number];
 export const rolePresetLabels: Record<GptRolePreset, string> = gptWorkerRoleLabels;
+/** Maximum allowed explicit wait deadline. By default, waits have no timeout. */
 export const GPT_WAIT_TIMEOUT_SECONDS = 20 * 60;
 export interface SessionInfo {
   id: string;
@@ -514,14 +515,14 @@ export class GptSessionManager {
 
   hasActiveWaiter(id: string): boolean { return !!this.waiters.get(this.get(id))?.size; }
 
-  /** Wait on state changes, without polling files or holding the command queue. */
-  async wait(names: string[], timeoutMs = GPT_WAIT_TIMEOUT_SECONDS * 1_000, signal?: AbortSignal, mode: "any" | "all" = "any", startAfter?: Promise<unknown>): Promise<{
-    session?: SessionInfo; sessions: SessionInfo[]; timedOut: boolean; completed: boolean;
+  /** Wait on state changes without polling files or holding the command queue. Omit timeoutMs to wait indefinitely. */
+  async wait(names: string[], timeoutMs?: number, signal?: AbortSignal, mode: "any" | "all" = "any", startAfter?: Promise<unknown>): Promise<{
+    session?: SessionInfo; sessions: SessionInfo[]; completed: boolean;
   }> {
     if (!names.length || names.length > 8 || new Set(names.map((name) => name.trim())).size !== names.length)
       throw new Error("请提供 1–8 个不同的 GPT 会话名字。");
-    if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > GPT_WAIT_TIMEOUT_SECONDS * 1_000)
-      throw new Error(`单次等待时间必须在 0–${GPT_WAIT_TIMEOUT_SECONDS} 秒之间。`);
+    if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > GPT_WAIT_TIMEOUT_SECONDS * 1_000))
+      throw new Error(`显式等待期限必须在 1–${GPT_WAIT_TIMEOUT_SECONDS} 秒之间。`);
     const entries = names.map((name) => this.get(name));
     return new Promise((resolve, reject) => {
       let finished = false;
@@ -536,14 +537,14 @@ export class GptSessionManager {
           if (!listeners?.size) this.waiters.delete(entry);
         }
       };
-      const finish = (entry?: ManagedSession, error?: Error, completed = false, timedOut = false) => {
+      const finish = (entry?: ManagedSession, error?: Error, completed = false) => {
         if (finished) return;
         finished = true;
         cleanup();
         if (error) reject(error);
-        else resolve({ ...(entry ? { session: this.view(entry) } : {}), sessions: entries.map((item) => this.view(item)), timedOut, completed });
+        else resolve({ ...(entry ? { session: this.view(entry) } : {}), sessions: entries.map((item) => this.view(item)), completed });
       };
-      const abort = () => finish(undefined, new Error("等待已取消；GPT 仍可继续在后台工作。"));
+      const abort = () => finish(undefined, new Error("同步等待已取消；工兵任务未因此中止。"));
       const check = () => {
         if (finished || !armed) return;
         if (signal?.aborted) return abort();
@@ -553,7 +554,7 @@ export class GptSessionManager {
           (entry.info.status !== "idle" || entry.pendingOperations === 0);
         if (mode === "any") {
           const first = entries.find(ready);
-          if (first) finish(first, undefined, true);
+          if (first) finish(first, undefined, first.info.status === "idle");
           return;
         }
         const needsAttention = entries.find((entry) => ["waiting_input", "error", "interrupted", "suspended", "closed"].includes(entry.info.status));
@@ -566,7 +567,10 @@ export class GptSessionManager {
         this.waiters.get(entry)!.add(check);
       }
       signal?.addEventListener("abort", abort, { once: true });
-      timer = setTimeout(() => { check(); finish(undefined, undefined, false, true); }, timeoutMs);
+      if (timeoutMs !== undefined) timer = setTimeout(() => {
+        check();
+        finish(undefined, new Error(`同步等待超过 ${timeoutMs / 1_000} 秒，已超时并返回错误；本次调用不会返回部分等待结果。`));
+      }, timeoutMs);
       if (startAfter) {
         void startAfter.then(() => { armed = true; check(); }, (error) => finish(undefined, error instanceof Error ? error : new Error(String(error))));
       } else check();
