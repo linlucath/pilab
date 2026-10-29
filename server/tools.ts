@@ -105,6 +105,7 @@ export async function agentTools(
   settings: Settings,
   getHistory?: ConversationHistory,
   onEvent?: (event: Record<string, unknown>) => void,
+  ownerSessionId?: string,
 ) {
   const cwd = settings.workingDirectory.trim() || process.cwd();
   if (settings.toolMode === "none") return { cwd, tools: [] as AgentTool<any>[] };
@@ -114,7 +115,7 @@ export async function agentTools(
   const tools: AgentTool<any>[] = [
     ...(settings.toolMode === "agent" ? [createContextCompactTool(history, onEvent)] : []),
     createSessionForkTool(history, onEvent),
-    ...createGptSessionTools(cwd, getHistory),
+    ...createGptSessionTools(cwd, getHistory, ownerSessionId),
     ...createImageTools(() => projectImages, "viewer"),
   ];
   return { cwd, tools };

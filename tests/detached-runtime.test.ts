@@ -139,6 +139,17 @@ test("C: explicit abort stops the generator and atomically persists its partial 
   }
 });
 
+test("RunManager binds GPT tools to the authoritative run session, not client input", async () => {
+  let receivedOwner = "";
+  const manager = new RunManager(async () => {}, async (input) => {
+    receivedOwner = input.ownerSessionId || "";
+    return [];
+  });
+  const { runId } = manager.startRun("authoritative-parent", { ...runInput, ownerSessionId: "spoofed-fork" });
+  await waitFor(() => manager.tasks.get(runId)?.status !== "running");
+  assert.equal(receivedOwner, "authoritative-parent");
+});
+
 test("A: completed run messages are atomically upserted into only the requested session", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "pilab-runs-"));
   try {

@@ -19,6 +19,11 @@ const schema = <T extends Record<string, any>>(properties: T) => Type.Object(pro
 const response = (value: unknown, readable?: string): AgentToolResult<any> => ({
   content: [{ type: "text", text: readable ?? JSON.stringify(value) }], details: value,
 });
+function ownerSessionId(ctx: ExtensionToolContext | undefined, configured?: string) {
+  const id = configured || ctx?.sessionManager.getSessionId();
+  if (!id || id.length > 200) throw new Error("当前 Pi Lab 会话身份不可用，拒绝操作 GPT 工兵。");
+  return id;
+}
 
 // Control acknowledgements must not replay an earlier GPT answer.
 export function conversationSummary(session: SessionInfo) {
@@ -165,7 +170,8 @@ function formatToolLogs(read: ReturnType<typeof readConversation>) {
 
 export async function answerConversation(manager: GptSessionManager, args: {
   name: string; question?: number; value?: string; confirmed?: boolean; cancelled?: boolean;
-}) {
+}, owner?: string) {
+  if (owner) manager.assertOwner(args.name, owner);
   const pending = manager.read(args.name, 0, 1).session.pendingInput;
   if (args.question === undefined && pending.length > 1)
     throw new Error("有多个待回答的问题，请指定 question 中的问题序号。");
@@ -173,17 +179,19 @@ export async function answerConversation(manager: GptSessionManager, args: {
   if (!request) throw new Error("该问题已不存在。");
   return conversationSummary(await manager.respond(args.name, request.id, {
     value: args.value, confirmed: args.confirmed, cancelled: args.cancelled,
-  }));
+  }, owner));
 }
 
 export function createSessionTools(
   getAccess: (ctx?: ExtensionToolContext) => Promise<SessionAccess>,
   getHistory?: ConversationHistory,
+  configuredOwnerSessionId?: string,
 ): SessionTool[] {
   // A tool batch may finish several reads before its results are appended to history.
   let pendingAnchor: unknown;
   const pendingDeliveries = new Set<string>();
-  const unreadReport = (manager: GptSessionManager, name: string, args: { limit?: number; repeat?: boolean; maxChars?: number }, ctx?: ExtensionToolContext) => {
+  const unreadReport = (manager: GptSessionManager, owner: string, name: string, args: { limit?: number; repeat?: boolean; maxChars?: number }, ctx?: ExtensionToolContext) => {
+    manager.assertOwner(name, owner);
     const read = readConversation(manager, name, args.limit ?? 5, false, args.maxChars ?? DEFAULT_REPLY_MAX_CHARS);
     const history = getHistory?.() ?? ctx?.sessionManager.buildSessionProjection().messages ?? [];
     const { reply, writing: _draft, ...status } = read;
@@ -202,15 +210,16 @@ export function createSessionTools(
     if (reply && (result.reply || unchanged)) manager.markReplyDelivered(name, delivery.sequence);
     return output;
   };
-  const waitAndReport = async (manager: GptSessionManager, names: string[], options: {
+  const waitAndReport = async (manager: GptSessionManager, owner: string, names: string[], options: {
     timeoutSeconds?: number; mode?: "any" | "all"; maxChars?: number;
   }, signal?: AbortSignal, ctx?: ExtensionToolContext,
   extra: Record<string, unknown> | (() => Record<string, unknown>) = {}, startAfter?: Promise<unknown>) => {
+    for (const name of names) manager.assertOwner(name, owner);
     if (signal?.aborted) throw new Error("等待已取消；GPT 仍可继续在后台工作。");
     const mode = options.mode ?? "any";
     const waited = await manager.wait(names, (options.timeoutSeconds ?? GPT_WAIT_TIMEOUT_SECONDS) * 1_000, signal, mode, startAfter);
     if (signal?.aborted) throw new Error("等待已取消；GPT 仍可继续在后台工作。");
-    const reports = waited.sessions.map((session) => unreadReport(manager, session.name, { maxChars: options.maxChars }, ctx));
+    const reports = waited.sessions.map((session) => unreadReport(manager, owner, session.name, { maxChars: options.maxChars }, ctx));
     const reportText = reports.map((report) => report.content.map((block) => block.type === "text" ? block.text : "").filter(Boolean).join("\n")).join("\n\n---\n\n");
     const statusText = waited.sessions.map((session) => `${session.name} · ${states[session.status]}`).join("\n");
     const note = waited.timedOut
@@ -233,7 +242,7 @@ export function createSessionTools(
       parameters: schema({}),
       execute: async (_id, _args, _signal, _onUpdate, ctx) => {
         const { manager } = await getAccess(ctx);
-        return response(manager.list().map((session) => conversationSummary(session)));
+        return response(manager.list(ownerSessionId(ctx, configuredOwnerSessionId)).map((session) => conversationSummary(session)));
       },
     },
     {
@@ -248,7 +257,7 @@ export function createSessionTools(
       }),
       execute: async (_id, args, _signal, _onUpdate, ctx) => {
         const { manager } = await getAccess(ctx);
-        return unreadReport(manager, args.name, args, ctx);
+        return unreadReport(manager, ownerSessionId(ctx, configuredOwnerSessionId), args.name, args, ctx);
       },
     },
     {
@@ -263,7 +272,7 @@ export function createSessionTools(
       }),
       execute: async (_id, args, signal, _onUpdate, ctx) => {
         const { manager } = await getAccess(ctx);
-        return waitAndReport(manager, args.names, args, signal, ctx);
+        return waitAndReport(manager, ownerSessionId(ctx, configuredOwnerSessionId), args.names, args, signal, ctx);
       },
     },
     {
@@ -275,6 +284,7 @@ export function createSessionTools(
       }),
       execute: async (_id, args, _signal, _onUpdate, ctx) => {
         const { manager } = await getAccess(ctx);
+        manager.assertOwner(args.name, ownerSessionId(ctx, configuredOwnerSessionId));
         const read = readConversation(manager, args.name, args.limit ?? 1, true);
         return response({ name: read.name, activity: read.activity ?? [] }, formatToolLogs(read));
       },
@@ -307,9 +317,10 @@ export function createSessionTools(
     execute: async (_id, args, signal, _onUpdate, ctx) => {
       if (signal?.aborted) throw new Error("Conversation creation was cancelled.");
       const { manager, resolveModel } = await getAccess(ctx);
+      const owner = ownerSessionId(ctx, configuredOwnerSessionId);
       const initialMessage = args.message ? withFeynmanReport(args.message, args.rolePreset) : undefined;
-      const session = await manager.create({ name: args.name, rolePreset: args.rolePreset, message: initialMessage, cwd: args.cwd, model: await resolveModel(args.model) });
-      if (args.wait) return waitAndReport(manager, [session.name], { mode: "any", timeoutSeconds: args.timeoutSeconds, maxChars: args.maxChars }, signal, ctx, { operation: "create", model: session.model });
+      const session = await manager.create({ name: args.name, rolePreset: args.rolePreset, ownerSessionId: owner, message: initialMessage, cwd: args.cwd, model: await resolveModel(args.model) });
+      if (args.wait) return waitAndReport(manager, owner, [session.name], { mode: "any", timeoutSeconds: args.timeoutSeconds, maxChars: args.maxChars }, signal, ctx, { operation: "create", model: session.model });
       return response({ ...conversationSummary(session), model: session.model });
     },
   });
@@ -326,11 +337,12 @@ export function createSessionTools(
       execute: async (_id, args, signal, _onUpdate, ctx) => {
         if (signal?.aborted) throw new Error("Message was cancelled before delivery.");
         const { manager } = await getAccess(ctx);
-        const sentPromise = manager.send(args.name, withFeynmanReport(args.message, args.rolePreset), args.mode ?? "steer", args.rolePreset);
+        const owner = ownerSessionId(ctx, configuredOwnerSessionId);
+        const sentPromise = manager.send(args.name, withFeynmanReport(args.message, args.rolePreset), args.mode ?? "steer", args.rolePreset, owner);
         if (args.wait) {
           let sent: Awaited<typeof sentPromise> | undefined;
           const dispatchReady = sentPromise.then((result) => { sent = result; });
-          return waitAndReport(manager, [args.name], { mode: "any", timeoutSeconds: args.timeoutSeconds, maxChars: args.maxChars }, signal, ctx,
+          return waitAndReport(manager, owner, [args.name], { mode: "any", timeoutSeconds: args.timeoutSeconds, maxChars: args.maxChars }, signal, ctx,
             () => ({ operation: "send", delivery: sent?.disposition ?? "accepted" }), dispatchReady);
         }
         const sent = await sentPromise;
@@ -355,18 +367,19 @@ export function createSessionTools(
       execute: async (_id, args, signal, _onUpdate, ctx) => {
         if (signal?.aborted) throw new Error("批量任务已取消。");
         const { manager, resolveModel } = await getAccess(ctx);
+        const owner = ownerSessionId(ctx, configuredOwnerSessionId);
         const tasks = args.tasks as { name: string; message: string; rolePreset?: GptRolePreset; action?: "auto" | "create" | "send"; model?: string; cwd?: string; mode?: SendMode }[];
         const names = tasks.map((task) => task.name.trim());
         if (new Set(names).size !== names.length) throw new Error("批量任务的会话名字必须互不相同。");
-        const existing = new Set(manager.list().map((session) => session.name));
+        const existing = new Set(manager.list(owner).map((session) => session.name));
         const settled = await Promise.allSettled(tasks.map(async (task) => {
           if (signal?.aborted) throw new Error("批量任务已取消。");
           const action = !task.action || task.action === "auto" ? (existing.has(task.name) ? "send" : "create") : task.action;
           if (action === "create") {
-            const session = await manager.create({ name: task.name, rolePreset: task.rolePreset, message: withFeynmanReport(task.message, task.rolePreset), cwd: task.cwd, model: await resolveModel(task.model) });
+            const session = await manager.create({ name: task.name, rolePreset: task.rolePreset, ownerSessionId: owner, message: withFeynmanReport(task.message, task.rolePreset), cwd: task.cwd, model: await resolveModel(task.model) });
             return { name: task.name, ...(session.role ? { role: session.role } : {}), ...(session.rolePreset ? { rolePreset: session.rolePreset } : {}), action, model: session.model, delivery: "accepted" };
           }
-          const sent = await manager.send(task.name, withFeynmanReport(task.message, task.rolePreset), task.mode ?? "steer", task.rolePreset);
+          const sent = await manager.send(task.name, withFeynmanReport(task.message, task.rolePreset), task.mode ?? "steer", task.rolePreset, owner);
           return { name: task.name, action: "send", delivery: sent.disposition ?? "accepted" };
         }));
         const started = settled.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
@@ -376,7 +389,7 @@ export function createSessionTools(
           ...started.map((item) => `${item.name} · ${item.action} · ${item.delivery}`),
           ...failures.map((item) => `${item.name} · 失败：${item.error}`),
         ].join("\n") || "没有启动任何会话。");
-        return waitAndReport(manager, started.map((item) => item.name), {
+        return waitAndReport(manager, owner, started.map((item) => item.name), {
           mode: wait, timeoutSeconds: args.timeoutSeconds, maxChars: args.maxChars,
         }, signal, ctx, { operation: "batch", started, failures });
       },
@@ -386,13 +399,21 @@ export function createSessionTools(
       description: "Immediately abort GPT's current request and running tools, and clear pending steering/follow-up messages. Keep the same conversation and files for later continuation. Interrupting your own Gemini turn does not automatically stop independent GPT sessions; use this tool when asked to stop one.",
       promptSnippet: "Stop a GPT conversation's current work while retaining its context",
       parameters: schema({ name }),
-      execute: async (_id, args, _signal, _onUpdate, ctx) => response(conversationSummary((await (await getAccess(ctx)).manager.interrupt(args.name)).session)),
+      execute: async (_id, args, _signal, _onUpdate, ctx) => {
+        const { manager } = await getAccess(ctx);
+        const owner = ownerSessionId(ctx, configuredOwnerSessionId);
+        return response(conversationSummary((await manager.interrupt(args.name, owner)).session));
+      },
     },
     {
       name: "gpt_session_close", label: "Close GPT process",
       description: "Close a GPT conversation by name and stop its current work. Retain its full history. A later send to the same name reopens the conversation.",
       parameters: schema({ name }),
-      execute: async (_id, args, _signal, _onUpdate, ctx) => response(conversationSummary(await (await getAccess(ctx)).manager.close(args.name))),
+      execute: async (_id, args, _signal, _onUpdate, ctx) => {
+        const { manager } = await getAccess(ctx);
+        const owner = ownerSessionId(ctx, configuredOwnerSessionId);
+        return response(conversationSummary(await manager.close(args.name, false, owner)));
+      },
     },
     {
       name: "gpt_session_respond", label: "Answer GPT input request",
@@ -401,7 +422,7 @@ export function createSessionTools(
         confirmed: Type.Optional(Type.Boolean()), cancelled: Type.Optional(Type.Boolean()) }),
       execute: async (_id, args, _signal, _onUpdate, ctx) => {
         const { manager } = await getAccess(ctx);
-        return response(await answerConversation(manager, args));
+        return response(await answerConversation(manager, args, ownerSessionId(ctx, configuredOwnerSessionId)));
       },
     },
   );

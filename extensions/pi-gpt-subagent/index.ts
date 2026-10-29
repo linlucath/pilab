@@ -97,6 +97,7 @@ export default function piGptSessions(pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       try {
         const { manager: sessions, resolveModel: model } = await access(ctx);
+        const parentOwner = ctx.sessionManager.getSessionId();
         const verb = args.trim().split(/\s+/)[0] || "list";
         const rest = args.trim().replace(/^\S+\s*/, "");
         const separator = rest.indexOf("|");
@@ -107,25 +108,27 @@ export default function piGptSessions(pi: ExtensionAPI) {
         else if (verb === "new") {
           if (!rest) throw new Error("用法：/gpt new 会话名字 | 任务");
           const created = await sessions.create({
-            name: separator < 0 ? rest.slice(0, 80) : name,
+            name: separator < 0 ? rest.slice(0, 80) : name, ownerSessionId: parentOwner,
             message: separator < 0 ? rest : tail || undefined, model: await model(),
           });
           output = { ...conversationSummary(created), model: created.model };
         } else if (verb === "read") {
+          sessions.assertOwner(rest, parentOwner);
           output = formatConversationRead(readConversation(sessions, rest));
         } else if (["send", "steer", "after", "replace"].includes(verb)) {
           if (!tail) throw new Error("用法：/gpt send 会话名字 | 消息");
-          const sent = await sessions.send(name, tail, verb === "after" ? "followUp" : verb === "replace" ? "interrupt" : "steer");
+          const sent = await sessions.send(name, tail, verb === "after" ? "followUp" : verb === "replace" ? "interrupt" : "steer", undefined, parentOwner);
           output = { ...conversationSummary(sent.session), delivery: sent.disposition ?? "accepted" };
         } else if (verb === "stop" || verb === "close") {
-          const names = rest === "all" ? sessions.list().map((session) => session.name) : [rest];
+          const names = rest === "all" ? sessions.list(parentOwner).map((session) => session.name) : [rest];
           output = await Promise.all(names.map(async (target) => conversationSummary(verb === "stop"
-            ? (await sessions.interrupt(target)).session : await sessions.close(target))));
+            ? (await sessions.interrupt(target, parentOwner)).session : await sessions.close(target, false, parentOwner))));
         } else if (verb === "reply") {
           if (!tail) throw new Error("用法：/gpt reply 会话名字 | 回答（多个问题：名字 | 问题序号 | 回答）");
           const numbered = /^(\d+)\s*\|\s*([\s\S]+)$/.exec(tail);
           const question = numbered ? Number(numbered[1]) : undefined;
           const answer = numbered ? numbered[2] : tail;
+          sessions.assertOwner(name, parentOwner);
           const pending = sessions.read(name).session.pendingInput;
           if (question === undefined && pending.length > 1) throw new Error("有多个问题，请指定问题序号。");
           const request = pending[(question ?? 1) - 1];
@@ -133,7 +136,7 @@ export default function piGptSessions(pi: ExtensionAPI) {
           if (request.method === "confirm" && !/^(yes|no|true|false|是|否)$/i.test(answer))
             throw new Error("确认问题请回答 yes 或 no。");
           output = await answerConversation(sessions, { name, question, ...(request.method === "confirm"
-            ? { confirmed: /^(yes|true|是)$/i.test(answer) } : { value: answer }) });
+            ? { confirmed: /^(yes|true|是)$/i.test(answer) } : { value: answer }) }, parentOwner);
         } else throw new Error("用法：/gpt list | new 名字 | 任务 | read 名字 | send 名字 | 消息 | after 名字 | 消息 | replace 名字 | 新指令 | stop 名字/all | close 名字/all | reply 名字 | 回答");
         footer();
         if (!["list", "read"].includes(verb))

@@ -4,7 +4,7 @@ import { generate } from "./engine";
 import type { Message, Settings } from "../shared/schema";
 
 export type RunStatus = "running" | "completed" | "failed" | "aborted";
-export type RunInput = { settings: Settings; messages: Message[] };
+export type RunInput = { settings: Settings; messages: Message[]; ownerSessionId?: string };
 export type RunEvent = Record<string, unknown>;
 export type RunGenerator = (
   input: RunInput,
@@ -133,7 +133,7 @@ export class RunManager {
     let failure: unknown;
     let generationFailed = false;
     try {
-      const generated = await this.generateRun(input, (event) => {
+      const generated = await this.generateRun({ ...input, ownerSessionId: task.sessionId }, (event) => {
         if (event.type === "error") generationFailed = true;
         this.publish(task, event);
       }, task.abortController.signal);

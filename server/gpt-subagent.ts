@@ -51,6 +51,7 @@ function summarize(manager: GptSessionManager, session: SessionInfo): GptSession
     name: session.name,
     ...(session.role ? { role: session.role } : {}),
     ...(session.rolePreset ? { rolePreset: session.rolePreset } : {}),
+    ...(session.ownerSessionId ? { ownerSessionId: session.ownerSessionId } : {}),
     status: session.status,
     model: session.model,
     updatedAt: session.updatedAt,
@@ -63,38 +64,68 @@ function summarize(manager: GptSessionManager, session: SessionInfo): GptSession
   };
 }
 
-export async function listGptSessions(cwdInput?: string): Promise<GptSessionSummary[]> {
-  const cwd = await checkedCwd(cwdInput);
-  const manager = managerFor(cwd);
-  return manager.list().map((session) => summarize(manager, session));
+function checkedOwnerSessionId(value?: string) {
+  if (typeof value !== "string" || !value.trim() || value.length > 200)
+    throw new Error("ownerSessionId 必须是 1 到 200 个字符。");
+  return value;
 }
 
-export async function interruptGptSession(cwdInput: string | undefined, name: string): Promise<GptSessionSummary> {
+export async function listGptSessions(cwdInput?: string, ownerInput?: string): Promise<GptSessionSummary[]> {
   const cwd = await checkedCwd(cwdInput);
+  const owner = checkedOwnerSessionId(ownerInput);
   const manager = managerFor(cwd);
-  const result = await manager.interrupt(name);
+  return manager.list(owner).map((session) => summarize(manager, session));
+}
+
+export async function readGptSessionTranscript(cwdInput: string | undefined, name: string, ownerInput: string, options: { after?: number; before?: number; limit?: number } = {}) {
+  const cwd = await checkedCwd(cwdInput);
+  const owner = checkedOwnerSessionId(ownerInput);
+  const manager = managerFor(cwd);
+  manager.assertOwner(name, owner);
+  const page = await manager.readTranscript(name, options);
+  return { session: summarize(manager, page.session), events: page.events, hasMore: page.hasMore, nextCursor: page.nextCursor, previousCursor: page.previousCursor };
+}
+
+export async function sendGptSessionGuidance(cwdInput: string | undefined, name: string, ownerInput: string, message: string, mode: "steer" | "followUp" | "interrupt" = "steer") {
+  const cwd = await checkedCwd(cwdInput);
+  const owner = checkedOwnerSessionId(ownerInput);
+  if (typeof message !== "string" || !message.trim() || message.length > 100_000)
+    throw new Error("指导消息必须是 1 到 100000 个字符。");
+  const manager = managerFor(cwd);
+  manager.assertOwner(name, owner);
+  const result = await manager.send(name, message, mode, undefined, owner);
+  return { session: summarize(manager, result.session), delivery: result.disposition ?? "accepted" };
+}
+
+export async function interruptGptSession(cwdInput: string | undefined, name: string, ownerInput: string): Promise<GptSessionSummary> {
+  const cwd = await checkedCwd(cwdInput);
+  const owner = checkedOwnerSessionId(ownerInput);
+  const manager = managerFor(cwd);
+  const result = await manager.interrupt(name, owner);
   return summarize(manager, result.session);
 }
 
-export async function closeGptSession(cwdInput: string | undefined, name: string): Promise<GptSessionSummary> {
+export async function closeGptSession(cwdInput: string | undefined, name: string, ownerInput: string): Promise<GptSessionSummary> {
   const cwd = await checkedCwd(cwdInput);
+  const owner = checkedOwnerSessionId(ownerInput);
   const manager = managerFor(cwd);
-  const session = await manager.close(name);
+  const session = await manager.close(name, false, owner);
   return summarize(manager, session);
 }
 
-export async function cleanupIdleGptSessions(cwdInput?: string) {
+export async function cleanupIdleGptSessions(cwdInput: string | undefined, ownerInput: string) {
   const cwd = await checkedCwd(cwdInput);
+  const owner = checkedOwnerSessionId(ownerInput);
   const manager = managerFor(cwd);
-  const eligible = manager.cleanupCandidates();
-  const results = await Promise.allSettled(eligible.map((session) => manager.closeIfIdle(session.id)));
+  const eligible = manager.cleanupCandidates(owner);
+  const results = await Promise.allSettled(eligible.map((session) => manager.closeIfIdle(session.id, owner)));
   const closed = results.flatMap((result, index) => result.status === "fulfilled" && result.value ? [eligible[index].name] : []);
   const failures = results.flatMap((result, index) => result.status === "rejected"
     ? [{ name: eligible[index].name, error: "关闭失败，请检查服务状态。" }] : []);
-  return { closed, failures, sessions: manager.list().map((session) => summarize(manager, session)) };
+  return { closed, failures, sessions: manager.list(owner).map((session) => summarize(manager, session)) };
 }
 
-export function createGptSessionTools(cwd: string, getHistory?: ConversationHistory): AgentTool<any>[] {
+export function createGptSessionTools(cwd: string, getHistory?: ConversationHistory, ownerSessionId?: string): AgentTool<any>[] {
   return createSessionTools(async () => ({
     manager: managerFor(cwd),
     resolveModel: async (requested?: string) => {
@@ -107,7 +138,7 @@ export function createGptSessionTools(cwd: string, getHistory?: ConversationHist
         throw new Error(`Pi 中找不到 GPT 模型：${id || "模型目录为空"}`);
       return id;
     },
-  }), getHistory);
+  }), getHistory, ownerSessionId);
 }
 
 export async function shutdownGptSessions() {

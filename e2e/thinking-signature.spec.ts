@@ -22,18 +22,24 @@ for (const signature of [undefined, "signed-but-interrupted"]) test(`RUN-05 Clau
   } });
   expect(initialized.ok()).toBe(true);
   await page.reload();
-  await page.route("**/api/run", async (route) => {
+  let responseEvents: Record<string, unknown>[] = [];
+  await page.route("**/api/runs", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
     const body = route.request().postDataJSON();
     const native = body.messages.map((message: any) => toPiMessage(message, model));
     const unsigned = native.some((message: any) => message.role === "assistant" &&
       message.content.some((block: any) => block.type === "thinking" && !block.thinkingSignature));
     const failedReplay = native[body.messages.findIndex((message: any) => message.id === historical.id)]
       ?.content.some((block: any) => block.type === "thinking");
-    const events = unsigned || failedReplay
-      ? [{ type: "error", message: "messages.21.content.1.thinking.signature: Field required" }]
-      : [{ type: "assistant_start", id: "continued" }, { type: "text", id: "continued", delta: "CLAUDE-CONTINUE-OK" }, { type: "done", reason: "stop" }];
-    await route.fulfill({ contentType: "application/x-ndjson", body: events.map((event) => JSON.stringify(event)).join("\n") + "\n" });
+    responseEvents = unsigned || failedReplay
+      ? [{ type: "error", message: "messages.21.content.1.thinking.signature: Field required" }, { type: "run_status", status: "failed", message: "messages.21.content.1.thinking.signature: Field required" }]
+      : [{ type: "assistant_start", id: "continued" }, { type: "text", id: "continued", delta: "CLAUDE-CONTINUE-OK" }, { type: "done", reason: "stop" }, { type: "run_status", status: "completed" }];
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ runId: "claude-replay-run", sessionId: body.sessionId }) });
   });
+  await page.route("**/api/runs/claude-replay-run/stream**", (route) => route.fulfill({
+    contentType: "application/x-ndjson",
+    body: `${responseEvents.map((event, index) => JSON.stringify({ seq: index + 1, event })).join("\n")}\n`,
+  }));
   await sendMessage(page, "继续对话");
   await expect(page.getByText("CLAUDE-CONTINUE-OK", { exact: true })).toBeVisible();
   await expect(ui(page).alerts).toHaveCount(0);

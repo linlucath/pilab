@@ -57,19 +57,25 @@ export function addToolResult(
 }
 
 export function toolHistoryError(messages: Message[]): string | null {
-  const pending = new Map<string, string>();
+  const pendingCalls = new Map<string, string>();
   const seen = new Set<string>();
+  let resultsStarted = false;
   for (const message of messages) {
-    if (pending.size && message.role !== "tool")
-      return "工具调用后必须先补齐所有工具结果，再添加其他消息。请检查被删除或排除的工具结果。";
+    if (pendingCalls.size && message.role !== "tool") {
+      const isCollectingCalls = !resultsStarted && message.role === "assistant" && !!message.toolCalls?.length;
+      if (!isCollectingCalls)
+        return "工具调用后必须先补齐所有工具结果，再添加其他消息。请检查被删除或排除的工具结果。";
+    }
     if (message.role === "tool") {
+      resultsStarted = true;
       const id = wireToolCallId(message.toolCallId || "");
-      const callName = pending.get(id);
+      const callName = pendingCalls.get(id);
       if (!id || !callName)
         return `工具结果没有对应的调用：${id || "未填写 Call ID"}`;
       if (message.toolName !== callName)
         return `工具结果名称应为 ${callName}。`;
-      pending.delete(id);
+      pendingCalls.delete(id);
+      if (!pendingCalls.size) resultsStarted = false;
     } else if (message.toolCalls?.length) {
       if (message.role !== "assistant")
         return "只有 assistant 消息可以包含工具调用。";
@@ -77,13 +83,13 @@ export function toolHistoryError(messages: Message[]): string | null {
         const id = wireToolCallId(call.id);
         if (!id || seen.has(id))
           return `工具 Call ID 为空或重复：${id}`;
-        pending.set(id, call.name);
+        pendingCalls.set(id, call.name);
         seen.add(id);
       }
     }
   }
-  if (pending.size)
-    return `请先为工具调用 ${[...pending.values()].join("、")} 添加工具结果。`;
+  if (pendingCalls.size)
+    return `请先为工具调用 ${[...pendingCalls.values()].join("、")} 添加工具结果。`;
   return null;
 }
 

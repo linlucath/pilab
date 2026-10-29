@@ -205,6 +205,9 @@ export async function generate(
   emit: Emit,
   signal?: AbortSignal,
 ) {
+  const ownerSessionId = input && typeof input === "object" && "ownerSessionId" in input &&
+    typeof (input as { ownerSessionId?: unknown }).ownerSessionId === "string"
+    ? (input as { ownerSessionId: string }).ownerSessionId : undefined;
   const { settings, messages } = runSchema.parse(input);
   const effort = getReasoningEffort(settings);
   const active = validateTranscript(settings, messages);
@@ -259,7 +262,7 @@ export async function generate(
         cwd: await e2eWorkingDirectory(settings),
         tools: settings.toolMode === "none" ? [] : e2eMockTools(),
       }
-    : await agentTools(settings, history, onEvent);
+    : await agentTools(settings, history, onEvent, ownerSessionId);
   emit({ type: "runtime", cwd, tools: tools.map((t) => t.name) });
   const transcript: AgentMessage[] = await restoreImageHistory(prepareMessagesForModel(active), model);
   // Agent continuation starts from an existing transcript. Declare the initial

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { generate, validateTranscript } from "./engine";
 import { runSchema } from "../shared/schema";
 import { piStatus } from "./pi-subscription";
-import { cleanupIdleGptSessions, closeGptSession, interruptGptSession, listGptSessions, shutdownGptSessions } from "./gpt-subagent";
+import { cleanupIdleGptSessions, closeGptSession, interruptGptSession, listGptSessions, readGptSessionTranscript, sendGptSessionGuidance, shutdownGptSessions } from "./gpt-subagent";
 import { ProjectWorkspaceStore } from "./workspace";
 import { ActiveRunError, RunManager } from "./runs";
 import { projectImages } from "./images";
@@ -124,8 +124,10 @@ app.get("/api/gpt-sessions", async (req, res) => {
   try {
     const value = req.query.cwd;
     if (value !== undefined && typeof value !== "string") throw new Error("cwd 必须是单个目录路径。");
+    const owner = req.query.ownerSessionId;
+    if (typeof owner !== "string" || !owner.trim() || owner.length > 200) throw new Error("ownerSessionId 必须是 1 到 200 个字符。");
     cwd = value;
-    const sessions = await listGptSessions(cwd);
+    const sessions = await listGptSessions(cwd, owner);
     logEvent("gpt", "info", "gpt_sessions_list", "已读取 GPT 会话列表。", {
       cwd, durationMs: Date.now() - startedAt, sessionCount: sessions.length,
     });
@@ -138,12 +140,49 @@ app.get("/api/gpt-sessions", async (req, res) => {
     res.status(400).json({ error: reason });
   }
 });
-app.post("/api/gpt-sessions/cleanup", async (req, res) => {
+app.get("/api/gpt-sessions/:name/transcript", async (req, res) => {
+  try {
+    const { cwd, ownerSessionId, after, before, limit } = req.query;
+    if (cwd !== undefined && typeof cwd !== "string") throw new Error("cwd 必须是单个目录路径。");
+    if (typeof ownerSessionId !== "string" || !ownerSessionId.trim() || ownerSessionId.length > 200) throw new Error("ownerSessionId 必须是 1 到 200 个字符。");
+    const integer = (value: unknown, label: string) => {
+      if (value === undefined) return undefined;
+      if (typeof value !== "string" || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error(`${label} 必须是非负整数。`);
+      return Number(value);
+    };
+    const page = await readGptSessionTranscript(cwd, req.params.name, ownerSessionId, {
+      after: integer(after, "after"), before: integer(before, "before"), limit: integer(limit, "limit"),
+    });
+    res.set("Cache-Control", "no-store").json(page);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    res.status(/不属于当前会话|找不到 GPT 会话/.test(reason) ? 404 : 400).json({ error: reason });
+  }
+});
+app.post("/api/gpt-sessions/:name/send", async (req, res) => {
   const startedAt = Date.now();
-  const { cwd } = req.body || {};
+  const { cwd, ownerSessionId, message, mode } = req.body || {};
   try {
     if (cwd !== undefined && typeof cwd !== "string") throw new Error("cwd 必须是目录路径。");
-    const result = await cleanupIdleGptSessions(cwd);
+    if (typeof ownerSessionId !== "string" || !ownerSessionId.trim() || ownerSessionId.length > 200) throw new Error("ownerSessionId 必须是 1 到 200 个字符。");
+    if (mode !== undefined && !["steer", "followUp", "interrupt"].includes(mode)) throw new Error("mode 必须是 steer、followUp 或 interrupt。");
+    const result = await sendGptSessionGuidance(cwd, req.params.name, ownerSessionId, message, mode);
+    logEvent("gpt", "info", "gpt_session_guidance", "已向 GPT 工兵发送指导。", {
+      cwd, name: req.params.name, ownerSessionId, durationMs: Date.now() - startedAt, sessionId: result.session.id,
+    });
+    res.json(result);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    res.status(/不属于当前会话|找不到 GPT 会话/.test(reason) ? 404 : 400).json({ error: reason });
+  }
+});
+app.post("/api/gpt-sessions/cleanup", async (req, res) => {
+  const startedAt = Date.now();
+  const { cwd, ownerSessionId } = req.body || {};
+  try {
+    if (cwd !== undefined && typeof cwd !== "string") throw new Error("cwd 必须是目录路径。");
+    if (typeof ownerSessionId !== "string" || !ownerSessionId.trim() || ownerSessionId.length > 200) throw new Error("ownerSessionId 必须是 1 到 200 个字符。");
+    const result = await cleanupIdleGptSessions(cwd, ownerSessionId);
     logEvent("gpt", "info", "gpt_sessions_cleanup", "已清理空闲 GPT 会话。", {
       cwd, durationMs: Date.now() - startedAt, closedCount: result.closed.length,
       failureCount: result.failures.length, remainingCount: result.sessions.length,
@@ -159,11 +198,12 @@ app.post("/api/gpt-sessions/cleanup", async (req, res) => {
 });
 app.post("/api/gpt-sessions/interrupt", async (req, res) => {
   const startedAt = Date.now();
-  const { cwd, name } = req.body || {};
+  const { cwd, name, ownerSessionId } = req.body || {};
   try {
     if (cwd !== undefined && typeof cwd !== "string") throw new Error("cwd 必须是目录路径。");
     if (typeof name !== "string" || !name.trim()) throw new Error("name 必须是 GPT 会话名称或 ID。");
-    const session = await interruptGptSession(cwd, name);
+    if (typeof ownerSessionId !== "string" || !ownerSessionId.trim() || ownerSessionId.length > 200) throw new Error("ownerSessionId 必须是 1 到 200 个字符。");
+    const session = await interruptGptSession(cwd, name, ownerSessionId);
     logEvent("gpt", "info", "gpt_session_interrupt", "已中断 GPT 会话。", {
       cwd, name, durationMs: Date.now() - startedAt, sessionId: session.id,
     });
@@ -178,11 +218,12 @@ app.post("/api/gpt-sessions/interrupt", async (req, res) => {
 });
 app.post("/api/gpt-sessions/close", async (req, res) => {
   const startedAt = Date.now();
-  const { cwd, name } = req.body || {};
+  const { cwd, name, ownerSessionId } = req.body || {};
   try {
     if (cwd !== undefined && typeof cwd !== "string") throw new Error("cwd 必须是目录路径。");
     if (typeof name !== "string" || !name.trim()) throw new Error("name 必须是 GPT 会话名称或 ID。");
-    const session = await closeGptSession(cwd, name);
+    if (typeof ownerSessionId !== "string" || !ownerSessionId.trim() || ownerSessionId.length > 200) throw new Error("ownerSessionId 必须是 1 到 200 个字符。");
+    const session = await closeGptSession(cwd, name, ownerSessionId);
     logEvent("gpt", "info", "gpt_session_close", "已关闭 GPT 会话。", {
       cwd, name, durationMs: Date.now() - startedAt, sessionId: session.id,
     });

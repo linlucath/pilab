@@ -22,21 +22,27 @@ export function callArguments(call: ToolCall) {
 }
 
 export function validateToolHistory(messages: Message[]) {
-  const pending = new Map<string, ToolCall>();
+  const pendingCalls = new Map<string, ToolCall>();
   const seen = new Set<string>();
+  let resultsStarted = false;
   for (const message of messages) {
-    if (pending.size && message.role !== "tool")
-      throw new Error(
-        "工具调用后必须先补齐所有工具结果，再添加其他消息。请检查被删除或排除的工具结果。",
-      );
+    if (pendingCalls.size && message.role !== "tool") {
+      const isCollectingCalls = !resultsStarted && message.role === "assistant" && !!message.toolCalls?.length;
+      if (!isCollectingCalls)
+        throw new Error(
+          "工具调用后必须先补齐所有工具结果，再添加其他消息。请检查被删除或排除的工具结果。",
+        );
+    }
     if (message.role === "tool") {
+      resultsStarted = true;
       const id = wireCallId(message.toolCallId || "");
-      const call = pending.get(id);
+      const call = pendingCalls.get(id);
       if (!call)
         throw new Error(`工具结果没有对应的调用：${id || "未填写 Call ID"}`);
       if (message.toolName !== call.name)
         throw new Error(`工具结果名称应为 ${call.name}。`);
-      pending.delete(id);
+      pendingCalls.delete(id);
+      if (!pendingCalls.size) resultsStarted = false;
     } else if (message.toolCalls?.length) {
       if (message.role !== "assistant")
         throw new Error("只有 assistant 消息可以包含工具调用。");
@@ -45,14 +51,14 @@ export function validateToolHistory(messages: Message[]) {
         if (!id || seen.has(id))
           throw new Error(`工具 Call ID 为空或重复：${id}`);
         callArguments(call);
-        pending.set(id, call);
+        pendingCalls.set(id, call);
         seen.add(id);
       }
     }
   }
-  if (pending.size)
+  if (pendingCalls.size)
     throw new Error(
-      `请先为工具调用 ${[...pending.values()].map((c) => c.name).join("、")} 添加工具结果。`,
+      `请先为工具调用 ${[...pendingCalls.values()].map((c) => c.name).join("、")} 添加工具结果。`,
     );
 }
 
@@ -186,6 +192,37 @@ export function fromPiMessage(message: PiMessage, id: string): Message {
   };
 }
 
+export function normalizeConsecutiveToolCallMessages(messages: PiMessage[]): PiMessage[] {
+  const normalized: PiMessage[] = [];
+  for (const message of messages) {
+    const previous = normalized.at(-1);
+    if (previous?.role === "assistant" && message.role === "assistant" &&
+      previous.content.some((block) => block.type === "toolCall") &&
+      message.content.some((block) => block.type === "toolCall")) {
+      const merged: AssistantMessage = {
+        ...previous,
+        content: [...previous.content, ...message.content],
+        stopReason: "toolUse",
+      };
+      normalized[normalized.length - 1] = merged;
+    } else normalized.push(message);
+  }
+  return normalized;
+}
+
+function groupConsecutiveAssistantToolCalls(messages: Message[]): Message[][] {
+  const groups: Message[][] = [];
+  for (const message of messages) {
+    const previousGroup = groups.at(-1);
+    const previous = previousGroup?.at(-1);
+    if (previous?.role === "assistant" && previous.toolCalls?.length &&
+      message.role === "assistant" && message.toolCalls?.length)
+      previousGroup!.push(message);
+    else groups.push([message]);
+  }
+  return groups;
+}
+
 function sameSource(message: Message, settings: Settings) {
   return (
     message.providerState?.model === settings.model &&
@@ -237,6 +274,25 @@ function responseItems(
   }
   return items;
 }
+function anthropicAssistantContent(message: Message, settings: Settings) {
+  const thinking = sameSource(message, settings)
+    ? (message.providerState?.thinking || [])
+        .filter((block) => block.thinkingSignature)
+        .map((block) => block.redacted
+          ? { type: "redacted_thinking", data: block.thinkingSignature }
+          : { type: "thinking", thinking: block.thinking, signature: block.thinkingSignature })
+    : [];
+  return [
+    ...thinking,
+    ...(message.content ? [{ type: "text", text: message.content }] : []),
+    ...(message.toolCalls || []).map((call) => ({
+      type: "tool_use",
+      id: wireCallId(call.id),
+      name: call.name,
+      input: callArguments(call),
+    })),
+  ];
+}
 /** Keep edited text/roles exact while representing tools in each provider's native protocol. */
 export function exactPayload(
   payload: unknown,
@@ -245,8 +301,22 @@ export function exactPayload(
 ): Record<string, unknown> {
   const value = { ...(payload as Record<string, unknown>) };
   if (settings.protocol === "openai-completions") {
-    value.messages = active.map((m) =>
-      m.role === "tool"
+    const messages: Record<string, unknown>[] = [];
+    for (const group of groupConsecutiveAssistantToolCalls(active)) {
+      if (group.length > 1) {
+        messages.push({
+          role: "assistant",
+          content: group.map((message) => message.content).filter(Boolean).join("\n") || null,
+          tool_calls: group.flatMap((message) => (message.toolCalls || []).map((call) => ({
+            id: wireCallId(call.id),
+            type: "function",
+            function: { name: call.name, arguments: call.arguments },
+          }))),
+        });
+        continue;
+      }
+      const m = group[0];
+      messages.push(m.role === "tool"
         ? {
             role: "tool",
             tool_call_id: wireCallId(m.toolCallId!),
@@ -257,15 +327,16 @@ export function exactPayload(
             content: m.content || (m.toolCalls?.length ? null : ""),
             ...(m.toolCalls?.length
               ? {
-                  tool_calls: m.toolCalls.map((c) => ({
-                    id: wireCallId(c.id),
+                  tool_calls: m.toolCalls.map((call) => ({
+                    id: wireCallId(call.id),
                     type: "function",
-                    function: { name: c.name, arguments: c.arguments },
+                    function: { name: call.name, arguments: call.arguments },
                   })),
                 }
               : {}),
-          },
-    );
+          });
+    }
+    value.messages = messages;
   } else if (
     settings.protocol === "openai-responses" ||
     settings.protocol === "pi-subscription"
@@ -282,7 +353,12 @@ export function exactPayload(
     else delete value.instructions;
   } else {
     const messages: { role: string; content: any }[] = [];
-    for (const m of active.filter((m) => m.role !== "system")) {
+    for (const group of groupConsecutiveAssistantToolCalls(active.filter((m) => m.role !== "system"))) {
+      if (group.length > 1) {
+        messages.push({ role: "assistant", content: group.flatMap((message) => anthropicAssistantContent(message, settings)) });
+        continue;
+      }
+      const m = group[0];
       if (m.role === "tool") {
         const result = {
           type: "tool_result",
@@ -302,32 +378,7 @@ export function exactPayload(
         m.role === "assistant" &&
         (m.toolCalls?.length || sameSource(m, settings))
       ) {
-        const thinking = sameSource(m, settings)
-          ? (m.providerState?.thinking || [])
-              .filter((b) => b.thinkingSignature)
-              .map((b) =>
-                b.redacted
-                  ? { type: "redacted_thinking", data: b.thinkingSignature }
-                  : {
-                      type: "thinking",
-                      thinking: b.thinking,
-                      signature: b.thinkingSignature,
-                    },
-              )
-          : [];
-        messages.push({
-          role: "assistant",
-          content: [
-            ...thinking,
-            ...(m.content ? [{ type: "text", text: m.content }] : []),
-            ...(m.toolCalls || []).map((c) => ({
-              type: "tool_use",
-              id: wireCallId(c.id),
-              name: c.name,
-              input: callArguments(c),
-            })),
-          ],
-        });
+        messages.push({ role: "assistant", content: anthropicAssistantContent(m, settings) });
       } else messages.push({ role: m.role, content: m.content });
     }
     value.messages = messages;

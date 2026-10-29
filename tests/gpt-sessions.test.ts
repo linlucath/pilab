@@ -124,7 +124,7 @@ test("native GPT conversations run concurrently, accept steering, interrupt real
   let manager = new GptSessionManager(options);
   try {
     const parent = new AbortController();
-    const tools = createSessionTools(async () => ({ manager, resolveModel: () => model }));
+    const tools = createSessionTools(async () => ({ manager, resolveModel: () => model }), undefined, "parent-fixture");
     const create = tools.find((entry) => entry.name === "gpt_session_create")!;
     const first = await create.execute("create-alpha", { name: "alpha", rolePreset: "scout", message: "ALPHA" }, parent.signal);
     const alpha = manager.list().find((session) => session.name === first.details.name)!;
@@ -274,6 +274,37 @@ test("session persistence recreates its parent directories before manifest and e
     const persisted = JSON.parse(await readFile(path.join(storageDir, "sessions.json"), "utf8"));
     assert.ok(persisted.sessions.some((entry: SessionInfo) => entry.id === session.id && entry.status === "closed"));
     assert.match(await readFile(path.join(storageDir, `${session.id}.events.jsonl`), "utf8"), /Process stopped/);
+  } finally { await manager.shutdown(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("worker owners are immutable across forks and transcript pages stay scoped", { timeout: 10_000 }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "pi-gpt-owner-"));
+  const manager = new GptSessionManager({ storageDir: path.join(root, "saved"), cwd: root,
+    createTransport: () => ({
+      async request<T = any>(type: string): Promise<T> {
+        const result = type === "get_state"
+          ? { model: { provider: "openai-codex", id: model }, sessionFile: "fixture-session.jsonl" }
+          : { disposition: "handled" };
+        return result as T;
+      },
+      async reply() {}, async stop() {},
+    }) });
+  try {
+    const worker = await manager.create({ name: "owner-bound", model, ownerSessionId: "root-session" });
+    await until(() => manager.read(worker.id).session.status === "idle");
+    assert.deepEqual(manager.list("root-session").map((session) => session.id), [worker.id]);
+    assert.deepEqual(manager.list("fork-session"), []);
+    assert.equal(manager.assertOwner(worker.id, "root-session").ownerSessionId, "root-session");
+    assert.throws(() => manager.assertOwner(worker.id, "fork-session"), /不属于当前会话/);
+    await assert.rejects(manager.send(worker.id, "hijack", "steer", undefined, "fork-session"), /不属于当前会话/);
+    await assert.rejects(manager.interrupt(worker.id, "fork-session"), /不属于当前会话/);
+    await assert.rejects(manager.close(worker.id, false, "fork-session"), /不属于当前会话/);
+    const firstPage = await manager.readTranscript(worker.id, { limit: 1 });
+    assert.equal(firstPage.events.length, 1);
+    assert.equal(firstPage.events[0].type, "ready");
+    assert.ok(firstPage.hasMore);
+    const older = await manager.readTranscript(worker.id, { before: firstPage.events[0].sequence, limit: 1 });
+    assert.equal(older.events[0]?.type, "created");
   } finally { await manager.shutdown(); await rm(root, { recursive: true, force: true }); }
 });
 
