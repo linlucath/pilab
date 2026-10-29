@@ -105,7 +105,26 @@ test("IMG-05 粘贴、拖放、退格移除并发送图片引用", async ({ page
   }, base64);
   const tray = page.locator(".composer-image-tray");
   await expect(tray.locator(".staged-image[data-status=ready]")).toHaveCount(1);
-  await expect(tray.getByRole("img", { name: "clipboard.png" })).toBeVisible();
+  await expect(tray.getByRole("img", { name: "已附加图片 1" })).toBeVisible();
+  await expect(tray.locator("header, figcaption")).toHaveCount(0);
+  await expect(tray.getByText("clipboard.png", { exact: true })).toHaveCount(0);
+  const thumbnailStyle = await tray.locator(".staged-image").evaluate((element) => {
+    const image = element.querySelector("img")!;
+    const remove = element.querySelector(".staged-image-remove")!;
+    return {
+      height: image.getBoundingClientRect().height,
+      radius: getComputedStyle(image).borderRadius,
+      trayBorderWidth: getComputedStyle(element.parentElement!.parentElement!).borderWidth,
+      deletePosition: getComputedStyle(remove).position,
+      deleteTop: getComputedStyle(remove).top,
+      deleteRight: getComputedStyle(remove).right,
+      deleteBackground: getComputedStyle(remove).backgroundColor,
+    };
+  });
+  expect(thumbnailStyle.height).toBeGreaterThanOrEqual(56);
+  expect(thumbnailStyle.height).toBeLessThanOrEqual(60);
+  expect(thumbnailStyle).toMatchObject({ radius: "8px", trayBorderWidth: "0px", deletePosition: "absolute", deleteTop: "4px", deleteRight: "4px" });
+  expect(thumbnailStyle.deleteBackground).toContain("24, 24, 27");
   await controls.focus();
   await controls.press("Backspace");
   await expect(page.locator(".staged-image")).toHaveCount(0);
@@ -151,6 +170,7 @@ test("IMG-05 粘贴、拖放、退格移除并发送图片引用", async ({ page
     element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }));
   }, base64);
   await expect(tray.locator(".staged-image[data-status=uploading]")).toHaveCount(1);
+  await expect(tray.locator(".staged-image-state.uploading .spin")).toBeVisible();
   await page.getByRole("button", { name: "发送" }).click();
   await expect(page.locator(".composer-image-error")).toContainText("仍在上传");
   await expect(tray.locator(".staged-image[data-status=ready]")).toHaveCount(1);

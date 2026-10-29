@@ -21,7 +21,6 @@ const composerRoles: Message["role"][] = ["user", "assistant", "system"];
 const supportedImageTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"]);
 const imageExtension = /\.(png|jpe?g|webp|gif|bmp)$/i;
 const roleIcon = (role: Message["role"]) => role === "assistant" ? <Sparkles size={14} /> : role === "system" ? <Cpu size={14} /> : <UserRound size={14} />;
-const formatBytes = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.ceil(bytes / 1024))} KB`;
 const looksLikeImage = (file: File) => file.type.startsWith("image/") || (!file.type && imageExtension.test(file.name));
 
 export function ComposerBar({ busy, blocked, toolName, messageCount, contextTokens, savedPercent, draft, onDraftChange, backgroundWorkers = [], wakeNotice, onDismissWake, onReviewWorkers, onSend, onRun, onStop }: Props) {
@@ -152,7 +151,6 @@ export function ComposerBar({ busy, blocked, toolName, messageCount, contextToke
     setDragOver(false);
     addFiles(Array.from(event.dataTransfer.files));
   };
-  const readyBytes = stagedImages.reduce((total, image) => total + image.file.size, 0);
   const canSend = !!draft.trim() || stagedImages.length > 0;
 
   return <footer className="composer-bar">
@@ -164,15 +162,13 @@ export function ComposerBar({ busy, blocked, toolName, messageCount, contextToke
       onDragLeave={(event) => { if (!hasFileDrag(event.dataTransfer)) return; event.preventDefault(); dragDepth.current = Math.max(0, dragDepth.current - 1); if (!dragDepth.current) setDragOver(false); }}
       onDrop={onDrop}>
       {dragOver && <div className="composer-drop-overlay" aria-hidden="true"><ImagePlus size={22} /><strong>松开即可添加图片</strong><small>支持 PNG · JPEG · WebP · GIF · BMP</small></div>}
-      {!!stagedImages.length && <section className="composer-image-tray" aria-label="待发送图片">
-        <header><strong>待发送图片</strong><span>{stagedImages.length}/{MAX_MESSAGE_IMAGES} · {formatBytes(readyBytes)} / {MAX_MESSAGE_IMAGE_BYTES / (1024 * 1024)} MiB</span></header>
-        <div className="composer-image-list">{stagedImages.map((image, index) => <figure className="staged-image" data-status={image.status} key={image.key}>
-          <img src={image.previewUrl} alt={image.file.name || `图片 ${index + 1}`} />
-          {image.status === "uploading" && <span className="staged-image-state uploading" role="status" aria-label={`图片 ${index + 1} 上传中`}><LoaderCircle size={15} className="spin" /></span>}
+      {!!stagedImages.length && <section className="composer-image-tray" aria-label="已附加图片缩略图">
+        <div className="composer-image-list">{stagedImages.map((image, index) => <div className="staged-image" role="group" aria-label={`已附加图片 ${index + 1}`} data-status={image.status} key={image.key}>
+          <img src={image.previewUrl} alt={`已附加图片 ${index + 1}`} />
+          {image.status === "uploading" && <span className="staged-image-state uploading" role="status" aria-label={`图片 ${index + 1} 上传中`}><LoaderCircle size={14} className="spin" /></span>}
           {image.status === "error" && <span className="staged-image-state failed" role="alert" title={image.error}><AlertTriangle size={15} /><button onClick={() => void uploadImage(image)} aria-label={`重试上传图片 ${index + 1}`}><RotateCcw size={12} /></button></span>}
-          <button className="staged-image-remove" onClick={() => removeImage(image.key)} aria-label={`移除图片 ${index + 1}`} title="移除图片"><X size={13} /></button>
-          <figcaption title={image.file.name}>{image.file.name || `图片 ${index + 1}`}</figcaption>
-        </figure>)}</div>
+          <button className="staged-image-remove" onClick={() => removeImage(image.key)} aria-label={`移除图片 ${index + 1}`} title="移除图片"><X size={12} strokeWidth={2.2} /></button>
+        </div>)}</div>
       </section>}
       <textarea ref={input} value={draft} onChange={(event) => onDraftChange(event.target.value)} onPaste={onPaste} onCompositionStart={() => { isComposingRef.current = true; }} onCompositionEnd={() => { isComposingRef.current = false; }} onKeyDown={(event) => {
         if (event.key === "Backspace" && !draft && stagedRef.current.length && !isComposingRef.current) { event.preventDefault(); removeImage(stagedRef.current.at(-1)!.key); return; }
