@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { Archive, ChevronDown, LoaderCircle, MessageSquare, RefreshCw, Send, ShieldAlert, X } from "lucide-react";
+import { ArrowDown, Archive, BookOpen, ChevronDown, CircleAlert, CircleCheck, LoaderCircle, MessageSquare, Pencil, Play, RefreshCw, Search, Send, ShieldAlert, Sparkles, Wrench, X } from "lucide-react";
 import type { GptSessionSummary } from "../../shared/gpt-sessions";
+import { gptWorkerSystemPrompt } from "../../extensions/pi-gpt-subagent/persona";
 
 type TranscriptEvent = {
   sequence: number; at: number; type: string; text: string;
@@ -21,11 +22,110 @@ const labels: Record<string, string> = {
 };
 
 function statusLabel(status: string) { return labels[status] || status; }
+
+type ToolCallTranscript = { key: string; name: string; events: TranscriptEvent[] };
+type TranscriptItem = { kind: "event"; event: TranscriptEvent } | { kind: "tools"; key: string; calls: ToolCallTranscript[] };
+type ToolStatus = "running" | "completed" | "error";
+type TranscriptPersona = { systemPrompt?: string; dispatchContext?: string };
+
+function isToolEvent(event: TranscriptEvent) { return ["tool_start", "tool_progress", "tool_end"].includes(event.type); }
+function buildTranscriptItems(events: TranscriptEvent[]): TranscriptItem[] {
+  const items: TranscriptItem[] = [];
+  const calls = new Map<string, ToolCallTranscript>();
+  const activeByName = new Map<string, string>();
+  let currentGroup: Extract<TranscriptItem, { kind: "tools" }> | undefined;
+  for (const event of events) {
+    if (!isToolEvent(event)) { items.push({ kind: "event", event }); currentGroup = undefined; continue; }
+    const name = event.toolName || "tool";
+    const key = event.toolCallId || (event.type !== "tool_start" ? activeByName.get(name) : undefined) || `${name}:${event.sequence}`;
+    let call = calls.get(key);
+    if (!call) {
+      call = { key, name, events: [] };
+      calls.set(key, call);
+      if (!currentGroup || items.at(-1) !== currentGroup) {
+        currentGroup = { kind: "tools", key: `tools-${event.sequence}`, calls: [] };
+        items.push(currentGroup);
+      }
+      currentGroup.calls.push(call);
+    }
+    call.events.push(event);
+    if (!event.toolCallId && event.type === "tool_start") activeByName.set(name, key);
+    if (!event.toolCallId && event.type === "tool_end") activeByName.delete(name);
+  }
+  return items;
+}
+function toolAction(call: ToolCallTranscript) {
+  const start = call.events.find((event) => event.type === "tool_start");
+  let args: Record<string, unknown> = {};
+  try { const value = JSON.parse(start?.text || "{}"); if (value && typeof value === "object" && !Array.isArray(value)) args = value; } catch { /* Older transcripts may have non-JSON arguments. */ }
+  const firstString = (...keys: string[]) => keys.map((key) => args[key]).find((value): value is string => typeof value === "string" && !!value.trim())?.replace(/\s+/g, " ").trim();
+  const target = firstString("path", "file", "target", "directory", "cwd");
+  const detail = firstString("command", "pattern", "query", "url");
+  const name = call.name.toLowerCase();
+  const value = name === "read" || name.includes("read_file") ? `已读取 ${target || detail || "文件"}`
+    : name === "edit" || name.includes("edit_file") ? `已编辑 ${target || detail || "文件"}`
+    : name === "write" || name.includes("write_file") ? `已写入 ${target || detail || "文件"}`
+    : name === "bash" || name === "terminal" ? `已运行 ${detail || target || "命令"}`
+    : name === "grep" || name === "search" ? `已搜索 ${detail || target || "内容"}`
+    : name === "find" ? `已查找 ${detail || target || "文件"}`
+    : name === "ls" ? `已列出 ${target || "目录"}`
+    : name === "present_images" ? "已提交图片素材"
+    : name === "view_images" || name === "list_images" ? `已查看 ${detail || target || "图片素材"}`
+    : `已执行 ${call.name}${target ? ` · ${target}` : detail ? ` · ${detail}` : ""}`;
+  return value.length > 120 ? `${value.slice(0, 117)}…` : value;
+}
+function toolStatus(call: ToolCallTranscript): ToolStatus {
+  const end = [...call.events].reverse().find((event) => event.type === "tool_end");
+  return !end ? "running" : end.isError ? "error" : "completed";
+}
+function toolIcon(name: string) {
+  const lower = name.toLowerCase();
+  if (lower === "read" || lower.includes("read_file")) return <BookOpen size={13} />;
+  if (lower === "edit" || lower.includes("edit_file") || lower === "write" || lower.includes("write_file")) return <Pencil size={13} />;
+  if (["grep", "find", "search"].includes(lower)) return <Search size={13} />;
+  if (["bash", "terminal"].includes(lower)) return <Play size={13} />;
+  if (lower.includes("image")) return <Sparkles size={13} />;
+  return <Wrench size={13} />;
+}
+function toolDetails(call: ToolCallTranscript) {
+  const start = call.events.find((event) => event.type === "tool_start");
+  let args = "";
+  try { args = JSON.stringify(JSON.parse(start?.text || ""), null, 2); } catch { args = start?.text || ""; }
+  const outputEvent = [...call.events].reverse().find((event) => event.type === "tool_end" && event.text)
+    || [...call.events].reverse().find((event) => event.type === "tool_progress" && event.text);
+  return { args, output: outputEvent?.text || "", progressCount: call.events.filter((event) => event.type === "tool_progress").length };
+}
 function transcriptUrl(name: string, ownerSessionId: string, cwd: string, cursor?: { after?: number; before?: number }) {
   const query = new URLSearchParams({ ownerSessionId, cwd, limit: "100" });
   if (cursor?.after !== undefined) query.set("after", String(cursor.after));
   if (cursor?.before !== undefined) query.set("before", String(cursor.before));
   return `/api/gpt-sessions/${encodeURIComponent(name)}/transcript?${query}`;
+}
+
+function WorkerToolCall({ call }: { call: ToolCallTranscript }) {
+  const status = toolStatus(call);
+  const { args, output, progressCount } = toolDetails(call);
+  const StatusIcon = status === "completed" ? CircleCheck : status === "error" ? CircleAlert : LoaderCircle;
+  const statusText = status === "completed" ? "完成" : status === "error" ? "失败" : "运行中";
+  return <details className={`worker-tool-call ${status}`}>
+    <summary title={toolAction(call)}><span className="worker-tool-icon">{toolIcon(call.name)}</span><span className="worker-tool-action">{toolAction(call)}</span><span className={`worker-tool-status ${status}`}><StatusIcon size={12} className={status === "running" ? "spin" : ""} />{statusText}</span><ChevronDown size={13} className="worker-tool-chevron" /></summary>
+    <div className="worker-tool-detail">
+      {args && <section><strong>参数</strong><pre>{args}</pre></section>}
+      {output && <section><strong>输出{progressCount > 1 ? ` · ${progressCount} 次进度更新` : ""}</strong><pre>{output}</pre></section>}
+      {!args && !output && <small>暂无参数或输出记录。</small>}
+    </div>
+  </details>;
+}
+
+function WorkerToolGroup({ item }: { item: Extract<TranscriptItem, { kind: "tools" }> }) {
+  const completed = item.calls.filter((call) => toolStatus(call) === "completed").length;
+  const failed = item.calls.filter((call) => toolStatus(call) === "error").length;
+  const preview = item.calls.slice(0, 2).map(toolAction).join(" · ");
+  const more = item.calls.length > 2 ? ` · +${item.calls.length - 2}` : "";
+  return <details className="worker-tool-group">
+    <summary><Wrench size={13} /><span className="worker-tool-group-preview">{preview}{more}</span><small>{item.calls.length} 步骤</small>{failed > 0 && <span className="worker-tool-status error"><CircleAlert size={12} />{failed} 失败</span>}{completed === item.calls.length && !failed && <span className="worker-tool-status completed"><CircleCheck size={12} />完成</span>}<ChevronDown size={13} className="worker-tool-chevron" /></summary>
+    <div className="worker-tool-list">{item.calls.map((call) => <WorkerToolCall key={call.key} call={call} />)}</div>
+  </details>;
 }
 
 function WorkerTranscript({ worker, ownerSessionId, cwd, onWorkerUpdate, onClose }: {
@@ -38,7 +138,11 @@ function WorkerTranscript({ worker, ownerSessionId, cwd, onWorkerUpdate, onClose
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const tail = useRef<HTMLDivElement>(null);
+  const [personaOpen, setPersonaOpen] = useState(false);
+  const [persona, setPersona] = useState<TranscriptPersona>({});
+  const [nearBottom, setNearBottom] = useState(true);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const followBottom = useRef(true);
   const latestSequence = events.at(-1)?.sequence ?? 0;
   const latestSequenceRef = useRef(latestSequence);
   latestSequenceRef.current = latestSequence;
@@ -48,9 +152,10 @@ function WorkerTranscript({ worker, ownerSessionId, cwd, onWorkerUpdate, onClose
     let polling = false;
     let initialized = false;
     const controller = new AbortController();
-    const applyPage = (page: { events?: TranscriptEvent[]; hasMore?: boolean; session?: GptSessionSummary }, mode: "replace" | "append" | "prepend") => {
+    const applyPage = (page: { events?: TranscriptEvent[]; hasMore?: boolean; session?: GptSessionSummary; persona?: TranscriptPersona }, mode: "replace" | "append" | "prepend") => {
       if (cancelled) return;
       if (page.session) onWorkerUpdate(page.session);
+      if (page.persona) setPersona(page.persona);
       if (mode === "replace") setEvents(page.events || []);
       else if (page.events?.length) setEvents((current) => {
         const next = mode === "append" ? [...current, ...page.events!] : [...page.events!, ...current];
@@ -86,7 +191,20 @@ function WorkerTranscript({ worker, ownerSessionId, cwd, onWorkerUpdate, onClose
     return () => { cancelled = true; controller.abort(); window.clearInterval(timer); };
   }, [worker.id, worker.name, worker.status, ownerSessionId, cwd, onWorkerUpdate]);
 
-  useEffect(() => { tail.current?.scrollIntoView({ block: "end" }); }, [events.length]);
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (element && followBottom.current) element.scrollTop = element.scrollHeight;
+  }, [events.length]);
+  const updateScroll = (element: HTMLDivElement) => {
+    const closeToBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+    followBottom.current = closeToBottom;
+    setNearBottom(closeToBottom);
+  };
+  const scrollToBottom = () => {
+    followBottom.current = true;
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  };
+  const latestDispatch = [...events].reverse().find((event) => event.type === "message_sent")?.text;
 
   const loadOlder = async () => {
     const before = events[0]?.sequence;
@@ -129,16 +247,30 @@ function WorkerTranscript({ worker, ownerSessionId, cwd, onWorkerUpdate, onClose
         <button className="icon-button" aria-label="返回主会话" title="返回主会话" onClick={onClose}><X size={16} /></button>
       </div>
     </header>
+    <section className={`worker-persona ${personaOpen ? "open" : ""}`}>
+      <button className="worker-persona-toggle" aria-expanded={personaOpen} onClick={() => setPersonaOpen((open) => !open)}>
+        <Sparkles size={14} />
+        <span><strong>工兵人设 · {worker.role || "通用 GPT"}{worker.rolePreset ? ` ${worker.rolePreset}` : ""}</strong><small>系统提示词与最近派遣上下文</small></span>
+        <ChevronDown size={14} className="worker-persona-chevron" />
+      </button>
+      {personaOpen && <div className="worker-persona-content">
+        <section><strong>System prompt</strong><pre>{persona.systemPrompt || gptWorkerSystemPrompt(worker.rolePreset)}</pre></section>
+        <section><strong>最近派遣上下文</strong><pre>{latestDispatch || persona.dispatchContext || "尚未记录派遣上下文。"}</pre></section>
+      </div>}
+    </section>
     {error && <div className="thread-error" role="alert">{error}</div>}
-    <div className="worker-transcript-scroll" aria-live="polite">
-      {hasMore && <button className="thread-load-older" onClick={() => void loadOlder()} disabled={loadingOlder}>{loadingOlder && <LoaderCircle size={13} className="spin" />}{loadingOlder ? "读取中…" : "读取更早记录"}</button>}
-      {!events.length && <div className="thread-transcript-empty"><MessageSquare size={20} /><span>工兵尚无可显示记录</span></div>}
-      {events.map((event) => <article className={`worker-transcript-event ${event.type}`} key={event.sequence}>
-        <header><strong>{event.type === "user" || event.type === "message_sent" ? "指导" : event.type === "assistant" || event.type === "assistant_progress" ? "GPT" : event.toolName || "状态"}</strong><small>{new Date(event.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</small></header>
-        {event.type.startsWith("tool_") ? <details><summary>{event.type === "tool_start" ? "工具开始" : event.type === "tool_end" ? (event.isError ? "工具失败" : "工具完成") : "工具进度"} · {event.toolName || "工具"}</summary><pre>{event.text || "（无输出）"}</pre></details>
-          : <p>{event.text || statusLabel(event.type)}</p>}
-      </article>)}
-      <div ref={tail} />
+    <div className="worker-transcript-container">
+      <div className="worker-transcript-scroll" ref={scrollRef} aria-live="polite" onScroll={(event) => updateScroll(event.currentTarget)}>
+        {hasMore && <button className="thread-load-older" onClick={() => void loadOlder()} disabled={loadingOlder}>{loadingOlder && <LoaderCircle size={13} className="spin" />}{loadingOlder ? "读取中…" : "读取更早记录"}</button>}
+        {!events.length && <div className="thread-transcript-empty"><MessageSquare size={20} /><span>工兵尚无可显示记录</span></div>}
+        {buildTranscriptItems(events).map((item) => item.kind === "tools"
+          ? <WorkerToolGroup key={item.key} item={item} />
+          : <article className={`worker-transcript-event ${item.event.type}`} key={item.event.sequence}>
+              <header><strong>{item.event.type === "user" || item.event.type === "message_sent" ? "指导" : item.event.type === "assistant" || item.event.type === "assistant_progress" ? "GPT" : "状态"}</strong><small>{new Date(item.event.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</small></header>
+              <p>{item.event.text || statusLabel(item.event.type)}</p>
+            </article>)}
+      </div>
+      {!nearBottom && <button className="worker-scroll-to-bottom" aria-label="跳到底部工兵记录" title="跳到底部" onClick={scrollToBottom}><ArrowDown size={16} /></button>}
     </div>
     <form className="worker-guidance-form" onSubmit={(event) => void send(event)}>
       <textarea aria-label="指导工兵" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="给这个工兵发送直接指导…" onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />

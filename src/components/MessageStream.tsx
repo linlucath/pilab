@@ -361,7 +361,6 @@ export function MessageStream(props: Props) {
   const [jumpedId, setJumpedId] = useState("");
   const [scrollState, setScrollState] = useState({ top: false, bottom: false });
   const followStream = useRef(true);
-  const wasBusy = useRef(false);
   const disabled = props.busy;
   const byCallId = useMemo(() => new Map(props.messages.filter((message) => message.role === "tool" && message.toolCallId).map((message) => [wireToolCallId(message.toolCallId!), message])), [props.messages]);
   const matched = useMemo(() => new Set(props.messages.flatMap((message) => message.toolCalls?.map((call) => wireToolCallId(call.id)) || [])), [props.messages]);
@@ -384,8 +383,8 @@ export function MessageStream(props: Props) {
   const openImage = (file: string, name: string) => setImagePreview({ file, name });
   const updateScroll = (element: HTMLDivElement) => {
     const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
-    followStream.current = distance < 120;
-    setScrollState({ top: element.scrollTop > 220, bottom: distance > 120 });
+    followStream.current = distance < 80;
+    setScrollState({ top: element.scrollTop > 220, bottom: distance > 80 });
   };
   const jumpToMessage = (id: string) => {
     const root = scrollRef.current;
@@ -468,8 +467,7 @@ export function MessageStream(props: Props) {
     const requested = scrollRequestRef.current !== props.scrollRequest;
     sessionRef.current = props.sessionId;
     scrollRequestRef.current = props.scrollRequest;
-    if (sessionChanged || requested || (props.busy && !wasBusy.current)) followStream.current = true;
-    wasBusy.current = props.busy;
+    if (sessionChanged || requested) followStream.current = true;
     if (sessionChanged || requested) {
       requestAnimationFrame(() => {
         if (!element.isConnected) return;
@@ -490,7 +488,10 @@ export function MessageStream(props: Props) {
     observer.observe(inner);
     return () => observer.disconnect();
   }, []);
-  const scrollTo = (where: "top" | "bottom") => scrollRef.current?.scrollTo({ top: where === "top" ? 0 : scrollRef.current.scrollHeight, behavior: "smooth" });
+  const scrollTo = (where: "top" | "bottom") => {
+    followStream.current = where === "bottom";
+    scrollRef.current?.scrollTo({ top: where === "top" ? 0 : scrollRef.current.scrollHeight, behavior: "smooth" });
+  };
   const renderCard = (message: Message, index: number, children?: React.ReactNode) => {
     const compacted = message as CompactedMessage;
     const query = visibleSearchTerm.trim();

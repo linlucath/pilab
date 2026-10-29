@@ -752,7 +752,7 @@ export default function App() {
     setSessionStarting(sessionId, true);
     setSessionRunError(sessionId);
     setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === sessionId ? { ...item, runs: [record, ...item.runs].slice(0, 30) } : item) }));
-    if (currentWorkspace.active === sessionId) { setSelectedRun(runId); setDebugPanel(null); setScrollRequest((value) => value + 1); }
+    if (currentWorkspace.active === sessionId) { setSelectedRun(runId); setDebugPanel(null); }
     updateStreamView(sessionId, () => emptyStreamView);
     let remoteRunId = "";
     let runControl: RunControl | null = null;

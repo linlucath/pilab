@@ -135,7 +135,9 @@
   .thread-refresh, .thread-archived-toggle { min-width: 26px; padding: 0 5px; }
   .worker-thread-header { align-items: flex-start; flex-direction: column; gap: 6px; padding: 8px 11px; }
   .worker-thread-actions { width: 100%; justify-content: flex-end; }
+  .worker-persona-content, .worker-tool-detail { grid-template-columns: 1fr; }
   .worker-transcript-scroll { padding: 12px 10px; }
+  .worker-scroll-to-bottom { right: 12px; bottom: 12px; }
   .worker-guidance-form { width: calc(100% - 16px); margin-bottom: max(8px, env(safe-area-inset-bottom)); }
   .worker-guidance-form textarea { font-size: 10px; }
 }

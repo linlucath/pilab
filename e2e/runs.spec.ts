@@ -123,6 +123,10 @@ test("RUN-03 浏览旧内容时不被长流拉到底部，可一键回到底部"
   await stream.evaluate((element) => { element.scrollTop = 0; });
   await expect(page.getByRole("button", { name: "跳到底部" })).toBeVisible();
   await runCurrent(page);
+  await expect(ui(page).stop).toBeVisible();
+  await page.waitForTimeout(350);
+  await expect.poll(() => stream.evaluate((element) => element.scrollTop)).toBeLessThan(80);
+  await expect(page.getByRole("button", { name: "跳到底部" })).toBeVisible();
   await expect(page.getByText(/RUN03-LONG-STREAM/)).toBeVisible();
   await expect(ui(page).stop).toBeVisible();
   await stream.hover();

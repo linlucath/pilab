@@ -83,7 +83,12 @@ export async function readGptSessionTranscript(cwdInput: string | undefined, nam
   const manager = managerFor(cwd);
   manager.assertOwner(name, owner);
   const page = await manager.readTranscript(name, options);
-  return { session: summarize(manager, page.session), events: page.events, hasMore: page.hasMore, nextCursor: page.nextCursor, previousCursor: page.previousCursor };
+  return {
+    session: summarize(manager, page.session),
+    ...(options.after === undefined && options.before === undefined && page.session.lastDispatchContext
+      ? { persona: { dispatchContext: page.session.lastDispatchContext } } : {}),
+    events: page.events, hasMore: page.hasMore, nextCursor: page.nextCursor, previousCursor: page.previousCursor,
+  };
 }
 
 export async function sendGptSessionGuidance(cwdInput: string | undefined, name: string, ownerInput: string, message: string, mode: "steer" | "followUp" | "interrupt" = "steer") {

@@ -57,6 +57,73 @@ test("GPT worker transcript tabs page through the complete reply history", async
   await expect(page.getByText("Historical reply 1", { exact: true })).toBeVisible();
 });
 
+test("GPT worker tabs expose compact tool logs, persona context, and sticky scrolling", async ({ page }) => {
+  const ownerSessionId = "worker-ux-owner";
+  await seedWorkspace(page, [{ id: ownerSessionId, title: "Worker UX", messages: [firstMessage] }], ownerSessionId);
+  const worker = { id: "worker-ux", name: "ux-worker", role: "工程执行员", rolePreset: "implementer", status: "running", model: "codex-mock", updatedAt: 1,
+    ownerSessionId, hasUnreadReply: false, hasActiveWaiter: false, pendingQuestionCount: 0, recentTools: [], lastReplyPreview: "" };
+  const events = [
+    { sequence: 1, at: 1, type: "message_sent", text: "Implement the requested UX and verify the focused browser tests." },
+    { sequence: 2, at: 2, type: "tool_start", text: '{"path":"specs/behaviors.md"}', toolName: "read", toolCallId: "read-1" },
+    { sequence: 3, at: 3, type: "tool_progress", text: "Reading behavior expectations", toolName: "read", toolCallId: "read-1" },
+    { sequence: 4, at: 4, type: "tool_end", text: "Behavior expectations loaded", toolName: "read", toolCallId: "read-1" },
+    { sequence: 5, at: 5, type: "tool_start", text: '{"path":"src/MessageStream.tsx"}', toolName: "edit", toolCallId: "edit-1" },
+    { sequence: 6, at: 6, type: "tool_end", text: "Updated stream scrolling", toolName: "edit", toolCallId: "edit-1" },
+    ...Array.from({ length: 25 }, (_, index) => ({ sequence: index + 7, at: index + 7, type: "assistant", text: `History ${index + 1} · ${"worker history content ".repeat(18)}` })),
+  ];
+  await page.route(/\/api\/gpt-sessions\?/, (route) => route.fulfill({
+    contentType: "application/json", body: JSON.stringify({ sessions: [worker] }),
+  }));
+  await page.route("**/api/gpt-sessions/*/transcript?*", async (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    if (query.has("after")) {
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+        events: [{ sequence: 32, at: 32, type: "assistant", text: "New reply arrived while reading history." }],
+        persona: { dispatchContext: events[0].text },
+      }) });
+      return;
+    }
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      events, hasMore: false,
+      persona: { dispatchContext: events[0].text },
+    }) });
+  });
+  await page.goto(`/?session=${ownerSessionId}`);
+  await page.locator(".thread-tab-select").filter({ hasText: "ux-worker" }).click();
+  const persona = page.locator(".worker-persona");
+  await expect(persona).toContainText("工兵人设 · 工程执行员 implementer");
+  await persona.getByRole("button").click();
+  await expect(persona).toContainText("System prompt");
+  await expect(persona).toContainText("你是工程执行员");
+  await expect(persona).toContainText("Implement the requested UX and verify the focused browser tests.");
+
+  const toolGroup = page.locator(".worker-tool-group");
+  await expect(toolGroup).toHaveCount(1);
+  await expect(toolGroup.locator(".worker-tool-call").first()).toBeHidden();
+  await toolGroup.locator(":scope > summary").click();
+  await expect(toolGroup).toContainText("已读取 specs/behaviors.md");
+  await expect(toolGroup).toContainText("已编辑 src/MessageStream.tsx");
+  const readCall = toolGroup.locator(".worker-tool-call").first();
+  await readCall.locator(":scope > summary").click();
+  await expect(readCall).toContainText("Behavior expectations loaded");
+  await persona.getByRole("button").click();
+
+  const scroll = page.locator(".worker-transcript-scroll");
+  await expect.poll(() => scroll.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await scroll.evaluate((element) => { element.scrollTop = 0; element.dispatchEvent(new Event("scroll")); });
+  await expect(page.getByRole("button", { name: "跳到底部工兵记录" })).toBeVisible();
+  await expect(page.getByText("New reply arrived while reading history.", { exact: true })).toBeVisible({ timeout: 6_000 });
+  expect(await scroll.evaluate((element) => element.scrollTop)).toBeLessThan(80);
+  await page.getByRole("button", { name: "跳到底部工兵记录" }).click();
+  await expect.poll(() => scroll.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(80);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await persona.getByRole("button").click();
+  const personaColumns = await persona.locator(".worker-persona-content").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length);
+  expect(personaColumns).toBe(1);
+  const transcriptWidth = await page.locator(".worker-thread-view").evaluate((element) => ({ client: element.clientWidth, scroll: element.scrollWidth }));
+  expect(transcriptWidth.scroll).toBeLessThanOrEqual(transcriptWidth.client);
+});
+
 test("GPT worker tabs expose owned transcripts and send guidance without the old workbench drawer", async ({ page }) => {
   const ownerSessionId = "thread-owner";
   await seedWorkspace(page, [{ id: ownerSessionId, title: "Owner", messages: [firstMessage] }], ownerSessionId);

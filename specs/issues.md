@@ -17,3 +17,4 @@
 - [x] ISSUE-201 运行失败同时出现横幅和 toast 重复提示 · RUN-05 · Playwright mock（e2e/runs.spec.ts） · 错误信息保留在运行横幅，移除重复 toast；连接失败、模型失败和流中断均验证无 toast。
 - [x] ISSUE-202 Markdown 段落刷新误推进行游标导致后续内容不显示 · MSG-09 · `flush()` 改用独立 `blockKey`；空行、列表、标题、分隔线、闭合/未闭合代码块经单测与 Playwright 回归验证。
 - [x] ISSUE-203 旧 GPT 工兵缺少 owner 时被过滤/拒绝访问，工具异常可能逸出运行边界 · GPT-01 · ownerless 会话首次访问自动认领、工具错误作为 `isError` 结果返回、RunManager 最终异常边界输出 error/run_status；`tests/gpt-sessions.test.ts`、`tests/gpt-session-wait.test.ts`、`tests/detached-runtime.test.ts` 与 `e2e/thread-tabs-routing.spec.ts` 验证。
+- [x] ISSUE-204 工兵 transcript 重复铺开工具事件、看不到人设上下文且运行时滚动强制跟随 · GPT-01/RUN-03/LAY-06 · 按 toolCallId 聚合可折叠操作流，展示实际 System prompt 与最近派遣内容；主消息流和工兵记录采用 80px 粘性滚动与返回底部按钮，`e2e/thread-tabs-routing.spec.ts`、`e2e/runs.spec.ts` 覆盖。

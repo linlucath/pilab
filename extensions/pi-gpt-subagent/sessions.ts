@@ -8,6 +8,7 @@ import { stat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
+import { gptWorkerRoleLabels } from "./persona.ts";
 import type { RpcTransport } from "./rpc.ts";
 
 export type SessionStatus = "starting" | "running" | "idle" | "waiting_input" |
@@ -15,9 +16,7 @@ export type SessionStatus = "starting" | "running" | "idle" | "waiting_input" |
 export type SendMode = "steer" | "followUp" | "interrupt";
 export const rolePresets = ["scout", "experimenter", "implementer"] as const;
 export type GptRolePreset = (typeof rolePresets)[number];
-export const rolePresetLabels: Record<GptRolePreset, string> = {
-  scout: "探路学者", experimenter: "路径实验员", implementer: "工程执行员",
-};
+export const rolePresetLabels: Record<GptRolePreset, string> = gptWorkerRoleLabels;
 export const GPT_WAIT_TIMEOUT_SECONDS = 20 * 60;
 export interface SessionInfo {
   id: string;
@@ -32,6 +31,7 @@ export interface SessionInfo {
   updatedAt: number;
   sessionFile?: string;
   lastText: string;
+  lastDispatchContext?: string;
   replySequence?: number;
   lastDeliveredReplySequence?: number;
   partialText: string;
@@ -321,6 +321,7 @@ export class GptSessionManager {
         message, streamingBehavior: mode === "followUp" ? "followUp" : "steer",
       });
       if (result?.disposition === "handled" && !entry.active) entry.info.status = "idle";
+      entry.info.lastDispatchContext = message.slice(0, 32_000);
       this.record(entry, "message_sent", message);
       return { session: this.view(entry), disposition: result?.disposition };
     });

@@ -301,6 +301,7 @@ test("legacy ownerless workers are adopted by their first parent and retain read
     assert.equal(scoped[0].ownerSessionId, "adopting-parent");
     await manager.send(worker.id, "continue the old conversation", "steer", undefined, "adopting-parent");
     const transcript = await manager.readTranscript(worker.id, { limit: 100 });
+    assert.equal(transcript.session.lastDispatchContext, "continue the old conversation");
     assert.ok(transcript.events.some((event) => event.type === "assistant" && event.text === "Legacy worker reply remains visible."));
     const saved = JSON.parse(await readFile(path.join(root, "saved", "sessions.json"), "utf8"));
     assert.equal(saved.sessions.find((session: SessionInfo) => session.id === worker.id).ownerSessionId, "adopting-parent");
