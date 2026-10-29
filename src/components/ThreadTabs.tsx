@@ -96,7 +96,8 @@ function toolDetails(call: ToolCallTranscript) {
   return { args, output: outputEvent?.text || "", progressCount: call.events.filter((event) => event.type === "tool_progress").length };
 }
 function transcriptUrl(name: string, ownerSessionId: string, cwd: string, cursor?: { after?: number; before?: number }) {
-  const query = new URLSearchParams({ ownerSessionId, cwd, limit: "100" });
+  const query = new URLSearchParams({ ownerSessionId, cwd });
+  if (cursor) query.set("limit", "100");
   if (cursor?.after !== undefined) query.set("after", String(cursor.after));
   if (cursor?.before !== undefined) query.set("before", String(cursor.before));
   return `/api/gpt-sessions/${encodeURIComponent(name)}/transcript?${query}`;
@@ -133,11 +134,9 @@ function WorkerTranscript({ worker, ownerSessionId, cwd, onWorkerUpdate, onClose
   onWorkerUpdate: Props["onWorkerUpdate"]; onClose: () => void;
 }) {
   const [events, setEvents] = useState<TranscriptEvent[]>([]);
-  const [hasMore, setHasMore] = useState(false);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
-  const [loadingOlder, setLoadingOlder] = useState(false);
   const [personaOpen, setPersonaOpen] = useState(false);
   const [persona, setPersona] = useState<TranscriptPersona>({});
   const [nearBottom, setNearBottom] = useState(true);
@@ -152,18 +151,17 @@ function WorkerTranscript({ worker, ownerSessionId, cwd, onWorkerUpdate, onClose
     let polling = false;
     let initialized = false;
     const controller = new AbortController();
-    const applyPage = (page: { events?: TranscriptEvent[]; hasMore?: boolean; session?: GptSessionSummary; persona?: TranscriptPersona }, mode: "replace" | "append" | "prepend") => {
+    const applyPage = (page: { events?: TranscriptEvent[]; session?: GptSessionSummary; persona?: TranscriptPersona }, mode: "replace" | "append") => {
       if (cancelled) return;
       if (page.session) onWorkerUpdate(page.session);
       if (page.persona) setPersona(page.persona);
       if (mode === "replace") setEvents(page.events || []);
       else if (page.events?.length) setEvents((current) => {
-        const next = mode === "append" ? [...current, ...page.events!] : [...page.events!, ...current];
+        const next = [...current, ...page.events!];
         const unique = [...new Map(next.map((event) => [event.sequence, event])).values()].sort((a, b) => a.sequence - b.sequence);
         return unique.length === current.length && unique.every((event, index) => event.sequence === current[index]?.sequence)
           ? current : unique;
       });
-      if (mode !== "append") setHasMore(!!page.hasMore);
     };
     const loadInitial = async () => {
       try {
@@ -206,20 +204,6 @@ function WorkerTranscript({ worker, ownerSessionId, cwd, onWorkerUpdate, onClose
   };
   const latestDispatch = [...events].reverse().find((event) => event.type === "message_sent")?.text;
 
-  const loadOlder = async () => {
-    const before = events[0]?.sequence;
-    if (before === undefined || loadingOlder || !hasMore) return;
-    setLoadingOlder(true);
-    try {
-      const response = await fetch(transcriptUrl(worker.name, ownerSessionId, cwd, { before }), { cache: "no-store" });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "读取更早记录失败。");
-      if (data.events?.length) setEvents((current) => [...data.events, ...current]);
-      setHasMore(!!data.hasMore); setError("");
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "读取更早记录失败。"); }
-    finally { setLoadingOlder(false); }
-  };
-
   const send = async (event: FormEvent) => {
     event.preventDefault();
     const message = draft.trim();
@@ -261,7 +245,6 @@ function WorkerTranscript({ worker, ownerSessionId, cwd, onWorkerUpdate, onClose
     {error && <div className="thread-error" role="alert">{error}</div>}
     <div className="worker-transcript-container">
       <div className="worker-transcript-scroll" ref={scrollRef} aria-live="polite" onScroll={(event) => updateScroll(event.currentTarget)}>
-        {hasMore && <button className="thread-load-older" onClick={() => void loadOlder()} disabled={loadingOlder}>{loadingOlder && <LoaderCircle size={13} className="spin" />}{loadingOlder ? "读取中…" : "读取更早记录"}</button>}
         {!events.length && <div className="thread-transcript-empty"><MessageSquare size={20} /><span>工兵尚无可显示记录</span></div>}
         {buildTranscriptItems(events).map((item) => item.kind === "tools"
           ? <WorkerToolGroup key={item.key} item={item} />

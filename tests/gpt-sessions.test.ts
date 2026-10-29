@@ -342,6 +342,20 @@ test("worker owners are immutable across forks and transcript pages stay scoped"
     assert.ok(firstPage.hasMore);
     const older = await manager.readTranscript(worker.id, { before: firstPage.events[0].sequence, limit: 1 });
     assert.equal(older.events[0]?.type, "created");
+
+    const eventFile = path.join(root, "saved", `${worker.id}.events.jsonl`);
+    const existingText = await readFile(eventFile, "utf8");
+    const existingEvents = existingText.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    const firstExtraSequence = Number(existingEvents.at(-1)?.sequence || 0) + 1;
+    const oldHistory = Array.from({ length: 250 }, (_, index) => ({
+      sequence: firstExtraSequence + index, at: Date.now() + index, type: "assistant", text: `Older event ${index + 1}`,
+    }));
+    await writeFile(eventFile, `${existingText}${existingText.endsWith("\n") ? "" : "\n"}${oldHistory.map((event) => JSON.stringify(event)).join("\n")}\n`);
+    const complete = await manager.readTranscript(worker.id);
+    assert.equal(complete.events.length, existingEvents.length + oldHistory.length);
+    assert.equal(complete.events[0]?.type, "created");
+    assert.equal(complete.events.at(-1)?.sequence, oldHistory.at(-1)?.sequence);
+    assert.equal(complete.hasMore, false);
   } finally { await manager.shutdown(); await rm(root, { recursive: true, force: true }); }
 });
 

@@ -452,6 +452,7 @@ export class GptSessionManager {
   async readTranscript(id: string, options: { after?: number; before?: number; limit?: number } = {}) {
     const entry = this.get(id);
     const { after, before } = options;
+    const loadAll = after === undefined && before === undefined && options.limit === undefined;
     const limit = options.limit ?? 100;
     if (!Number.isInteger(limit) || limit < 1 || limit > 200 ||
       (after !== undefined && (!Number.isSafeInteger(after) || after < 0)) ||
@@ -462,7 +463,21 @@ export class GptSessionManager {
     let events: ProgressEvent[];
     let hasMore = false;
     const current = entry.events;
-    if (before === undefined && after === undefined) {
+    if (loadAll) {
+      const file = this.eventFile(entry.info.id);
+      if (!existsSync(file)) {
+        events = current.map((event) => structuredClone(event));
+      } else {
+        events = [];
+        const lines = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
+        try {
+          for await (const line of lines) {
+            if (!line) continue;
+            try { events.push(JSON.parse(line) as ProgressEvent); } catch { /* Ignore malformed log lines. */ }
+          }
+        } finally { lines.close(); }
+      }
+    } else if (before === undefined && after === undefined) {
       events = current.slice(-limit).map((event) => structuredClone(event));
       hasMore = !!events.length && (events[0].sequence > 1 || events.length < current.length);
     } else if (before === undefined && after !== undefined &&
