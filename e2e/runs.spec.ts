@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { addMessage, openRequestInspector, openWorkspace, resetWorkspace, setMockScript, ui } from "./fixtures/index";
+import { addMessage, e2eSession, openRequestInspector, openWorkspace, resetWorkspace, seedWorkspace, setMockScript, ui } from "./fixtures/index";
 
 async function ready(page: Page) {
   await openWorkspace(page);
@@ -189,9 +189,6 @@ test("RUN-05 本地连接失败和模型错误显示不同原因", async ({ page
 });
 
 test("RUN-06 达到输出长度上限时保留正文、状态并允许再次运行", async ({ page }) => {
-  await page.getByRole("button", { name: "显示工作台" }).click().catch(() => {});
-  await page.getByRole("button", { name: /高级设置与调试/ }).click();
-  await page.locator("#max-tokens").fill("1");
   await setMockScript(page, [{ type: "text", text: "RUN06-LENGTH-PARTIAL", reason: "length" }]);
   await ui(page).composer.fill("RUN06-LENGTH-TASK");
   await ui(page).send.click();
@@ -207,9 +204,8 @@ test("RUN-06 达到输出长度上限时保留正文、状态并允许再次运�
 });
 
 test("RUN-06 达到 Agent 轮数上限保留已完成工具结果", async ({ page }) => {
-  await page.getByRole("button", { name: "显示工作台" }).click().catch(() => {});
-  await page.getByRole("button", { name: /高级设置与调试/ }).click();
-  await page.locator("#max-turns").fill("1");
+  await seedWorkspace(page, [e2eSession("run06-turn-limit", "run06-turn-limit", [{ id: "run06-user", role: "user", content: "RUN06-TURN-LIMIT-TASK", enabled: true }], { maxTurns: 1 })]);
+  await openWorkspace(page);
   await setMockScript(page, [{ type: "tool", input: "RUN06-TOOL-RESULT" }]);
   await ui(page).composer.fill("RUN06-TURN-LIMIT-TASK");
   await ui(page).send.click();

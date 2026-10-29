@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { ClipboardEvent as ClipboardEventType, DragEvent as DragEventType } from "react";
 import { AlertTriangle, ArrowUp, ChevronDown, Cpu, ImagePlus, LoaderCircle, Plus, RotateCw, RotateCcw, Sparkles, Square, UserRound, Wrench, X } from "lucide-react";
-import { imageReferenceSchema, MAX_IMAGE_BYTES, MAX_MESSAGE_IMAGES, MAX_MESSAGE_IMAGE_BYTES, type Message } from "../../shared/schema";
+import { imageReferenceSchema, MAX_IMAGE_BYTES, MAX_MESSAGE_IMAGES, MAX_MESSAGE_IMAGE_BYTES, type Message, type Settings } from "../../shared/schema";
+import { ComposerModelControls, type ModelOption } from "./ComposerModelControls";
 import type { GptSessionSummary } from "../../shared/gpt-sessions";
 
 type WakeNotice = { names: string[] };
@@ -12,6 +13,8 @@ type StagedImage = {
 };
 type Props = {
   busy: boolean; blocked?: boolean; toolName?: string; messageCount: number; contextTokens: number; savedPercent: number;
+  settings: Pick<Settings, "protocol" | "model" | "reasoning" | "reasoningEffort">; models: ModelOption[]; defaultModel?: string; piConnected?: boolean;
+  onSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => void; onNotice: (message: string) => void; onRefreshModels: () => void;
   draft: string; onDraftChange: (value: string) => void; backgroundWorkers?: GptSessionSummary[];
   wakeNotice?: WakeNotice | null; onDismissWake?: () => void; onReviewWorkers?: () => void;
   onSend: (content: string, role: Message["role"], run: boolean, images?: Message["images"]) => boolean | void;
@@ -23,7 +26,7 @@ const imageExtension = /\.(png|jpe?g|webp|gif|bmp)$/i;
 const roleIcon = (role: Message["role"]) => role === "assistant" ? <Sparkles size={14} /> : role === "system" ? <Cpu size={14} /> : <UserRound size={14} />;
 const looksLikeImage = (file: File) => file.type.startsWith("image/") || (!file.type && imageExtension.test(file.name));
 
-export function ComposerBar({ busy, blocked, toolName, messageCount, contextTokens, savedPercent, draft, onDraftChange, backgroundWorkers = [], wakeNotice, onDismissWake, onReviewWorkers, onSend, onRun, onStop }: Props) {
+export function ComposerBar({ busy, blocked, toolName, messageCount, contextTokens, savedPercent, settings, models, defaultModel, piConnected, onSetting, onNotice, onRefreshModels, draft, onDraftChange, backgroundWorkers = [], wakeNotice, onDismissWake, onReviewWorkers, onSend, onRun, onStop }: Props) {
   const tokenLabel = contextTokens >= 10_000 ? `${(contextTokens / 1000).toFixed(1)}k` : contextTokens.toLocaleString();
   const usageLabel = `~${tokenLabel} tokens`;
   const usageTitle = `${messageCount} 条消息 · 按消息、思考过程及工具参数估算`;
@@ -190,7 +193,7 @@ export function ComposerBar({ busy, blocked, toolName, messageCount, contextToke
           <button type="button" className="composer-attach-button" disabled={role !== "user" || stagedImages.length >= MAX_MESSAGE_IMAGES} onClick={() => fileInput.current?.click()} title={role === "user" ? "添加图片，也可粘贴或拖放" : "图片仅支持 User 消息"}><ImagePlus size={14} /><span>添加图片</span></button>
           <span className="context-count" title={usageTitle} style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><span>{usageLabel}</span>{savedPercent > 0 && <span style={{ color: "var(--success)", fontSize: 8 }}>🧹 已省 {savedPercent}%</span>}</span>
         </div>
-        <div className="composer-footer-right"><span className="composer-shortcuts" title="Shift+Enter 换行">⏎ 发送</span><div className="composer-actions">{canSend ? <><button className="add-only-button" disabled={busy} onClick={() => submit(false)}><Plus size={14} />仅添加</button><button className="send-button" disabled={busy || blocked} onClick={() => submit(true)}><ArrowUp size={15} />发送</button></> : <button className="send-button run-current" disabled={busy || blocked} onClick={onRun} title="重新运行当前上下文" style={{ minWidth: "unset", width: "auto", padding: "0 10px", fontSize: 9, fontWeight: 500, color: "var(--text-muted)", borderColor: "var(--border)", background: "var(--surface-soft)" }}><RotateCw size={13} />重新运行</button>}</div></div>
+        <div className="composer-footer-right"><ComposerModelControls settings={settings} models={models} defaultModel={defaultModel} piConnected={piConnected} busy={busy} blocked={blocked} onSetting={onSetting} onNotice={onNotice} onRefreshModels={onRefreshModels} /><span className="composer-shortcuts" title="Shift+Enter 换行">⏎ 发送</span><div className="composer-actions">{canSend ? <><button className="add-only-button" disabled={busy} onClick={() => submit(false)}><Plus size={14} />仅添加</button><button className="send-button" disabled={busy || blocked} onClick={() => submit(true)}><ArrowUp size={15} />发送</button></> : <button className="send-button run-current" disabled={busy || blocked} onClick={onRun} title="重新运行当前上下文" style={{ minWidth: "unset", width: "auto", padding: "0 10px", fontSize: 9, fontWeight: 500, color: "var(--text-muted)", borderColor: "var(--border)", background: "var(--surface-soft)" }}><RotateCw size={13} />重新运行</button>}</div></div>
       </div>
     </div>}
     {blocked && <small className="composer-hint">Pi 同步会话请先在顶部应用或放弃本地修改。</small>}

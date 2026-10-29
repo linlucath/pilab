@@ -43,7 +43,7 @@ test("session_fork emits a validated UI handoff with a complete fork", async () 
   const cwd = await mkdtemp(path.join(tmpdir(), "pilab-session-fork-"));
   try {
     const events: Record<string, unknown>[] = [];
-    const { tools } = await agentTools({ ...defaults, toolMode: "agent", workingDirectory: cwd }, () => [], (event) => events.push(event));
+    const { tools } = await agentTools({ ...defaults, workingDirectory: cwd }, () => [], (event) => events.push(event));
     const tool = tools.find((entry) => entry.name === "session_fork");
     assert.ok(tool);
     const result = await tool.execute("fork-1", { title: "Audit branch", distilledMemory: "Keep the user's constraints and pending review.", keepRecentTurns: 1 });

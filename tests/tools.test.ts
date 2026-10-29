@@ -101,7 +101,7 @@ test("context_compact streams a UI event and feeds dehydrated summaries back int
   }];
   try {
     const events: Record<string, any>[] = [];
-    await generate({ settings: { ...defaults, baseUrl: mock.baseUrl, toolMode: "agent", workingDirectory: cwd }, messages }, (event) => events.push(event));
+    await generate({ settings: { ...defaults, baseUrl: mock.baseUrl, workingDirectory: cwd }, messages }, (event) => events.push(event));
     assert.equal(sent.length, 2);
     const before = sent[0].messages.find((item: any) => item.role === "assistant" && item.tool_calls?.some((call: any) => call.id === "call_prior"));
     const after = sent[1].messages.find((item: any) => item.role === "assistant" && item.tool_calls?.some((call: any) => call.id === "call_prior"));
@@ -135,7 +135,6 @@ test("Agent exposes GPT and image tools, feeds tool results back, and replays ed
         settings: {
           ...defaults,
           baseUrl: mock.baseUrl,
-          toolMode: "agent",
           workingDirectory: cwd,
         },
         messages: [{ id: "system", role: "system", content: "Original system text.", enabled: true }, user],
@@ -210,7 +209,7 @@ test("Agent exposes GPT and image tools, feeds tool results back, and replays ed
     await rm(cwd, { recursive: true, force: true });
   }
 });
-test("Agent is the default and exposes the full tool set", async () => {
+test("Agent tools are always enabled and expose the full tool set", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "pi-lab-agent-default-"));
   const sent: any[] = [];
   const mock = await provider((body, res) => {
@@ -220,8 +219,8 @@ test("Agent is the default and exposes the full tool set", async () => {
     else reply(res);
   });
   try {
-    assert.equal(defaults.toolMode, "agent");
-    assert.equal(settingsSchema.parse({ ...defaults, toolMode: undefined }).toolMode, "agent");
+    assert.equal("toolMode" in defaults, false);
+    assert.equal("toolMode" in settingsSchema.parse({ ...defaults, toolMode: "none" }), false);
     const events: Record<string, any>[] = [];
     await generate(
       { settings: { ...defaults, baseUrl: mock.baseUrl, workingDirectory: cwd }, messages: [user] },
@@ -288,7 +287,6 @@ test("turn limit stops after a completed tool batch and leaves resumable history
         settings: {
           ...defaults,
           baseUrl: mock.baseUrl,
-          toolMode: "agent",
           workingDirectory: cwd,
           maxTurns: 1,
         },
@@ -322,7 +320,7 @@ test("stop aborts an active model stream without a successful done event", async
     const events: Record<string, any>[] = [];
     await generate(
       {
-        settings: { ...defaults, baseUrl: mock.baseUrl, toolMode: "agent" },
+        settings: { ...defaults, baseUrl: mock.baseUrl },
         messages: [user],
       },
       (e) => {

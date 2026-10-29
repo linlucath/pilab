@@ -13,15 +13,8 @@
 .stream-inner { width: min(100%, 920px); min-height: 100%; margin: 0 auto; padding: 28px 42px 16px; }
 .stream-bottom-space { height: 14px; }
 .scroll-view { padding: 26px clamp(20px, 4vw, 52px); background: var(--canvas); }
-.right-panel { display: flex; width: var(--right-width); min-width: var(--right-width); height: 100%; flex-direction: column; gap: 0; overflow: auto; overscroll-behavior: contain; border-left: 1px solid var(--border); background: var(--sidebar-bg); scrollbar-gutter: stable; }
-.right-panel-backdrop { display: none; }
-.panel-section { padding: 19px 18px; border-bottom: 1px solid var(--border); }
-.primary-settings { background: var(--surface); }
-.worker-panel { padding: 17px 16px 19px; border-bottom: 1px solid var(--border); background: var(--sidebar-bg); }
-.advanced-section { padding: 0; background: var(--surface); }
-.right-footer { display: flex; align-items: center; gap: 7px; margin-top: auto; padding: 14px 17px; color: var(--text-subtle); font-size: 10px; }
 .footer-spacer { flex: 1; }
-.composer-bar { z-index: 2; flex: 0 0 auto; padding: 12px clamp(18px, 3vw, 38px) 16px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--canvas) 96%, var(--app-bg)); }
+.composer-bar { z-index: 24; flex: 0 0 auto; padding: 12px clamp(18px, 3vw, 38px) 16px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--canvas) 96%, var(--app-bg)); }
 .debug-overlay { position: fixed; inset: 0; z-index: 25; display: flex; justify-content: flex-end; background: rgba(18,19,22,.34); backdrop-filter: blur(2px); }
 .debug-drawer { display: flex; width: min(820px, 92vw); height: 100%; min-width: 0; flex-direction: column; overflow: hidden; border-left: 1px solid var(--border); background: var(--canvas); box-shadow: -16px 0 46px rgba(20,20,20,.18); }
 .debug-drawer > header { display: flex; min-height: 62px; align-items: center; justify-content: space-between; gap: 12px; padding: 0 22px; border-bottom: 1px solid var(--border); background: var(--surface); }

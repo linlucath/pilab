@@ -198,9 +198,9 @@ test("IMG-03 刷新及导入后恢复项目图片引用，导出不内嵌原图"
   await expect(page.locator(".message-row--user-bubble p").filter({ hasText: "IMG-02-TEXT-REMAINS" })).toBeVisible();
   await expect(page.getByRole("img", { name: "IMG-MISSING-IMAGE" })).toHaveCount(1);
 
-  await page.getByRole("button", { name: "高级设置与调试" }).click();
+  await page.locator(".session-data-menu > summary").click();
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出会话 JSON" }).click();
+  await page.getByRole("button", { name: "导出当前会话" }).click();
   const download = await downloadPromise;
   const imageJsonStream = await download.createReadStream();
   if (!imageJsonStream) throw new Error("会话导出没有生成可读文件");
@@ -212,8 +212,9 @@ test("IMG-03 刷新及导入后恢复项目图片引用，导出不内嵌原图"
   expect(exportedText).not.toContain("data:image/");
   expect(exportedText).not.toContain(validPng.toString("base64"));
 
+  await page.locator(".session-data-menu > summary").click();
   const chooserPromise = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "导入 JSON" }).click();
+  await page.getByRole("button", { name: "导入会话 JSON" }).click();
   const chooser = await chooserPromise;
   await chooser.setFiles({ name: "image-session.json", mimeType: "application/json", buffer: Buffer.from(exportedText) });
   await expect(page.getByRole("status")).toContainText("会话已导入");

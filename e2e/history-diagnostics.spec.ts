@@ -5,7 +5,6 @@ const settings = {
   model: "history-fixture-model",
   reasoning: false,
   reasoningEffort: "off" as const,
-  toolMode: "agent" as const,
 };
 const session = (id = "history-session", model = settings.model): SeedSession => ({
   id,
@@ -74,14 +73,12 @@ test("HIS-01 最近运行按时间倒序展示状态、输出和轨迹，最多�
   await expect(cards.first().locator("details")).toHaveCount(0);
 });
 
-test("HIS-02 恢复旧运行快照的消息与参数，不触发新运行且不恢复 API Key", async ({ page }) => {
+test("HIS-02 恢复旧运行快照的消息与模型参数，不触发新运行", async ({ page }) => {
   await prepareE2eWorkspace(page, [session("history-restore", "history-model-before")]);
-  await page.getByRole("button", { name: "高级设置与调试" }).click();
-  await page.getByLabel("API Key").fill("HIS02-PAGE-ONLY-SECRET");
   await runCurrent(page, [{ type: "text", text: "HIS02-FIRST-RUN" }], "HIS02-FIRST-RUN");
 
-  await page.getByLabel("API Key").fill("");
-  await page.getByLabel("主模型").fill("history-model-after");
+  await page.getByRole("button", { name: /选择模型/ }).click();
+  await page.getByLabel("自定义模型 ID").fill("history-model-after");
   const message = page.locator('.message-row[data-message-id="history-restore-user"]');
   await message.locator("article.chat-message").hover();
   await message.getByRole("button", { name: "编辑消息" }).click();
@@ -94,8 +91,7 @@ test("HIS-02 恢复旧运行快照的消息与参数，不触发新运行且不�
   await expect(historyCards).toHaveCount(2);
   await historyCards.nth(1).getByRole("button", { name: "恢复输入" }).click();
   await expect(page.getByLabel("会话标题")).toHaveValue("history-restore");
-  await expect(page.getByLabel("主模型")).toHaveValue("history-model-before");
-  await expect(page.getByLabel("API Key")).toHaveValue("");
+  await expect(page.getByRole("button", { name: /选择模型，当前 history-model-before/ })).toBeVisible();
   await expect(page.locator(".message-row--user-bubble p")).toContainText("HISTORY-FIXTURE-PROMPT");
   await expect(page.locator(".message-row").getByText("HIS02-EDITED-CURRENT-PROMPT")).toHaveCount(0);
   await expect(page.locator(".message-row").getByText("HIS02-FIRST-RUN")).toHaveCount(0);
@@ -104,7 +100,6 @@ test("HIS-02 恢复旧运行快照的消息与参数，不触发新运行且不�
   const { logs } = await response.json() as { logs: { event: string }[] };
   expect(logs.filter((entry) => entry.event === "run_started")).toHaveLength(2);
   const workspaceResponse = await page.context().request.get(new URL("/api/workspace", page.url()).href);
-  expect(JSON.stringify(await workspaceResponse.json())).not.toContain("HIS02-PAGE-ONLY-SECRET");
 });
 
 test("HIS-03 请求检查展示逐轮实际请求并复制完整多轮 JSON", async ({ page }) => {

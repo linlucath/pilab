@@ -16,7 +16,6 @@ import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { MessageStream } from "./components/MessageStream";
 import { ComposerBar } from "./components/ComposerBar";
-import { RightPanel } from "./components/RightPanel";
 import { ThreadTabs } from "./components/ThreadTabs";
 import { RequestInspector } from "./components/RequestInspector";
 import { RunHistory } from "./components/RunHistory";
@@ -106,7 +105,6 @@ export default function App() {
     catch { return "light"; }
   });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.matchMedia("(max-width: 860px)").matches);
-  const [rightOpen, setRightOpen] = useState(() => !window.matchMedia("(max-width: 860px)").matches);
   const [compactTools, setCompactTools] = useState(() => {
     try { return localStorage.getItem("pilab-tools-compact-v1") !== "false"; } catch { return true; }
   });
@@ -119,7 +117,6 @@ export default function App() {
   const [streamViews, setStreamViews] = useState<Record<string, SessionStreamView>>({});
   const [activeRuns, setActiveRuns] = useState<Map<string, string>>(() => new Map());
   const [startingSessions, setStartingSessions] = useState<Set<string>>(() => new Set());
-  const [runtimeCwd, setRuntimeCwd] = useState("");
   const [piConnection, setPiConnection] = useState<PiConnection | null>(null);
   const [piSessions, setPiSessions] = useState<PiLiveSession[]>([]);
   const [gptSessionSnapshot, setGptSessionSnapshot] = useState<{ ownerSessionId: string; cwd: string; sessions: GptSessionSummary[] }>({ ownerSessionId: "", cwd: "", sessions: [] });
@@ -132,7 +129,6 @@ export default function App() {
   const [forkNotice, setForkNotice] = useState<ForkNotice | null>(null);
   const forkSwitchSourceRef = useRef<string | null>(null);
   const [syncError, setSyncError] = useState("");
-  const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [selectedRun, setSelectedRun] = useState<string>();
   const activeRunsRef = useRef(activeRuns);
   const startingSessionsRef = useRef(startingSessions);
@@ -141,10 +137,38 @@ export default function App() {
   const busyForSessionRef = useRef<(sessionId: string) => boolean>(() => false);
   const piStreamOnline = useRef(false);
   const sessionRouteInitialized = useRef(false);
+  const sessionWorkspaceRequests = useRef(new Map<string, Promise<string>>());
+  const runStartLocks = useRef(new Set<string>());
 
   const { workspace, setWorkspace, workspaceRef, ready, error: storageError, status: storageStatus } =
-    useProjectWorkspace(loadLegacyWorkspace, () => newSession(runtimeCwd), setNotice);
-  const session = workspace.sessions.find((item) => item.id === workspace.active) || workspace.sessions[0] || newSession(runtimeCwd);
+    useProjectWorkspace(loadLegacyWorkspace, () => newSession(), setNotice);
+  const session = workspace.sessions.find((item) => item.id === workspace.active) || workspace.sessions[0] || newSession();
+  const requestSessionWorkspace = useCallback(async (sessionId: string) => {
+    const response = await fetch("/api/session-workspaces", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId }),
+    });
+    const data = await response.json();
+    if (!response.ok || typeof data.workingDirectory !== "string") throw new Error(data.error || "无法创建会话工作区。");
+    return data.workingDirectory as string;
+  }, []);
+  const ensureSessionWorkspace = useCallback(async (sessionId: string) => {
+    const current = workspaceRef.current.sessions.find((item) => item.id === sessionId);
+    if (current?.settings.workingDirectory.trim()) return current.settings.workingDirectory;
+    if (current?.piSync) return current.settings.workingDirectory;
+    const pending = sessionWorkspaceRequests.current.get(sessionId);
+    if (pending) return pending;
+    const request = requestSessionWorkspace(sessionId).then((workingDirectory) => {
+      setWorkspace((currentWorkspace) => ({
+        ...currentWorkspace,
+        sessions: currentWorkspace.sessions.map((item) => item.id === sessionId && !item.settings.workingDirectory.trim()
+          ? { ...item, settings: { ...item.settings, workingDirectory } }
+          : item),
+      }));
+      return workingDirectory;
+    }).finally(() => sessionWorkspaceRequests.current.delete(sessionId));
+    sessionWorkspaceRequests.current.set(sessionId, request);
+    return request;
+  }, [requestSessionWorkspace, setWorkspace, workspaceRef]);
   useEffect(() => {
     if (!ready) return;
     const routeId = new URL(window.location.href).searchParams.get("session");
@@ -171,7 +195,6 @@ export default function App() {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, [ready, setWorkspace, workspaceRef]);
-  const currentApiKey = apiKeys[session.id] || "";
   const activeRun = session.runs.find((run) => run.id === selectedRun) || session.runs[0];
   const busy = activeRuns.has(session.id) || startingSessions.has(session.id) || runControlsRef.current.has(session.id);
   const streamView = streamViews[session.id] || emptyStreamView;
@@ -205,7 +228,7 @@ export default function App() {
     const timer = window.setTimeout(() => setMetricsSnapshot({ sessionId: session.id, messages: session.messages }), 250);
     return () => window.clearTimeout(timer);
   }, [session.id, session.messages]);
-  const effectiveCwd = session.settings.workingDirectory.trim() || runtimeCwd;
+  const effectiveCwd = session.settings.workingDirectory.trim();
   const reportArchiveableToolGroups = useCallback((count: number) => setArchiveableToolGroupCount(count), []);
   const reportGptSessions = useCallback((ownerSessionId: string, sessions: GptSessionSummary[]) => {
     const cwdKey = normalizedWorkerCwd(effectiveCwd);
@@ -291,7 +314,6 @@ export default function App() {
     try { localStorage.setItem("pilab-theme-v2", theme); } catch { /* storage is optional */ }
   }, [theme]);
   useEffect(() => { try { localStorage.setItem("pilab-tools-compact-v1", String(compactTools)); } catch { /* storage is optional */ } }, [compactTools]);
-  useEffect(() => { fetch("/api/health").then((response) => response.json()).then((data) => setRuntimeCwd(data.workingDirectory || "")).catch(() => {}); }, []);
   useEffect(() => {
     if (!ready || !effectiveCwd) return;
     let cancelled = false;
@@ -308,9 +330,12 @@ export default function App() {
     return () => { cancelled = true; controller.abort(); window.clearInterval(timer); };
   }, [ready, effectiveCwd, fetchGptSessions]);
   useEffect(() => {
-    if (!ready || !runtimeCwd || session.settings.workingDirectory || session.messages.length !== 1 || session.messages[0]?.role !== "system" || session.title !== "新建对话") return;
-    setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === session.id ? { ...item, settings: { ...item.settings, workingDirectory: runtimeCwd } } : item) }));
-  }, [ready, runtimeCwd, session.id]);
+    if (!ready) return;
+    const needsWorkspace = workspace.sessions.filter((item) => !item.piSync && !item.settings.workingDirectory.trim());
+    if (!needsWorkspace.length) return;
+    void Promise.all(needsWorkspace.map((item) => ensureSessionWorkspace(item.id)))
+      .catch((error) => setNotice(`创建会话工作区失败：${error instanceof Error ? error.message : String(error)}`));
+  }, [ready, workspace.sessions, ensureSessionWorkspace]);
   useEffect(() => {
     if (notice) { const timer = setTimeout(() => setNotice(""), 5000); return () => clearTimeout(timer); }
   }, [notice]);
@@ -375,17 +400,10 @@ export default function App() {
       if (compactQuery.matches === compact) return;
       compact = compactQuery.matches;
       if (!compact) setSidebarCollapsed(false);
-      setRightOpen(!compact);
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-  useEffect(() => {
-    if (!rightOpen || window.innerWidth > 860) return;
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setRightOpen(false); };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [rightOpen]);
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.key !== "Enter" || busyForSessionRef.current(workspaceRef.current.active)) return;
@@ -511,14 +529,18 @@ export default function App() {
     setScrollRequest((value) => value + 1);
     return true;
   };
-  const createSession = (copy?: Session) => {
-    const currentSession = workspaceRef.current.sessions.find((item) => item.id === workspaceRef.current.active) || session;
-    const next: Session = copy
-      ? { ...structuredClone(copy), id: uid(), title: copy.title, runs: [] }
-      : newSession(currentSession.settings.workingDirectory.trim() || runtimeCwd);
-    delete next.piSync;
-    setWorkspace((current) => ({ ...current, sessions: [...current.sessions, next], rootSessionIds: [next.id, ...current.rootSessionIds], active: next.id, followPi: false }));
-    setSelectedRun(undefined); setScrollRequest((value) => value + 1);
+  const createSession = async (copy?: Session) => {
+    const id = uid();
+    try {
+      const workingDirectory = await requestSessionWorkspace(id);
+      const next: Session = copy
+        ? { ...structuredClone(copy), id, title: copy.title, settings: { ...copy.settings, workingDirectory }, runs: [] }
+        : newSession(workingDirectory, id);
+      delete next.piSync;
+      setWorkspace((current) => ({ ...current, sessions: [...current.sessions, next], rootSessionIds: [next.id, ...current.rootSessionIds], active: next.id, followPi: false }));
+      setSelectedRun(undefined); setScrollRequest((value) => value + 1);
+      return true;
+    } catch (error) { setNotice(`无法创建新会话：${error instanceof Error ? error.message : String(error)}`); return false; }
   };
   useEffect(() => {
     const createShortcut = (event: KeyboardEvent) => {
@@ -529,21 +551,26 @@ export default function App() {
     window.addEventListener("keydown", createShortcut);
     return () => window.removeEventListener("keydown", createShortcut);
   }, [createSession]);
-  const duplicateSession = (source: Session) => createSession({ ...source, title: `${source.title} · 副本` });
-  const deleteSession = (id: string) => {
+  const duplicateSession = (source: Session) => { void createSession({ ...source, title: `${source.title} · 副本` }); };
+  const deleteSession = async (id: string) => {
     if (busyForSessionRef.current(id)) return;
     const target = workspaceRef.current.sessions.find((item) => item.id === id);
     if (!target || !window.confirm(`删除「${target.title}」？此操作无法撤销。`)) return;
+    let replacement: Session | undefined;
+    if (workspaceRef.current.sessions.length === 1) {
+      const replacementId = uid();
+      try { replacement = newSession(await requestSessionWorkspace(replacementId), replacementId); }
+      catch (error) { setNotice(`无法创建替代会话：${error instanceof Error ? error.message : String(error)}`); return; }
+    }
     setWorkspace((current) => {
       const sessions = current.sessions.filter((item) => item.id !== id);
       const folders = current.folders.map((folder) => ({ ...folder, sessionIds: folder.sessionIds.filter((sessionId) => sessionId !== id) }));
       let rootSessionIds = current.rootSessionIds.filter((sessionId) => sessionId !== id);
-      if (!sessions.length) {
-        const replacement = newSession(session.settings.workingDirectory.trim() || runtimeCwd);
+      if (!sessions.length && replacement) {
         sessions.push(replacement);
         rootSessionIds = [replacement.id, ...rootSessionIds];
       }
-      return { ...current, sessions, folders, rootSessionIds, active: current.active === id ? sessions[0].id : current.active, followPi: false,
+      return { ...current, sessions, folders, rootSessionIds, active: current.active === id ? sessions[0]?.id || current.active : current.active, followPi: false,
         hiddenPiSessions: target.piSync ? [...new Set([...current.hiddenPiSessions, piSessionIdentity(target.piSync)])] : current.hiddenPiSessions };
     });
   };
@@ -555,7 +582,7 @@ export default function App() {
     if (end === null) { setNotice("无法在未完成的工具调用处创建分支；请先补齐工具结果。"); return; }
     createSession({ ...currentSession, title: `${currentSession.title} · 分支`, messages: currentSession.messages.slice(0, end + 1) });
   };
-  function createForkSession(title: string, memory: string, keepRecentTurns = 0, switchActive = true, sourceId?: string, allowWhileRunning = false, forkId?: string, forkMessages?: Message[]) {
+  async function createForkSession(title: string, memory: string, keepRecentTurns = 0, switchActive = true, sourceId?: string, allowWhileRunning = false, forkId?: string, forkMessages?: Message[]) {
     const sourceSessionId = sourceId || workspaceRef.current.active;
     if (busyForSessionRef.current(sourceSessionId) && !allowWhileRunning) return undefined;
     const source = workspaceRef.current.sessions.find((item) => item.id === sourceSessionId);
@@ -563,15 +590,17 @@ export default function App() {
     const id = forkId || uid();
     const existing = workspaceRef.current.sessions.find((item) => item.id === id);
     if (existing) return id;
+    let workingDirectory: string;
+    try { workingDirectory = await requestSessionWorkspace(id); }
+    catch (error) { setNotice(`创建提纯分身失败：${error instanceof Error ? error.message : String(error)}`); return undefined; }
     const { piSync: _piSync, ...copy } = source;
     const next: Session = {
       ...structuredClone(copy), id, title: title.trim().slice(0, 200) || `${source.title} · 提纯分身`,
+      settings: { ...copy.settings, workingDirectory },
       messages: forkMessages || buildForkMessages({ messages: source.messages, distilledMemory: memory, keepRecentTurns, id: uid }),
       runs: [], parentSessionId: source.id, parentSessionTitle: source.title, forkSummary: memory.trim().slice(0, 20_000),
     };
     setWorkspace((current) => ({ ...current, sessions: [...current.sessions, next], rootSessionIds: [next.id, ...current.rootSessionIds], ...(switchActive ? { active: next.id, followPi: false } : {}) }));
-    const key = apiKeys[source.id] || source.settings.apiKey || "";
-    if (key) setApiKeys((current) => ({ ...current, [next.id]: key }));
     setForkNotice({ sourceId: source.id, forkId: next.id, title: next.title });
     setForkModalOpen(false);
     if (switchActive) { setSelectedRun(undefined); setScrollRequest((value) => value + 1); }
@@ -725,7 +754,7 @@ export default function App() {
         ...(parsed.parentSessionId ? { parentSessionId: parsed.parentSessionId } : {}),
         ...(parsed.parentSessionTitle ? { parentSessionTitle: parsed.parentSessionTitle } : {}),
         ...(parsed.forkSummary ? { forkSummary: parsed.forkSummary } : {}) };
-      createSession(imported); setNotice("会话已导入。");
+      if (await createSession(imported)) setNotice("会话已导入。");
     } catch (error) { setNotice(`导入失败：${error instanceof Error ? error.message : "JSON 格式无效"}`); }
   }
   async function copyText(value: string) { try { await navigator.clipboard.writeText(value); setNotice("已复制到剪贴板。"); } catch { setNotice("无法访问剪贴板。"); } }
@@ -734,25 +763,39 @@ export default function App() {
     if (!ready) return;
     const currentWorkspace = workspaceRef.current;
     const sessionId = targetSessionId || currentWorkspace.active;
-    if (!resumeRunId && busyForSessionRef.current(sessionId)) return;
-    const activeSession = currentWorkspace.sessions.find((item) => item.id === sessionId);
+    if (!resumeRunId && (busyForSessionRef.current(sessionId) || runStartLocks.current.has(sessionId))) return;
+    let activeSession = currentWorkspace.sessions.find((item) => item.id === sessionId);
     if (!activeSession) return;
-    if (activeSession.piSync) { setNotice("请先在 Pi CLI 同步菜单中应用或放弃本地修改。"); return; }
+    if (!resumeRunId) runStartLocks.current.add(sessionId);
+    const releaseStartLock = () => runStartLocks.current.delete(sessionId);
+    if (activeSession.piSync) { releaseStartLock(); setNotice("请先在 Pi CLI 同步菜单中应用或放弃本地修改。"); return; }
+    if (!activeSession.settings.workingDirectory.trim()) {
+      try {
+        await ensureSessionWorkspace(sessionId);
+        activeSession = workspaceRef.current.sessions.find((item) => item.id === sessionId);
+        if (!activeSession?.settings.workingDirectory.trim()) throw new Error("会话工作区尚未就绪。");
+      } catch (error) {
+        releaseStartLock();
+        setNotice(`无法启动运行：${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+    }
     const runMessages = messagesToRun || activeSession.messages;
     const activeMessages = runMessages.filter((message) => message.enabled);
     if (!resumeRunId && (!activeMessages.length || !activeMessages.some((message) => message.content.trim() || message.images?.length || message.toolCalls?.length || message.role === "tool"))) {
       const message = "请先添加至少一条有内容且已启用的消息。";
-      setSessionRunError(activeSession.id, message); return;
+      releaseStartLock(); setSessionRunError(activeSession.id, message); return;
     }
     const historyIssue = resumeRunId ? undefined : toolHistoryError(activeMessages);
-    if (historyIssue) { setSessionRunError(activeSession.id, historyIssue); return; }
+    if (historyIssue) { releaseStartLock(); setSessionRunError(activeSession.id, historyIssue); return; }
     const runId = uid(); const started = Date.now();
-    const settings = { ...activeSession.settings, apiKey: apiKeys[sessionId] || "" };
+    const settings = { ...activeSession.settings, apiKey: "" };
     const record: Run = { id: runId, at: started, status: "running", output: "", thinking: "", elapsed: 0, snapshot: { settings: { ...settings, apiKey: "" }, messages: structuredClone(runMessages) } };
     setSessionStarting(sessionId, true);
+    releaseStartLock();
     setSessionRunError(sessionId);
     setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === sessionId ? { ...item, runs: [record, ...item.runs].slice(0, 30) } : item) }));
-    if (currentWorkspace.active === sessionId) { setSelectedRun(runId); setDebugPanel(null); }
+    if (workspaceRef.current.active === sessionId) { setSelectedRun(runId); setDebugPanel(null); }
     updateStreamView(sessionId, () => emptyStreamView);
     let remoteRunId = "";
     let runControl: RunControl | null = null;
@@ -1068,28 +1111,26 @@ export default function App() {
   }
   const inspectorDraft = {
     protocol: session.settings.protocol, model: session.settings.model, reasoningEffort: getReasoningEffort(session.settings),
-    toolMode: session.settings.toolMode, workingDirectory: effectiveCwd, maxTurns: session.settings.maxTurns,
+    workingDirectory: effectiveCwd, maxTurns: session.settings.maxTurns,
     temperature: session.settings.temperature, maxTokens: session.settings.maxTokens,
     messages: enabledMessages.map(({ id: _id, enabled: _enabled, ...message }) => message),
   };
   const setFollowPi = (value: boolean) => setWorkspace((current) => ({ ...current, followPi: value }));
 
   if (!ready) return <div className="app-loading" role="status">{storageError || "正在打开本地工作区…"}{storageError && <button onClick={() => location.reload()}>重试</button>}</div>;
-  return <div className={`app-shell ${sidebarCollapsed ? "sidebar-compact" : ""} ${rightOpen ? "right-visible" : ""}`}>
+  return <div className={`app-shell ${sidebarCollapsed ? "sidebar-compact" : ""}`}>
     <Sidebar sessions={workspace.sessions} folders={workspace.folders} rootSessionIds={workspace.rootSessionIds} active={session.id} collapsed={sidebarCollapsed} activeRuns={activeRuns} onToggle={() => setSidebarCollapsed((value) => !value)} onCreate={() => createSession()} onCreateFolder={createFolder} onSelect={selectSession} onRename={renameSession} onDuplicate={duplicateSession} onDelete={deleteSession} onRenameFolder={renameFolder} onDeleteFolder={deleteFolder} onToggleFolder={toggleFolder} onMoveSession={moveSession} />
     <main className="app-main">
-      <TopBar session={session} saveState={storageStatus} onDebugView={(panel) => { setDebugPanel(panel); setDirectoryOpen(false); }} directoryOpen={directoryOpen} onDirectoryToggle={() => setDirectoryOpen((open) => !open)} archiveableToolGroups={archiveableToolGroupCount} onArchiveOldTools={() => setArchiveToolRequest((request) => request + 1)} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} theme={theme} onTheme={() => setTheme((value) => value === "light" ? "dark" : "light")} rightOpen={rightOpen} onRight={() => setRightOpen((value) => !value)} compactTools={compactTools} onCompactTools={() => setCompactTools((value) => !value)} piSessions={piSessions} followPi={workspace.followPi} onFollowPi={setFollowPi} syncError={syncError} onSelectPi={(id) => void selectPiSession(id)} onApplyPi={() => void applyToPi()} onDiscardPi={() => { if (session.piSync) void readPiSession(session.piSync.id, false, true).catch((error) => setSyncError(error.message)); }} onCancelPending={() => void cancelPiApply()} onTitle={(title) => patchSession({ title })} onWorkingDirectory={(workingDirectory) => updateSetting("workingDirectory", workingDirectory)} onFork={() => session.settings.toolMode === "agent" && !session.piSync ? requestSmartFork(`${session.title} · 提纯分身`, 0, true) : setForkModalOpen(true)} forkDisabled={busy} />
+      <TopBar session={session} saveState={storageStatus} onDebugView={(panel) => { setDebugPanel(panel); setDirectoryOpen(false); }} directoryOpen={directoryOpen} onDirectoryToggle={() => setDirectoryOpen((open) => !open)} archiveableToolGroups={archiveableToolGroupCount} onArchiveOldTools={() => setArchiveToolRequest((request) => request + 1)} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} theme={theme} onTheme={() => setTheme((value) => value === "light" ? "dark" : "light")} compactTools={compactTools} onCompactTools={() => setCompactTools((value) => !value)} piSessions={piSessions} followPi={workspace.followPi} onFollowPi={setFollowPi} syncError={syncError} onSelectPi={(id) => void selectPiSession(id)} onApplyPi={() => void applyToPi()} onDiscardPi={() => { if (session.piSync) void readPiSession(session.piSync.id, false, true).catch((error) => setSyncError(error.message)); }} onCancelPending={() => void cancelPiApply()} onTitle={(title) => patchSession({ title })} onExport={exportSession} onImport={(file) => void importSession(file)} onFork={() => setForkModalOpen(true)} forkDisabled={busy} />
       <div className="workspace-body">
-        {rightOpen && <button type="button" className="right-panel-backdrop" aria-label="关闭工作台遮罩" onClick={() => setRightOpen(false)} />}
         <section className="conversation-pane">
           <ThreadTabs ownerSessionId={session.id} cwd={effectiveCwd} workers={visibleGptSessions} selectedId={selectedWorkerId} onSelect={setSelectedWorkerId} onWorkerUpdate={updateWorkerSummary} onWorkersUpdate={updateWorkerSummaries} onRefresh={() => void fetchGptSessions()} sessionsError={gptSessionsError} />
           {!selectedWorkerId && <>
             <MessageStream sessionId={session.id} scrollRequest={scrollRequest} directoryOpen={directoryOpen} onDirectoryOpenChange={setDirectoryOpen} archiveRequest={archiveToolRequest} onArchiveableGroupsChange={reportArchiveableToolGroups} messages={session.messages} busy={busy} compactTools={compactTools} streamingId={streamingId} streamingThinking={streamingThinking} toolActivity={toolActivity} gptWorkers={visibleGptSessions} lineage={session.parentSessionId ? { parentSessionId: session.parentSessionId, parentSessionTitle: session.parentSessionTitle, forkSummary: session.forkSummary } : undefined} forkNotice={forkNotice?.sourceId === session.id ? { forkId: forkNotice.forkId, title: forkNotice.title } : undefined} onSwitchFork={selectSession} onJumpToSession={selectSession} onFork={() => setForkModalOpen(true)} onMessage={updateMessage} onCall={updateCall} onAdd={addMessage} onMove={moveMessage} onDelete={deleteMessage} onDeleteCall={deleteToolCall} onAddToolResult={addManualToolResult} onBranch={branchAt} onCopy={(text) => void copyText(text)} />
             {runErrors[session.id] && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>本次运行失败</strong><span>{runErrors[session.id]}</span></div><button onClick={() => setSessionRunError(session.id)} aria-label="关闭运行错误">关闭<X size={14} /></button></div>}
-            <ComposerBar busy={busy} blocked={!!session.piSync} toolName={toolActivity?.name} messageCount={session.messages.length} contextTokens={contextMetrics.context} savedPercent={contextMetrics.savedPercent} draft={composerText} onDraftChange={updateComposerText} backgroundWorkers={visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={workerWakeNotice} onDismissWake={() => dismissSessionWorkerWake(session.id)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={sendMessage} onRun={() => void run()} onStop={() => void abortRun()} />
+            <ComposerBar busy={busy} blocked={!!session.piSync} toolName={toolActivity?.name} messageCount={session.messages.length} contextTokens={contextMetrics.context} savedPercent={contextMetrics.savedPercent} settings={session.settings} models={piConnection?.models || []} defaultModel={piConnection?.defaultModel} piConnected={piConnection?.connected} onSetting={updateSetting} onNotice={setNotice} onRefreshModels={() => void refreshPiStatus()} draft={composerText} onDraftChange={updateComposerText} backgroundWorkers={visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={workerWakeNotice} onDismissWake={() => dismissSessionWorkerWake(session.id)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={sendMessage} onRun={() => void run()} onStop={() => void abortRun()} />
           </>}
         </section>
-        <RightPanel hidden={!rightOpen} onClose={() => setRightOpen(false)} session={session} busy={busy} runtimeCwd={runtimeCwd} apiKey={currentApiKey} models={piConnection?.models || []} piConnected={piConnection?.connected} piDefaultModel={piConnection?.defaultModel} activeRun={activeRun} onSetting={updateSetting} onNotice={setNotice} onApiKey={(key) => setApiKeys((current) => ({ ...current, [session.id]: key }))} onRefreshAuth={() => void refreshPiStatus()} onExport={exportSession} onImport={(file) => void importSession(file)} />
       </div>
     </main>
     {debugPanel && <div className="debug-overlay" role="presentation" onClick={() => setDebugPanel(null)}>
@@ -1102,7 +1143,7 @@ export default function App() {
         </div>
       </section>
     </div>}
-    {forkModalOpen && <SessionForkModal key={session.id} session={session} canUseSmartFork={session.settings.toolMode === "agent" && !session.piSync && !busy} onClose={() => setForkModalOpen(false)} onCreate={(title, memory, carry) => createForkSession(title, memory, carry, true, session.id)} onSmartFork={requestSmartFork} />}
+    {forkModalOpen && <SessionForkModal key={session.id} session={session} canUseSmartFork={!session.piSync && !busy} onClose={() => setForkModalOpen(false)} onCreate={(title, memory, carry) => { void createForkSession(title, memory, carry, true, session.id); }} onSmartFork={requestSmartFork} />}
     {notice && <div className="toast" role="status"><CircleHelp size={16} /><span>{notice}</span><button onClick={() => setNotice("")} aria-label="关闭提示"><X size={14} /></button></div>}
   </div>;
 }

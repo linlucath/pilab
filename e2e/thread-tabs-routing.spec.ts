@@ -156,5 +156,5 @@ test("GPT worker tabs expose owned transcripts and send guidance without the old
   await page.getByRole("textbox", { name: "指导工兵" }).fill("Please verify the edge case");
   await page.getByRole("button", { name: "发送指导" }).click();
   await expect.poll(() => sentBody).toMatchObject({ ownerSessionId, message: "Please verify the edge case" });
-  await expect(page.locator(".right-panel .worker-panel")).toHaveCount(0);
+  await expect(page.locator(".right-panel")).toHaveCount(0);
 });

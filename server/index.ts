@@ -7,6 +7,7 @@ import { runSchema } from "../shared/schema";
 import { piStatus } from "./pi-subscription";
 import { cleanupIdleGptSessions, closeGptSession, interruptGptSession, listGptSessions, readGptSessionTranscript, sendGptSessionGuidance, shutdownGptSessions } from "./gpt-subagent";
 import { ProjectWorkspaceStore } from "./workspace";
+import { ensureSessionWorkspace } from "./session-workspaces";
 import { ActiveRunError, RunManager } from "./runs";
 import { projectImages } from "./images";
 import {
@@ -78,6 +79,12 @@ for (const method of ["patch", "post"] as const)
     try { res.json({ workspace: await workspaceStore.update(req.body) }); }
     catch (error) { res.status(400).json({ error: (error as Error).message }); }
   });
+app.post("/api/session-workspaces", async (req, res) => {
+  try {
+    const workingDirectory = await ensureSessionWorkspace(req.body?.sessionId);
+    res.status(201).set("Cache-Control", "no-store").json({ workingDirectory });
+  } catch (error) { res.status(400).json({ error: (error as Error).message }); }
+});
 app.get("/api/logs", (req, res) => {
   const categoryValue = req.query.category;
   const categories = ["server", "run", "gpt", "client"] as const;
@@ -340,7 +347,7 @@ app.post("/api/pi-sync/:id/cancel", async (req, res) => {
     res.status(409).json({ error: (e as Error).message });
   }
 });
-app.post("/api/runs", (req, res) => {
+app.post("/api/runs", async (req, res) => {
   const body = req.body && typeof req.body === "object" && !Array.isArray(req.body)
     ? req.body as Record<string, unknown> : {};
   if (typeof body.sessionId !== "string" || !body.sessionId.trim() || body.sessionId.length > 200) {
@@ -355,8 +362,12 @@ app.post("/api/runs", (req, res) => {
     return;
   }
   try {
-    validateTranscript(parsed.data.settings, parsed.data.messages);
-    res.status(202).json(runManager.startRun(body.sessionId, parsed.data));
+    const settings = parsed.data.settings.workingDirectory.trim()
+      ? parsed.data.settings
+      : { ...parsed.data.settings, workingDirectory: await ensureSessionWorkspace(body.sessionId) };
+    const runInput = { ...parsed.data, settings };
+    validateTranscript(runInput.settings, runInput.messages);
+    res.status(202).json(runManager.startRun(body.sessionId, runInput));
   } catch (error) {
     if (error instanceof ActiveRunError) {
       res.status(409).json({ error: error.message });

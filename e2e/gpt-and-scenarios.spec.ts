@@ -36,9 +36,6 @@ async function mockWorkerList(page: Page, getWorkers: () => Worker[]) {
   });
   await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
 }
-async function advancedSettings(page: Page) {
-  if (await page.locator("#protocol").count() === 0) await page.getByRole("button", { name: /高级设置与调试/ }).click();
-}
 
 test.beforeEach(async ({ page }) => prepare(page));
 
@@ -372,31 +369,15 @@ test("E2E-01 从提示消息分支并运行后，两个分支内容和回复互�
   await expect(page.locator(".message-row").filter({ hasText: "BRANCH-PROMPT" })).toHaveCount(0);
 });
 
-test("E2E-02 协议角色错误先被拒绝，修正后原上下文可再次运行", async ({ page }) => {
-  await advancedSettings(page);
-  await page.locator("#protocol").selectOption("anthropic-messages");
-  await page.getByRole("button", { name: "展开 / 编辑" }).click();
-  await page.getByRole("button", { name: "添加 Developer" }).click();
+test("E2E-02 默认 Agent 拒绝位于对话之后的 System 指令且保留历史", async ({ page }) => {
+  await page.getByRole("combobox", { name: "新消息角色" }).selectOption("user");
   await ui(page).composer.fill("E2E-02-user");
   await page.getByRole("button", { name: "仅添加" }).click();
-  const payloads: { messages: { role: string; content: string }[] }[] = [];
-  await page.route("**/api/runs", async (route) => {
-    if (route.request().method() === "POST") payloads.push(route.request().postDataJSON());
-    await route.continue();
-  });
+  await page.getByRole("combobox", { name: "新消息角色" }).selectOption("system");
+  await ui(page).composer.fill("E2E-02-late-system");
+  await page.getByRole("button", { name: "仅添加" }).click();
   await page.getByRole("button", { name: "重新运行" }).click();
-  await expect(page.getByRole("alert")).toContainText(/Anthropic|Developer/i);
-  expect(payloads).toHaveLength(1);
-  expect(payloads[0].messages.map((message) => message.role)).toEqual(["system", "developer", "user"]);
+  await expect(page.getByRole("alert")).toContainText(/Pi 订阅要求 system 指令位于开头/);
   await expect(page.locator(".message-row").filter({ hasText: "E2E-02-user" })).toBeVisible();
-
-  await page.getByRole("button", { name: "删除人设消息" }).nth(1).click();  await setMockScript(page, [{ type: "text", text: "E2E-02-FIXED" }]);
-  await page.getByRole("button", { name: "重新运行" }).click();
-  await expect(page.getByText("E2E-02-FIXED", { exact: true })).toBeVisible();
-  expect(payloads).toHaveLength(2);
-  expect(payloads[1].messages.map((message) => message.role)).toEqual(["system", "user"]);
-  expect(payloads[1].messages.at(-1)?.content).toBe("E2E-02-user");
-  await page.locator(".debug-menu summary").click();
-  await page.getByRole("button", { name: "请求检查" }).click();
-  await expect(page.getByRole("dialog")).toContainText("E2E-02-user");
+  await expect(page.locator(".message-row").filter({ hasText: "E2E-02-late-system" })).toBeVisible();
 });
