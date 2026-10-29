@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { LocalImageStore } from "../extensions/pi-gpt-subagent/images";
 import { MAX_IMAGE_BYTES, MAX_MESSAGE_IMAGE_BYTES, type Message } from "../shared/schema";
-import { toPiMessage } from "./transcript";
+import { normalizeConsecutiveToolCallMessages, toPiMessage } from "./transcript";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const projectImages = new LocalImageStore(process.env.PI_LAB_DATA_DIR || projectRoot);
@@ -12,7 +12,7 @@ export const projectImages = new LocalImageStore(process.env.PI_LAB_DATA_DIR || 
 export async function restoreImageHistory(messages: Message[], model: Model<Api>) {
   let latest = -1;
   messages.forEach((message, index) => { if (message.images?.length && ["tool", "user"].includes(message.role)) latest = index; });
-  return Promise.all(messages.map(async (message, index) => {
+  return normalizeConsecutiveToolCallMessages(await Promise.all(messages.map(async (message, index) => {
     const native = toPiMessage(message, model);
     if (index !== latest || !message.images?.length || (native.role !== "toolResult" && native.role !== "user")) return native;
     if (!model.input.includes("image")) return native;
@@ -22,5 +22,5 @@ export async function restoreImageHistory(messages: Message[], model: Model<Api>
     const attachments = await Promise.all(message.images.map((ref) => projectImages.attachment(ref)));
     const content = typeof native.content === "string" ? [{ type: "text" as const, text: native.content }] : native.content;
     return { ...native, content: [...content, ...attachments] };
-  }));
+  })));
 }

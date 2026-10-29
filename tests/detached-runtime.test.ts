@@ -139,6 +139,29 @@ test("C: explicit abort stops the generator and atomically persists its partial 
   }
 });
 
+test("RunManager contains an unexpected execution rejection and reports a failed run", async () => {
+  const manager = new RunManager(async () => {});
+  Object.defineProperty(manager, "execute", { value: async () => { throw new Error("unexpected execution failure"); } });
+  const { runId } = manager.startRun("session-failure", runInput);
+  await waitFor(() => manager.tasks.get(runId)?.status !== "running");
+  const task = manager.tasks.get(runId)!;
+  assert.equal(task.status, "failed");
+  assert.equal(manager.activeBySession.has("session-failure"), false);
+  assert.ok(task.eventBuffer.some(({ event }) => event.type === "error" && event.message === "unexpected execution failure"));
+  assert.ok(task.eventBuffer.some(({ event }) => event.type === "run_status" && event.status === "failed"));
+});
+
+test("RunManager binds GPT tools to the authoritative run session, not client input", async () => {
+  let receivedOwner = "";
+  const manager = new RunManager(async () => {}, async (input) => {
+    receivedOwner = input.ownerSessionId || "";
+    return [];
+  });
+  const { runId } = manager.startRun("authoritative-parent", { ...runInput, ownerSessionId: "spoofed-fork" });
+  await waitFor(() => manager.tasks.get(runId)?.status !== "running");
+  assert.equal(receivedOwner, "authoritative-parent");
+});
+
 test("A: completed run messages are atomically upserted into only the requested session", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "pilab-runs-"));
   try {

@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { Type } from "typebox";
+import type { TSchema } from "typebox";
 import { sessionForkArgsSchema, type Settings, type Message } from "../shared/schema";
 import { buildForkMessages } from "../shared/session-fork";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
@@ -10,7 +11,7 @@ import { createImageTools } from "../extensions/pi-gpt-subagent/images";
 import { projectImages } from "./images";
 import type { ConversationHistory } from "../extensions/pi-gpt-subagent/tools";
 
-function createContextCompactTool(getHistory: () => Message[], onEvent?: (event: Record<string, unknown>) => void): AgentTool<any> {
+function createContextCompactTool(getHistory: () => Message[], onEvent?: (event: Record<string, unknown>) => void): AgentTool<TSchema, unknown> {
   return {
     name: "context_compact",
     label: "脱水归档工具记录",
@@ -67,7 +68,7 @@ function createContextCompactTool(getHistory: () => Message[], onEvent?: (event:
   };
 }
 
-function createSessionForkTool(getHistory: () => Message[], onEvent?: (event: Record<string, unknown>) => void): AgentTool<any> {
+function createSessionForkTool(getHistory: () => Message[], onEvent?: (event: Record<string, unknown>) => void): AgentTool<TSchema, unknown> {
   return {
     name: "session_fork",
     label: "创建提纯分身",
@@ -105,17 +106,18 @@ export async function agentTools(
   settings: Settings,
   getHistory?: ConversationHistory,
   onEvent?: (event: Record<string, unknown>) => void,
+  ownerSessionId?: string,
 ) {
   const cwd = settings.workingDirectory.trim() || process.cwd();
-  if (settings.toolMode === "none") return { cwd, tools: [] as AgentTool<any>[] };
+  if (settings.toolMode === "none") return { cwd, tools: [] as AgentTool<TSchema, unknown>[] };
   if (!path.isAbsolute(cwd) || !(await stat(cwd)).isDirectory())
     throw new Error("工具工作目录必须是存在的绝对路径目录。");
   const history = () => (getHistory?.() ?? []) as Message[];
-  const tools: AgentTool<any>[] = [
+  const tools: AgentTool<TSchema, unknown>[] = [
     ...(settings.toolMode === "agent" ? [createContextCompactTool(history, onEvent)] : []),
     createSessionForkTool(history, onEvent),
-    ...createGptSessionTools(cwd, getHistory),
-    ...createImageTools(() => projectImages, "viewer"),
+    ...createGptSessionTools(cwd, getHistory, ownerSessionId),
+    ...createImageTools(() => projectImages, "viewer") as unknown as AgentTool<TSchema, unknown>[],
   ];
   return { cwd, tools };
 }

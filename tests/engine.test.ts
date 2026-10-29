@@ -9,6 +9,7 @@ import {
   exactPayload,
   prepareMessagesForModel,
 } from "../server/engine";
+import { normalizeConsecutiveToolCallMessages } from "../server/transcript";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
   defaults,
@@ -54,6 +55,65 @@ test("reasoning effort keeps legacy switch settings and rejects invalid values",
     false,
   );
 });
+test("consecutive assistant tool-call history validates and normalizes for provider protocols", () => {
+  const first: Message = {
+    ...message("assistant", "first"),
+    toolCalls: [{ id: "call_a", name: "lookup", arguments: "{}" }],
+  };
+  const second: Message = {
+    ...message("assistant", "second"),
+    toolCalls: [{ id: "call_b", name: "search", arguments: "{}" }],
+  };
+  const history: Message[] = [
+    message("user", "start"), first, second,
+    { ...message("tool", "a"), toolCallId: "call_a", toolName: "lookup" },
+    { ...message("tool", "b"), toolCallId: "call_b", toolName: "search" },
+    message("user", "continue"),
+  ];
+
+  const completionsSettings = { ...defaults, protocol: "openai-completions" as const };
+  assert.doesNotThrow(() => validateTranscript(completionsSettings, history));
+  const completions = exactPayload({}, completionsSettings, history) as any;
+  assert.deepEqual(completions.messages[1].tool_calls.map((call: any) => call.id), ["call_a", "call_b"]);
+  assert.equal(completions.messages[1].content, "first\nsecond");
+
+  const responsesSettings = { ...defaults, protocol: "openai-responses" as const };
+  const responses = exactPayload({}, responsesSettings, history) as any;
+  assert.deepEqual(responses.input.filter((item: any) => item.type === "function_call").map((item: any) => item.call_id), ["call_a", "call_b"]);
+
+  const anthropicSettings = { ...defaults, protocol: "anthropic-messages" as const };
+  assert.doesNotThrow(() => validateTranscript(anthropicSettings, history));
+  const anthropic = exactPayload({}, anthropicSettings, history) as any;
+  const assistantTurn = anthropic.messages.find((item: any) => item.role === "assistant");
+  assert.deepEqual(assistantTurn.content.filter((block: any) => block.type === "tool_use").map((block: any) => block.id), ["call_a", "call_b"]);
+  assert.throws(() => validateTranscript(completionsSettings, [
+    message("user", "start"), first, second,
+    { ...message("tool", "a"), toolCallId: "call_a", toolName: "lookup" },
+    message("user", "interrupt"),
+    { ...message("tool", "b"), toolCallId: "call_b", toolName: "search" },
+  ]), /必须先补齐/);
+});
+
+test("Pi transcript normalization combines adjacent tool-call assistants without crossing messages", () => {
+  const first = {
+    role: "assistant",
+    content: [{ type: "text", text: "first" }, { type: "toolCall", id: "call_a", name: "lookup", arguments: {} }],
+    stopReason: "toolUse",
+  };
+  const second = {
+    role: "assistant",
+    content: [{ type: "text", text: "second" }, { type: "toolCall", id: "call_b", name: "search", arguments: {} }],
+    stopReason: "toolUse",
+  };
+  const normalized = normalizeConsecutiveToolCallMessages([first, second] as any);
+  assert.equal(normalized.length, 1);
+  if (normalized[0].role !== "assistant") throw new Error("Expected an assistant message");
+  assert.deepEqual(normalized[0].content, [...first.content, ...second.content]);
+  assert.equal(normalized[0].stopReason, "toolUse");
+  const separated = normalizeConsecutiveToolCallMessages([first, { role: "user", content: "stop" }, second] as any);
+  assert.equal(separated.length, 3);
+});
+
 test("unsupported catalog efforts fail explicitly instead of silently clamping", () => {
   const model = {
     id: "catalog-model",

@@ -22,6 +22,7 @@ import {
   type Message,
   type Settings,
 } from "../shared/schema";
+import { compactSubagentDispatchArguments } from "../shared/subagent-tools";
 import { piRuntime, resolvePiModel } from "./pi-subscription";
 import { randomUUID } from "node:crypto";
 import { agentTools } from "./tools";
@@ -73,14 +74,9 @@ export function prepareMessagesForModel(messages: Message[]): Message[] {
     const includeSummary = !(message.toolCalls?.length) && summary !== previousSummary;
     if (includeSummary) previousSummary = summary;
     const toolCalls = (message.toolCalls || []).map((call) => {
-      if (!["gpt_session_create", "gpt_session_send"].includes(call.name)) return call;
-      try {
-        const args = JSON.parse(call.arguments) as Record<string, unknown>;
-        const request = typeof args.message === "string" ? args.message : "";
-        if (request.length <= 800) return call;
-        args.message = `任务摘要：${summary.slice(0, 800)}`;
-        return { ...call, arguments: JSON.stringify(args) };
-      } catch { return call; }
+      if (!["subagent_dispatch", "gpt_session_create", "gpt_session_send", "gpt_session_batch"].includes(call.name)) return call;
+      const arguments_ = compactSubagentDispatchArguments(call.arguments, summary);
+      return arguments_ === call.arguments ? call : { ...call, arguments: arguments_ };
     });
     return {
       ...message,
@@ -120,10 +116,10 @@ function prepareAgentContext(messages: AgentMessage[], sources: Message[]): Agen
       const content = value.content.flatMap((block: any) => {
         if (block?.type === "thinking" || block?.type === "text") return [];
         if (block?.type !== "toolCall" || !compactedCalls.has(wireId(block.id))) return [block];
-        if (!["gpt_session_create", "gpt_session_send"].includes(block.name)) return [block];
-        const args = block.arguments;
-        if (!args || typeof args !== "object" || typeof args.message !== "string" || args.message.length <= 800) return [block];
-        return [{ ...block, arguments: { ...args, message: `任务摘要：${summary.slice(0, 800)}` } }];
+        if (!["subagent_dispatch", "gpt_session_create", "gpt_session_send", "gpt_session_batch"].includes(block.name)) return [block];
+        const compacted = compactSubagentDispatchArguments(JSON.stringify(block.arguments), summary);
+        if (compacted === JSON.stringify(block.arguments)) return [block];
+        try { return [{ ...block, arguments: JSON.parse(compacted) }]; } catch { return [block]; }
       });
       return { ...value, content } as AgentMessage;
     }
@@ -205,6 +201,9 @@ export async function generate(
   emit: Emit,
   signal?: AbortSignal,
 ) {
+  const ownerSessionId = input && typeof input === "object" && "ownerSessionId" in input &&
+    typeof (input as { ownerSessionId?: unknown }).ownerSessionId === "string"
+    ? (input as { ownerSessionId: string }).ownerSessionId : undefined;
   const { settings, messages } = runSchema.parse(input);
   const effort = getReasoningEffort(settings);
   const active = validateTranscript(settings, messages);
@@ -259,7 +258,7 @@ export async function generate(
         cwd: await e2eWorkingDirectory(settings),
         tools: settings.toolMode === "none" ? [] : e2eMockTools(),
       }
-    : await agentTools(settings, history, onEvent);
+    : await agentTools(settings, history, onEvent, ownerSessionId);
   emit({ type: "runtime", cwd, tools: tools.map((t) => t.name) });
   const transcript: AgentMessage[] = await restoreImageHistory(prepareMessagesForModel(active), model);
   // Agent continuation starts from an existing transcript. Declare the initial

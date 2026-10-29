@@ -91,7 +91,7 @@ test("IMG-05 粘贴、拖放、退格移除并发送图片引用", async ({ page
   expect((await largeBinary.json()).error).toContain("PNG、JPEG、WebP、GIF 或 BMP");
   const runBodies: Record<string, any>[] = [];
   page.on("request", (request) => {
-    if (new URL(request.url()).pathname === "/api/run" && request.method() === "POST") {
+    if (new URL(request.url()).pathname === "/api/runs" && request.method() === "POST") {
       const body = request.postDataJSON() as Record<string, any>;
       runBodies.push(body);
     }

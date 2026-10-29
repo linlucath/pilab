@@ -27,6 +27,20 @@ test("tool history accepts consecutive user messages and correctly paired calls"
   assert.equal(toolHistoryError([user("u1"), user("u2"), call("c1"), result("r1", "c1")]), null);
 });
 
+test("tool history accepts interleaved calls and consecutive assistant tool-call messages", () => {
+  const first = call("c1", "lookup");
+  const second = call("c2", "search");
+  assert.equal(toolHistoryError([
+    user("before"), first, second,
+    result("r2", "c2", "search"), result("r1", "c1"), user("after"),
+  ]), null);
+  assert.equal(toolHistoryError([
+    first, result("r1", "c1"), second, result("r2", "c2", "search"),
+  ]), null);
+  assert.match(toolHistoryError([first, second, result("r1", "c1"), user("interrupt")]) || "", /必须先补齐/);
+  assert.match(toolHistoryError([first, second, result("r1", "c1"), call("c3")]) || "", /必须先补齐/);
+});
+
 test("manually adding a result completes an isolated pending tool call", () => {
   const assistant = call("manual-call");
   const messages = [user("before"), assistant, user("after")];

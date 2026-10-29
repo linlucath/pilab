@@ -5,7 +5,10 @@ import {
   readFileSync, readSync, renameSync, writeFileSync,
 } from "node:fs";
 import { stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
 import path from "node:path";
+import { gptWorkerRoleLabels } from "./persona.ts";
 import type { RpcTransport } from "./rpc.ts";
 
 export type SessionStatus = "starting" | "running" | "idle" | "waiting_input" |
@@ -13,15 +16,14 @@ export type SessionStatus = "starting" | "running" | "idle" | "waiting_input" |
 export type SendMode = "steer" | "followUp" | "interrupt";
 export const rolePresets = ["scout", "experimenter", "implementer"] as const;
 export type GptRolePreset = (typeof rolePresets)[number];
-export const rolePresetLabels: Record<GptRolePreset, string> = {
-  scout: "探路学者", experimenter: "路径实验员", implementer: "工程执行员",
-};
+export const rolePresetLabels: Record<GptRolePreset, string> = gptWorkerRoleLabels;
 export const GPT_WAIT_TIMEOUT_SECONDS = 20 * 60;
 export interface SessionInfo {
   id: string;
   name: string;
   role?: string;
   rolePreset?: GptRolePreset;
+  ownerSessionId?: string;
   cwd: string;
   model: string;
   status: SessionStatus;
@@ -29,6 +31,7 @@ export interface SessionInfo {
   updatedAt: number;
   sessionFile?: string;
   lastText: string;
+  lastDispatchContext?: string;
   replySequence?: number;
   lastDeliveredReplySequence?: number;
   partialText: string;
@@ -124,7 +127,8 @@ export class GptSessionManager {
       throw new Error(`GPT session manifest is invalid: ${this.manifest}`);
     const usedNames = new Set<string>();
     for (const info of saved.sessions as SessionInfo[]) {
-      if (!/^gpt-[a-f0-9-]+$/.test(info.id) || !path.isAbsolute(info.cwd))
+      if (!/^gpt-[a-f0-9-]+$/.test(info.id) || !path.isAbsolute(info.cwd) ||
+        (info.ownerSessionId !== undefined && (typeof info.ownerSessionId !== "string" || !info.ownerSessionId || info.ownerSessionId.length > 200)))
         throw new Error(`GPT session manifest contains an invalid session: ${this.manifest}`);
       const baseName = info.name.trim().replace(/[\r\n|]/g, " ").slice(0, 160) || "GPT";
       info.name = baseName === "all" || /^gpt-[a-f0-9-]+$/.test(baseName) ? `会话 ${baseName}` : baseName;
@@ -262,8 +266,10 @@ export class GptSessionManager {
     return entry.starting;
   }
 
-  async create(input: { name: string; role?: string; rolePreset?: GptRolePreset; model: string; message?: string; cwd?: string }) {
+  async create(input: { name: string; role?: string; rolePreset?: GptRolePreset; ownerSessionId?: string; model: string; message?: string; cwd?: string }) {
     if (this.disposed) throw new Error("GPT session manager is closed.");
+    if (input.ownerSessionId !== undefined && (!input.ownerSessionId.trim() || input.ownerSessionId.length > 200))
+      throw new Error("ownerSessionId must contain 1–200 characters.");
     const name = input.name.trim();
     if (input.rolePreset && !rolePresets.includes(input.rolePreset)) throw new Error("未知工兵角色预设。");
     const role = input.rolePreset ? rolePresetLabels[input.rolePreset] : input.role?.trim();
@@ -278,7 +284,8 @@ export class GptSessionManager {
       throw new Error(`GPT 会话「${name}」已存在，请按名称继续对话，或使用另一个名称。`);
     const now = Date.now();
     const info: SessionInfo = {
-      id: `gpt-${randomUUID()}`, name, ...(role ? { role } : {}), ...(input.rolePreset ? { rolePreset: input.rolePreset } : {}), cwd, model: input.model,
+      id: `gpt-${randomUUID()}`, name, ...(role ? { role } : {}), ...(input.rolePreset ? { rolePreset: input.rolePreset } : {}),
+      ...(input.ownerSessionId ? { ownerSessionId: input.ownerSessionId } : {}), cwd, model: input.model,
       status: "starting", createdAt: now, updatedAt: now, lastText: "", partialText: "",
       cursor: 0, pendingInput: [], queuedMessages: { steering: [], followUp: [] },
     };
@@ -293,11 +300,12 @@ export class GptSessionManager {
     return this.view(entry);
   }
 
-  async send(id: string, message: string, mode: SendMode = "steer", rolePreset?: GptRolePreset) {
+  async send(id: string, message: string, mode: SendMode = "steer", rolePreset?: GptRolePreset, ownerSessionId?: string) {
     if (!message.trim()) throw new Error("Message must not be empty.");
     if (rolePreset && !rolePresets.includes(rolePreset)) throw new Error("未知工兵角色预设。");
-    if (mode === "interrupt") await this.interrupt(id);
     const entry = this.get(id);
+    if (ownerSessionId !== undefined) this.requireOwner(entry, ownerSessionId);
+    if (mode === "interrupt") await this.interrupt(id, ownerSessionId);
     if (rolePreset) {
       entry.info.rolePreset = rolePreset;
       entry.info.role = rolePresetLabels[rolePreset];
@@ -313,13 +321,15 @@ export class GptSessionManager {
         message, streamingBehavior: mode === "followUp" ? "followUp" : "steer",
       });
       if (result?.disposition === "handled" && !entry.active) entry.info.status = "idle";
+      entry.info.lastDispatchContext = message.slice(0, 32_000);
       this.record(entry, "message_sent", message);
       return { session: this.view(entry), disposition: result?.disposition };
     });
   }
 
-  async interrupt(id: string) {
+  async interrupt(id: string, ownerSessionId?: string) {
     const entry = this.get(id);
+    if (ownerSessionId !== undefined) this.requireOwner(entry, ownerSessionId);
     entry.epoch++;
     entry.quiet++;
     // An initialization dialog must not prevent the user from stopping the process.
@@ -345,8 +355,9 @@ export class GptSessionManager {
     } finally { entry.quiet--; }
   }
 
-  async close(id: string, suspend = false) {
+  async close(id: string, suspend = false, ownerSessionId?: string) {
     const entry = this.get(id);
+    if (ownerSessionId !== undefined) this.requireOwner(entry, ownerSessionId);
     entry.epoch++;
     entry.quiet++;
     // Closing stdin also unblocks startup requests and makes Pi clean up its child commands.
@@ -368,8 +379,9 @@ export class GptSessionManager {
     } finally { entry.quiet--; }
   }
 
-  async respond(id: string, requestId: string, answer: { value?: string; confirmed?: boolean; cancelled?: boolean }) {
+  async respond(id: string, requestId: string, answer: { value?: string; confirmed?: boolean; cancelled?: boolean }, ownerSessionId?: string) {
     const entry = this.get(id);
+    if (ownerSessionId !== undefined) this.requireOwner(entry, ownerSessionId);
     const request = entry.info.pendingInput.find((item) => item.id === requestId);
     if (!request || !entry.client) throw new Error("That GPT input request is no longer pending.");
     if (request.method === "confirm" && !answer.cancelled && typeof answer.confirmed !== "boolean")
@@ -385,20 +397,120 @@ export class GptSessionManager {
     return this.view(entry);
   }
 
-  list(): SessionInfo[] { return [...this.entries.values()].map((entry) => this.view(entry)); }
-
-  cleanupCandidates(): SessionInfo[] {
-    const eligible = new Set(["idle", "suspended", "interrupted", "error"]);
-    return [...this.entries.values()].filter((entry) => eligible.has(entry.info.status) && !entry.active && entry.pendingOperations === 0).map((entry) => this.view(entry));
+  private requireOwner(entry: ManagedSession, ownerSessionId: string) {
+    if (!ownerSessionId?.trim() || ownerSessionId.length > 200)
+      throw new Error("ownerSessionId 必须是 1 到 200 个字符。");
+    if (entry.info.ownerSessionId === undefined) {
+      entry.info.ownerSessionId = ownerSessionId;
+      this.record(entry, "owner_adopted", "Legacy GPT session was adopted by its first accessing parent session.");
+      return;
+    }
+    if (entry.info.ownerSessionId !== ownerSessionId)
+      throw new Error("该 GPT 工兵不属于当前会话，拒绝访问。");
   }
 
-  async closeIfIdle(id: string) {
+  assertOwner(id: string, ownerSessionId: string): SessionInfo {
+    if (!ownerSessionId?.trim() || ownerSessionId.length > 200)
+      throw new Error("ownerSessionId 必须是 1 到 200 个字符。");
     const entry = this.get(id);
+    this.requireOwner(entry, ownerSessionId);
+    return this.view(entry);
+  }
+
+  list(ownerSessionId?: string): SessionInfo[] {
+    if (ownerSessionId !== undefined) {
+      if (!ownerSessionId.trim() || ownerSessionId.length > 200)
+        throw new Error("ownerSessionId 必须是 1 到 200 个字符。");
+      // Older manifests predate ownership. Claim unowned sessions on first scoped
+      // listing so the dashboard can show them and subsequent requests stay scoped.
+      for (const entry of this.entries.values())
+        if (entry.info.ownerSessionId === undefined) this.requireOwner(entry, ownerSessionId);
+    }
+    return [...this.entries.values()]
+      .filter((entry) => ownerSessionId === undefined || entry.info.ownerSessionId === ownerSessionId)
+      .map((entry) => this.view(entry));
+  }
+
+  cleanupCandidates(ownerSessionId?: string): SessionInfo[] {
+    if (ownerSessionId !== undefined) this.list(ownerSessionId);
+    const eligible = new Set(["idle", "suspended", "interrupted", "error"]);
+    return [...this.entries.values()].filter((entry) =>
+      (ownerSessionId === undefined || entry.info.ownerSessionId === ownerSessionId) &&
+      eligible.has(entry.info.status) && !entry.active && entry.pendingOperations === 0,
+    ).map((entry) => this.view(entry));
+  }
+
+  async closeIfIdle(id: string, ownerSessionId?: string) {
+    const entry = this.get(id);
+    if (ownerSessionId !== undefined) this.requireOwner(entry, ownerSessionId);
     if (!["idle", "suspended", "interrupted", "error"].includes(entry.info.status) || entry.active || entry.pendingOperations > 0) return undefined;
-    return this.close(id);
+    return this.close(id, false, ownerSessionId);
   }
 
   recentEvents(name: string): ProgressEvent[] { return structuredClone(this.get(name).events); }
+
+  async readTranscript(id: string, options: { after?: number; before?: number; limit?: number } = {}) {
+    const entry = this.get(id);
+    const { after, before } = options;
+    const loadAll = after === undefined && before === undefined && options.limit === undefined;
+    const limit = options.limit ?? 100;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200 ||
+      (after !== undefined && (!Number.isSafeInteger(after) || after < 0)) ||
+      (before !== undefined && (!Number.isSafeInteger(before) || before < 1)) ||
+      (after !== undefined && before !== undefined))
+      throw new Error("transcript cursor or limit is invalid.");
+
+    let events: ProgressEvent[];
+    let hasMore = false;
+    const current = entry.events;
+    if (loadAll) {
+      const file = this.eventFile(entry.info.id);
+      if (!existsSync(file)) {
+        events = current.map((event) => structuredClone(event));
+      } else {
+        events = [];
+        const lines = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
+        try {
+          for await (const line of lines) {
+            if (!line) continue;
+            try { events.push(JSON.parse(line) as ProgressEvent); } catch { /* Ignore malformed log lines. */ }
+          }
+        } finally { lines.close(); }
+      }
+    } else if (before === undefined && after === undefined) {
+      events = current.slice(-limit).map((event) => structuredClone(event));
+      hasMore = !!events.length && (events[0].sequence > 1 || events.length < current.length);
+    } else if (before === undefined && after !== undefined &&
+      (!current.length || after >= current[0].sequence - 1)) {
+      events = current.filter((event) => event.sequence > after).slice(0, limit).map((event) => structuredClone(event));
+      hasMore = current.some((event) => event.sequence > after + events.length);
+    } else {
+      const file = this.eventFile(entry.info.id);
+      const lines = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
+      const selected: ProgressEvent[] = [];
+      let count = 0;
+      try {
+        for await (const line of lines) {
+          if (!line) continue;
+          let event: ProgressEvent;
+          try { event = JSON.parse(line) as ProgressEvent; } catch { continue; }
+          if (after !== undefined && event.sequence <= after) continue;
+          if (before !== undefined && event.sequence >= before) { hasMore = count > limit; break; }
+          selected.push(event);
+          count++;
+          if (selected.length > limit) selected.shift();
+          if (after !== undefined && selected.length >= limit) { hasMore = true; break; }
+        }
+      } finally { lines.close(); }
+      events = selected.map((event) => structuredClone(event));
+      if (before === undefined && after === undefined) hasMore = count > limit;
+    }
+    return {
+      session: this.view(entry), events, hasMore,
+      nextCursor: events.at(-1)?.sequence ?? after ?? 0,
+      previousCursor: events[0]?.sequence,
+    };
+  }
 
   hasActiveWaiter(id: string): boolean { return !!this.waiters.get(this.get(id))?.size; }
 

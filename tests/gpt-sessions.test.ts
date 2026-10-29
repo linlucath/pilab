@@ -9,7 +9,7 @@ import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import { GptSessionManager, type SessionInfo } from "../extensions/pi-gpt-subagent/sessions";
 import { nativeTransportFactory } from "../extensions/pi-gpt-subagent/native";
 import { createSessionTools } from "../extensions/pi-gpt-subagent/tools";
-import { PiRpcProcess } from "../extensions/pi-gpt-subagent/rpc";
+import { PiRpcProcess, type RpcTransport } from "../extensions/pi-gpt-subagent/rpc";
 
 const model = "gpt-session-fixture";
 function text(content: any): string {
@@ -124,16 +124,17 @@ test("native GPT conversations run concurrently, accept steering, interrupt real
   let manager = new GptSessionManager(options);
   try {
     const parent = new AbortController();
-    const tools = createSessionTools(async () => ({ manager, resolveModel: () => model }));
+    const tools = createSessionTools(async () => ({ manager, resolveModel: () => model }), undefined, "parent-fixture");
     const create = tools.find((entry) => entry.name === "gpt_session_create")!;
     const first = await create.execute("create-alpha", { name: "alpha", rolePreset: "scout", message: "ALPHA" }, parent.signal);
-    const alpha = manager.list().find((session) => session.name === first.details.name)!;
+    const firstDetails = first.details as Record<string, unknown>;
+    const alpha = manager.list().find((session) => session.name === firstDetails.name)!;
     assert.equal(alpha.rolePreset, "scout");
     assert.equal(alpha.role, "探路学者");
-    assert.equal(first.details.rolePreset, "scout");
+    assert.equal(firstDetails.rolePreset, "scout");
     parent.abort(); // Ending the coordinator's call must not cancel an independent worker.
     const beta = await manager.create({ name: "beta", model, message: "BETA" });
-    assert.equal(alpha.status, "starting");
+    assert.equal(alpha.status, "running");
     assert.equal(beta.status, "starting");
     await until(() => held.has("ALPHA") && held.has("BETA") && !!manager.read(beta.id).session.partialText,
       () => manager.list());
@@ -218,8 +219,8 @@ test("installed Pi extension keeps child completion as UI-only notice until the 
     if (users.at(-1) === "USER_STILL_TALKING") return finish(res, "coordinator is still available");
     if (users.at(-1) === "USER_MANUALLY_REVIEWING") return finish(res, "coordinator manually chose to review");
     if (body.messages.some((message: any) => message.role === "tool")) return finish(res, "coordinator free while child works");
-    assert.ok(body.tools.some((entry: any) => entry.function.name === "gpt_session_create"));
-    tool(res, "gpt_session_create", { name: "parallel child", message: "CHILD_AUTO", model });
+    assert.ok(body.tools.some((entry: any) => entry.function.name === "subagent_dispatch"));
+    tool(res, "subagent_dispatch", { task: { name: "parallel child", message: "CHILD_AUTO", model }, mode: "async" });
   });
   await cp(path.resolve("extensions/pi-gpt-subagent"), path.join(f.agentDir, "extensions/pi-gpt-subagent"), { recursive: true });
   const events: any[] = [];
@@ -237,9 +238,11 @@ test("installed Pi extension keeps child completion as UI-only notice until the 
     assert.equal((await parent.request("prompt", { message: "/gpt" })).disposition, "handled");
     await parent.request("prompt", { message: "COORDINATOR" });
     await until(() => assistantSaid("coordinator free while child works") && !!releaseChild, () => ({ errors, events: events.slice(-5) }));
-    const creation = events.find((event) => event.type === "tool_execution_end" && event.toolName === "gpt_session_create");
-    const created = JSON.parse(text(creation.result.content));
-    assert.equal(created.status, "starting");
+    const creation = events.find((event) => event.type === "tool_execution_end" && event.toolName === "subagent_dispatch");
+    const created = creation.result.details as { started: { name: string; handle: string; status: string }[] };
+    assert.equal(created.started[0].name, "parallel child");
+    assert.ok(created.started[0].handle.startsWith("gpt-"));
+    assert.equal(created.started[0].status, "running");
     await parent.request("prompt", { message: "USER_STILL_TALKING", streamingBehavior: "steer" });
     await until(() => assistantSaid("coordinator is still available"), () => events.slice(-5));
     const requestsBeforeCompletion = f.requests.length;
@@ -251,7 +254,7 @@ test("installed Pi extension keeps child completion as UI-only notice until the 
     await until(() => assistantSaid("coordinator manually chose to review"), () => ({ errors, events: events.slice(-5) }));
     const state = await parent.request("get_state");
     assert.equal(state.model.provider, "openai-codex");
-    await parent.request("prompt", { message: `/gpt stop ${created.name}` });
+    await parent.request("prompt", { message: `/gpt stop ${created.started[0].name}` });
     const messages = await parent.request("get_messages");
     assert.match(JSON.stringify(messages), /gpt-session-control/);
     assert.equal(errors.length, 0);
@@ -274,6 +277,88 @@ test("session persistence recreates its parent directories before manifest and e
     const persisted = JSON.parse(await readFile(path.join(storageDir, "sessions.json"), "utf8"));
     assert.ok(persisted.sessions.some((entry: SessionInfo) => entry.id === session.id && entry.status === "closed"));
     assert.match(await readFile(path.join(storageDir, `${session.id}.events.jsonl`), "utf8"), /Process stopped/);
+  } finally { await manager.shutdown(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("legacy ownerless workers are adopted by their first parent and retain readable transcript history", { timeout: 10_000 }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "pi-gpt-adopt-"));
+  const manager = new GptSessionManager({ storageDir: path.join(root, "saved"), cwd: root,
+    createTransport: (_spec, onEvent): RpcTransport => ({
+      async request<T = any>(type: string): Promise<T> {
+        if (type === "get_state") return { model: { provider: "openai-codex", id: model }, sessionFile: "legacy-session.jsonl" } as T;
+        if (type === "prompt") {
+          onEvent({ type: "agent_start" });
+          onEvent({ type: "message_end", message: { role: "assistant", content: "Legacy worker reply remains visible." } });
+          onEvent({ type: "agent_end" });
+          return { disposition: "handled" } as T;
+        }
+        return {} as T;
+      },
+      async reply() {}, async stop() {},
+    }) });
+  try {
+    const worker = await manager.create({ name: "legacy-worker", model });
+    await until(() => manager.read(worker.id).session.status === "idle");
+    const scoped = manager.list("adopting-parent");
+    assert.equal(scoped.length, 1);
+    assert.equal(scoped[0].ownerSessionId, "adopting-parent");
+    await manager.send(worker.id, "continue the old conversation", "steer", undefined, "adopting-parent");
+    const transcript = await manager.readTranscript(worker.id, { limit: 100 });
+    assert.equal(transcript.session.lastDispatchContext, "continue the old conversation");
+    assert.ok(transcript.events.some((event) => event.type === "assistant" && event.text === "Legacy worker reply remains visible."));
+    const saved = JSON.parse(await readFile(path.join(root, "saved", "sessions.json"), "utf8"));
+    assert.equal(saved.sessions.find((session: SessionInfo) => session.id === worker.id).ownerSessionId, "adopting-parent");
+
+    const transcriptOnly = await manager.create({ name: "legacy-transcript-only", model });
+    await until(() => manager.read(transcriptOnly.id).session.status === "idle");
+    assert.equal(manager.assertOwner(transcriptOnly.id, "transcript-parent").ownerSessionId, "transcript-parent");
+    const directTranscript = await manager.readTranscript(transcriptOnly.id, { limit: 100 });
+    assert.ok(directTranscript.events.some((event) => event.type === "ready"));
+  } finally { await manager.shutdown(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("worker owners are immutable across forks and transcript pages stay scoped", { timeout: 10_000 }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "pi-gpt-owner-"));
+  const manager = new GptSessionManager({ storageDir: path.join(root, "saved"), cwd: root,
+    createTransport: () => ({
+      async request<T = any>(type: string): Promise<T> {
+        const result = type === "get_state"
+          ? { model: { provider: "openai-codex", id: model }, sessionFile: "fixture-session.jsonl" }
+          : { disposition: "handled" };
+        return result as T;
+      },
+      async reply() {}, async stop() {},
+    }) });
+  try {
+    const worker = await manager.create({ name: "owner-bound", model, ownerSessionId: "root-session" });
+    await until(() => manager.read(worker.id).session.status === "idle");
+    assert.deepEqual(manager.list("root-session").map((session) => session.id), [worker.id]);
+    assert.deepEqual(manager.list("fork-session"), []);
+    assert.equal(manager.assertOwner(worker.id, "root-session").ownerSessionId, "root-session");
+    assert.throws(() => manager.assertOwner(worker.id, "fork-session"), /不属于当前会话/);
+    await assert.rejects(manager.send(worker.id, "hijack", "steer", undefined, "fork-session"), /不属于当前会话/);
+    await assert.rejects(manager.interrupt(worker.id, "fork-session"), /不属于当前会话/);
+    await assert.rejects(manager.close(worker.id, false, "fork-session"), /不属于当前会话/);
+    const firstPage = await manager.readTranscript(worker.id, { limit: 1 });
+    assert.equal(firstPage.events.length, 1);
+    assert.equal(firstPage.events[0].type, "ready");
+    assert.ok(firstPage.hasMore);
+    const older = await manager.readTranscript(worker.id, { before: firstPage.events[0].sequence, limit: 1 });
+    assert.equal(older.events[0]?.type, "created");
+
+    const eventFile = path.join(root, "saved", `${worker.id}.events.jsonl`);
+    const existingText = await readFile(eventFile, "utf8");
+    const existingEvents = existingText.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    const firstExtraSequence = Number(existingEvents.at(-1)?.sequence || 0) + 1;
+    const oldHistory = Array.from({ length: 250 }, (_, index) => ({
+      sequence: firstExtraSequence + index, at: Date.now() + index, type: "assistant", text: `Older event ${index + 1}`,
+    }));
+    await writeFile(eventFile, `${existingText}${existingText.endsWith("\n") ? "" : "\n"}${oldHistory.map((event) => JSON.stringify(event)).join("\n")}\n`);
+    const complete = await manager.readTranscript(worker.id);
+    assert.equal(complete.events.length, existingEvents.length + oldHistory.length);
+    assert.equal(complete.events[0]?.type, "created");
+    assert.equal(complete.events.at(-1)?.sequence, oldHistory.at(-1)?.sequence);
+    assert.equal(complete.hasMore, false);
   } finally { await manager.shutdown(); await rm(root, { recursive: true, force: true }); }
 });
 

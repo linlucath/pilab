@@ -1,4 +1,5 @@
 import type { Message } from "../../shared/schema";
+import { compactSubagentDispatchArguments } from "../../shared/subagent-tools";
 
 type CompactedMessage = Message & { compactedByModel?: boolean; modelSummary?: string };
 
@@ -23,14 +24,9 @@ function estimateCompactedMessageTokens(message: Message, summary: string, inclu
   let tokens = includeSummary ? 4 + estimateTextTokens(`[已脱水归档] ${summary}`) : 0;
   if (message.role === "assistant") {
     for (const call of message.toolCalls || []) {
-      let args = call.arguments;
-      if (["gpt_session_create", "gpt_session_send"].includes(call.name)) {
-        try {
-          const parsed = JSON.parse(args) as Record<string, unknown>;
-          if (typeof parsed.message === "string" && parsed.message.length > 800)
-            args = JSON.stringify({ ...parsed, message: `任务摘要：${summary.slice(0, 800)}` });
-        } catch { /* Preserve malformed historical arguments in the estimate. */ }
-      }
+      const args = ["subagent_dispatch", "gpt_session_create", "gpt_session_send", "gpt_session_batch"].includes(call.name)
+        ? compactSubagentDispatchArguments(call.arguments, summary)
+        : call.arguments;
       tokens += 4 + estimateTextTokens(`${call.name} ${call.id} ${args}`);
     }
   } else if (message.role === "tool") {

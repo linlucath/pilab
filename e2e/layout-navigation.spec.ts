@@ -93,7 +93,7 @@ test("LAY-04 新建、快捷键新建、改名复制及确认删除会话", asyn
   ], { model: "layout-test-model", temperature: 0.31 })]);
   await openWorkspace(page);
   const createButton = sidebar(page).getByRole("button", { name: "新建对话" });
-  await expect(createButton).toHaveText("新建对话");
+  await expect(createButton).toHaveText("新建对话⌘N");
   await expect(createButton.locator("kbd")).toHaveCount(0);
   await expect(createButton).toHaveAttribute("title", "新建对话 (⌘N)");
   await createButton.click();

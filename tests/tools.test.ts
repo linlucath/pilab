@@ -125,7 +125,7 @@ test("Agent exposes GPT and image tools, feeds tool results back, and replays ed
   const mock = await provider((body, res) => {
     sent.push(body);
     if (sent.length === 1)
-      reply(res, { id: "call_list", name: "gpt_session_list", arguments: {} });
+      reply(res, { id: "call_list", name: "subagent_query", arguments: { action: "list" } });
     else reply(res);
   });
   try {
@@ -150,22 +150,15 @@ test("Agent exposes GPT and image tools, feeds tool results back, and replays ed
     assert.equal(sent.length, 2);
     assert.deepEqual(sent[0].tools.map((t: any) => t.function.name).sort(), [
       "context_compact",
-      "gpt_session_batch",
-      "gpt_session_close",
-      "gpt_session_create",
-      "gpt_session_interrupt",
-      "gpt_session_list",
-      "gpt_session_logs",
-      "gpt_session_read",
-      "gpt_session_respond",
-      "gpt_session_send",
-      "gpt_session_wait",
       "list_images",
       "session_fork",
+      "subagent_control",
+      "subagent_dispatch",
+      "subagent_query",
       "view_images",
     ]);
     assert.equal(sent[0].messages[0].content, "Original system text.");
-    assert.equal(sent[1].messages[2].tool_calls[0].function.name, "gpt_session_list");
+    assert.equal(sent[1].messages[2].tool_calls[0].function.name, "subagent_query");
     assert.equal(sent[1].messages[3].role, "tool");
     assert.equal(sent[1].messages[3].tool_call_id, "call_list");
     assert.equal(sent[1].messages.filter((m: any) => m.role === "user").length, 1);
@@ -184,7 +177,7 @@ test("Agent exposes GPT and image tools, feeds tool results back, and replays ed
       1,
     );
     const messages = [user, ...trace.values()];
-    messages.find((m) => m.role === "tool" && m.toolName === "gpt_session_list")!.content =
+    messages.find((m) => m.role === "tool" && m.toolName === "subagent_query")!.content =
       "edited tool result";
     const imported = fileSchema.parse({
       version: 1,
@@ -223,7 +216,7 @@ test("Agent is the default and exposes the full tool set", async () => {
   const mock = await provider((body, res) => {
     sent.push(body);
     if (sent.length === 1)
-      reply(res, { name: "gpt_session_list", arguments: {} });
+      reply(res, { name: "subagent_query", arguments: { action: "list" } });
     else reply(res);
   });
   try {
@@ -237,18 +230,11 @@ test("Agent is the default and exposes the full tool set", async () => {
     const names = sent[0].tools.map((tool: any) => tool.function.name).sort();
     assert.deepEqual(names, [
       "context_compact",
-      "gpt_session_batch",
-      "gpt_session_close",
-      "gpt_session_create",
-      "gpt_session_interrupt",
-      "gpt_session_list",
-      "gpt_session_logs",
-      "gpt_session_read",
-      "gpt_session_respond",
-      "gpt_session_send",
-      "gpt_session_wait",
       "list_images",
       "session_fork",
+      "subagent_control",
+      "subagent_dispatch",
+      "subagent_query",
       "view_images",
     ]);
     assert.equal(events.some((event) => event.type === "error"), false, JSON.stringify(events));

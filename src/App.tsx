@@ -9,7 +9,7 @@ import type { GptSessionSummary } from "../shared/gpt-sessions";
 import { piSessionIdentity } from "../shared/workspace";
 import { addToolResult as createToolResult, completeToolBranchEnd, deleteMessageWithToolPairs, deleteToolCallWithResult, patchMessageWithToolPairs, patchToolCallWithResult, toolHistoryError } from "../shared/tool-history";
 import { useProjectWorkspace, type Run, type Session, type Workspace } from "./workspace-store";
-import { newSession, uid, loadLegacyWorkspace, parseToolArguments } from "./utils/session";
+import { newSession, uid, loadLegacyWorkspace } from "./utils/session";
 import { contextTokenMetrics } from "./utils/context-tokens";
 import { buildForkMessages } from "../shared/session-fork";
 import { Sidebar } from "./components/Sidebar";
@@ -17,6 +17,7 @@ import { TopBar } from "./components/TopBar";
 import { MessageStream } from "./components/MessageStream";
 import { ComposerBar } from "./components/ComposerBar";
 import { RightPanel } from "./components/RightPanel";
+import { ThreadTabs } from "./components/ThreadTabs";
 import { RequestInspector } from "./components/RequestInspector";
 import { RunHistory } from "./components/RunHistory";
 import { SessionForkModal } from "./components/SessionForkModal";
@@ -38,26 +39,20 @@ type RunControl = { sessionId: string; runId: string; lastSeq: number; shouldSub
 const emptyStreamView: SessionStreamView = { streamingId: "", thinking: "", toolActivity: null };
 const activeWorkerStatuses = new Set(["starting", "running", "waiting_input"]);
 const pretty = (value: unknown) => JSON.stringify(value, null, 2);
+function sameStringMap(left: Map<string, string>, right: Map<string, string>) {
+  return left.size === right.size && [...left].every(([key, value]) => right.get(key) === value);
+}
 
+function updateSessionUrl(sessionId: string, replace = false) {
+  const url = new URL(window.location.href);
+  if (url.searchParams.get("session") === sessionId) return;
+  url.searchParams.set("session", sessionId);
+  if (replace) window.history.replaceState(window.history.state, "", url);
+  else window.history.pushState(window.history.state, "", url);
+}
 function normalizedWorkerCwd(value: string) {
   const normalized = value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
   return normalized || "/";
-}
-function workerDispatches(call: ToolCall): { name: string; cwd?: string }[] {
-  const args = parseToolArguments(call.arguments);
-  if (call.name === "gpt_session_create" || call.name === "gpt_session_send")
-    return typeof args.name === "string" && args.name.trim() ? [{ name: args.name.trim(), ...(typeof args.cwd === "string" ? { cwd: args.cwd } : {}) }] : [];
-  if (call.name === "gpt_session_batch" && Array.isArray(args.tasks))
-    return args.tasks.flatMap((task: unknown) => task && typeof task === "object" && typeof (task as Record<string, unknown>).name === "string"
-      ? [{ name: ((task as Record<string, unknown>).name as string).trim(), ...(typeof (task as Record<string, unknown>).cwd === "string" ? { cwd: (task as Record<string, unknown>).cwd as string } : {}) }]
-      : []).filter((task) => !!task.name);
-  return [];
-}
-function sessionOwnsWorker(session: Session, workerName: string, workerCwd: string, runtimeCwd: string) {
-  const expectedCwd = normalizedWorkerCwd(workerCwd);
-  const defaultCwd = session.settings.workingDirectory.trim() || runtimeCwd;
-  return session.messages.some((message) => message.toolCalls?.some((call) => workerDispatches(call).some((dispatch) =>
-    dispatch.name === workerName && normalizedWorkerCwd(dispatch.cwd?.trim() || defaultCwd) === expectedCwd)));
 }
 function workerSignature(worker: GptSessionSummary, cwd: string) {
   const version = typeof worker.replySequence === "number"
@@ -66,7 +61,7 @@ function workerSignature(worker: GptSessionSummary, cwd: string) {
   return JSON.stringify([normalizedWorkerCwd(cwd), worker.id, ...version]);
 }
 function workerNoticeNames(content: string) {
-  const match = /^后台 GPT 工兵已交卷：(.+?)。请使用 gpt_session_read/.exec(content.trim());
+  const match = /^后台 GPT 工兵已交卷：(.+?)。请使用 (?:subagent_query|gpt_session_read)/.exec(content.trim());
   return match ? [...match[1].matchAll(/「([^」]+)」/g)].map((item) => item[1]) : [];
 }
 
@@ -127,7 +122,9 @@ export default function App() {
   const [runtimeCwd, setRuntimeCwd] = useState("");
   const [piConnection, setPiConnection] = useState<PiConnection | null>(null);
   const [piSessions, setPiSessions] = useState<PiLiveSession[]>([]);
-  const [gptSessionSnapshot, setGptSessionSnapshot] = useState<{ cwd: string; sessions: GptSessionSummary[] }>({ cwd: "", sessions: [] });
+  const [gptSessionSnapshot, setGptSessionSnapshot] = useState<{ ownerSessionId: string; cwd: string; sessions: GptSessionSummary[] }>({ ownerSessionId: "", cwd: "", sessions: [] });
+  const [selectedWorkerId, setSelectedWorkerId] = useState("");
+  const [gptSessionsError, setGptSessionsError] = useState("");
   const [composerText, setComposerText] = useState("");
   const [workerWakeNotices, setWorkerWakeNotices] = useState<WorkerWakeNotice[]>([]);
   const workerSnapshotsRef = useRef(new Map<string, Map<string, GptSessionSummary>>());
@@ -143,10 +140,37 @@ export default function App() {
   const completedRunIdsRef = useRef(new Set<string>());
   const busyForSessionRef = useRef<(sessionId: string) => boolean>(() => false);
   const piStreamOnline = useRef(false);
+  const sessionRouteInitialized = useRef(false);
 
   const { workspace, setWorkspace, workspaceRef, ready, error: storageError, status: storageStatus } =
     useProjectWorkspace(loadLegacyWorkspace, () => newSession(runtimeCwd), setNotice);
   const session = workspace.sessions.find((item) => item.id === workspace.active) || workspace.sessions[0] || newSession(runtimeCwd);
+  useEffect(() => {
+    if (!ready) return;
+    const routeId = new URL(window.location.href).searchParams.get("session");
+    if (!sessionRouteInitialized.current) {
+      sessionRouteInitialized.current = true;
+      if (routeId && workspace.sessions.some((item) => item.id === routeId)) {
+        if (workspace.active !== routeId)
+          setWorkspace((current) => current.active === routeId ? current : { ...current, active: routeId, followPi: false });
+        return;
+      }
+      updateSessionUrl(workspace.active, true);
+      return;
+    }
+    if (routeId !== workspace.active) updateSessionUrl(workspace.active, true);
+  }, [ready, workspace.active, workspace.sessions, setWorkspace]);
+  useEffect(() => {
+    if (!ready) return;
+    const onPopState = () => {
+      const routeId = new URL(window.location.href).searchParams.get("session");
+      if (routeId && workspaceRef.current.sessions.some((item) => item.id === routeId))
+        setWorkspace((current) => current.active === routeId ? current : { ...current, active: routeId, followPi: false });
+      else updateSessionUrl(workspaceRef.current.active, true);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [ready, setWorkspace, workspaceRef]);
   const currentApiKey = apiKeys[session.id] || "";
   const activeRun = session.runs.find((run) => run.id === selectedRun) || session.runs[0];
   const busy = activeRuns.has(session.id) || startingSessions.has(session.id) || runControlsRef.current.has(session.id);
@@ -183,53 +207,79 @@ export default function App() {
   }, [session.id, session.messages]);
   const effectiveCwd = session.settings.workingDirectory.trim() || runtimeCwd;
   const reportArchiveableToolGroups = useCallback((count: number) => setArchiveableToolGroupCount(count), []);
-  const reportGptSessions = useCallback((sessions: GptSessionSummary[]) => {
-    setGptSessionSnapshot({ cwd: effectiveCwd, sessions });
+  const reportGptSessions = useCallback((ownerSessionId: string, sessions: GptSessionSummary[]) => {
     const cwdKey = normalizedWorkerCwd(effectiveCwd);
-    const previous = workerSnapshotsRef.current.get(cwdKey);
+    setGptSessionSnapshot((current) => current.ownerSessionId === ownerSessionId && current.cwd === effectiveCwd &&
+      JSON.stringify(current.sessions) === JSON.stringify(sessions)
+      ? current : { ownerSessionId, cwd: effectiveCwd, sessions });
+    const snapshotKey = `${ownerSessionId}\\0${cwdKey}`;
+    const previous = workerSnapshotsRef.current.get(snapshotKey);
     const nextById = new Map(sessions.map((worker) => [worker.id, worker]));
-    workerSnapshotsRef.current.set(cwdKey, nextById);
+    workerSnapshotsRef.current.set(snapshotKey, nextById);
     const workersByName = new Map(sessions.map((worker) => [worker.name, worker]));
     const pruneResolvedNotices = (notices: WorkerWakeNotice[]) => notices.flatMap((notice) => {
-      if (normalizedWorkerCwd(notice.cwd) !== cwdKey) return [notice];
+      if (notice.sessionId !== ownerSessionId || normalizedWorkerCwd(notice.cwd) !== cwdKey) return [notice];
       const names = notice.names.filter((name) => {
         const worker = workersByName.get(name);
         return !worker || (worker.hasUnreadReply && !worker.hasActiveWaiter);
       });
       return names.length ? [{ ...notice, names }] : [];
     });
-    setWorkerWakeNotices(pruneResolvedNotices);
-    const completed = sessions.filter((worker) => {
-      const old = previous?.get(worker.id);
-      return worker.hasUnreadReply && !worker.hasActiveWaiter && (!old || !old.hasUnreadReply || !!old.hasActiveWaiter);
-    });
-    if (!completed.length) return;
-
-    const ownerGroups = new Map<string, { sessionId: string; cwd: string; names: string[] }>();
-    const currentWorkspace = workspaceRef.current;
-    for (const worker of completed) {
-      const signature = workerSignature(worker, effectiveCwd);
-      for (const owner of currentWorkspace.sessions) {
-        if (!sessionOwnsWorker(owner, worker.name, effectiveCwd, runtimeCwd) || owner.reviewedWorkerSignatures?.includes(signature)) continue;
-        const key = `${owner.id}\\0${cwdKey}`;
-        const group = ownerGroups.get(key) || { sessionId: owner.id, cwd: effectiveCwd, names: [] };
-        if (!group.names.includes(worker.name)) group.names.push(worker.name);
-        ownerGroups.set(key, group);
-      }
-    }
-    if (!ownerGroups.size) return;
-
     setWorkerWakeNotices((current) => {
       const next = pruneResolvedNotices(current);
-      for (const group of ownerGroups.values()) {
-        const existingIndex = next.findIndex((notice) => notice.sessionId === group.sessionId && normalizedWorkerCwd(notice.cwd) === cwdKey);
-        if (existingIndex < 0) next.push(group);
-        else next[existingIndex] = { ...next[existingIndex], names: [...new Set([...next[existingIndex].names, ...group.names])] };
-      }
+      return JSON.stringify(current) === JSON.stringify(next) ? current : next;
+    });
+    const completed = sessions.filter((worker) => {
+      const old = previous?.get(worker.id);
+      return worker.ownerSessionId === ownerSessionId && !activeWorkerStatuses.has(worker.status) &&
+        worker.hasUnreadReply && !worker.hasActiveWaiter && (!old || !old.hasUnreadReply || !!old.hasActiveWaiter);
+    });
+    if (!completed.length) return;
+    const owner = workspaceRef.current.sessions.find((item) => item.id === ownerSessionId);
+    if (!owner) return;
+    const names = completed.filter((worker) => !owner.reviewedWorkerSignatures?.includes(workerSignature(worker, effectiveCwd))).map((worker) => worker.name);
+    if (!names.length) return;
+    const notice = { sessionId: ownerSessionId, cwd: effectiveCwd, names };
+    setWorkerWakeNotices((current) => {
+      const next = pruneResolvedNotices(current);
+      const existingIndex = next.findIndex((item) => item.sessionId === ownerSessionId && normalizedWorkerCwd(item.cwd) === cwdKey);
+      if (existingIndex < 0) next.push(notice);
+      else next[existingIndex] = { ...next[existingIndex], names: [...new Set([...next[existingIndex].names, ...names])] };
       return next;
     });
-  }, [effectiveCwd, runtimeCwd, workspaceRef]);
-  const visibleGptSessions = gptSessionSnapshot.cwd === effectiveCwd ? gptSessionSnapshot.sessions : [];
+  }, [effectiveCwd, workspaceRef]);
+  const visibleGptSessions = gptSessionSnapshot.ownerSessionId === session.id && gptSessionSnapshot.cwd === effectiveCwd
+    ? gptSessionSnapshot.sessions.filter((worker) => worker.ownerSessionId === session.id) : [];
+  const fetchGptSessions = useCallback(async (signal?: AbortSignal) => {
+    if (!effectiveCwd) return;
+    const query = new URLSearchParams({ cwd: effectiveCwd, ownerSessionId: session.id });
+    try {
+      const response = await fetch(`/api/gpt-sessions?${query}`, { cache: "no-store", signal });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "读取工兵会话失败。");
+      if (signal?.aborted) return;
+      reportGptSessions(session.id, Array.isArray(data.sessions) ? data.sessions : []);
+      setGptSessionsError("");
+    } catch (cause) {
+      if (!signal?.aborted) setGptSessionsError(cause instanceof Error ? cause.message : "读取工兵会话失败。");
+    }
+  }, [effectiveCwd, reportGptSessions, session.id]);
+  const updateWorkerSummary = useCallback((worker: GptSessionSummary) => {
+    if (worker.ownerSessionId !== session.id) return;
+    const snapshotKey = `${session.id}\\0${normalizedWorkerCwd(effectiveCwd)}`;
+    const previous = workerSnapshotsRef.current.get(snapshotKey);
+    if (previous) workerSnapshotsRef.current.set(snapshotKey, new Map(previous).set(worker.id, worker));
+    setGptSessionSnapshot((current) => {
+      if (current.ownerSessionId !== session.id || current.cwd !== effectiveCwd) return current;
+      const index = current.sessions.findIndex((item) => item.id === worker.id);
+      const sessions = index < 0 ? [...current.sessions, worker] : current.sessions.map((item) => item.id === worker.id ? worker : item);
+      return JSON.stringify(current.sessions) === JSON.stringify(sessions)
+        ? current : { ...current, sessions };
+    });
+  }, [effectiveCwd, session.id]);
+  const updateWorkerSummaries = useCallback((workers: GptSessionSummary[]) => {
+    reportGptSessions(session.id, workers);
+  }, [reportGptSessions, session.id]);
   const activeWakeNotices = workerWakeNotices.filter((notice) => notice.sessionId === session.id);
   const workerWakeNotice = activeWakeNotices.length ? {
     names: [...new Set(activeWakeNotices.flatMap((notice) => notice.names))],
@@ -242,6 +292,21 @@ export default function App() {
   }, [theme]);
   useEffect(() => { try { localStorage.setItem("pilab-tools-compact-v1", String(compactTools)); } catch { /* storage is optional */ } }, [compactTools]);
   useEffect(() => { fetch("/api/health").then((response) => response.json()).then((data) => setRuntimeCwd(data.workingDirectory || "")).catch(() => {}); }, []);
+  useEffect(() => {
+    if (!ready || !effectiveCwd) return;
+    let cancelled = false;
+    let polling = false;
+    const controller = new AbortController();
+    const poll = async () => {
+      if (polling || cancelled) return;
+      polling = true;
+      try { await fetchGptSessions(controller.signal); }
+      finally { polling = false; }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 3_000);
+    return () => { cancelled = true; controller.abort(); window.clearInterval(timer); };
+  }, [ready, effectiveCwd, fetchGptSessions]);
   useEffect(() => {
     if (!ready || !runtimeCwd || session.settings.workingDirectory || session.messages.length !== 1 || session.messages[0]?.role !== "system" || session.title !== "新建对话") return;
     setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === session.id ? { ...item, settings: { ...item.settings, workingDirectory: runtimeCwd } } : item) }));
@@ -281,8 +346,10 @@ export default function App() {
         const next = new Map<string, string>();
         for (const run of data.runs || [])
           if (typeof run.sessionId === "string" && typeof run.runId === "string" && !completedRunIdsRef.current.has(run.runId)) next.set(run.sessionId, run.runId);
-        activeRunsRef.current = next;
-        setActiveRuns(next);
+        if (!sameStringMap(activeRunsRef.current, next)) {
+          activeRunsRef.current = next;
+          setActiveRuns(next);
+        }
       } catch { /* Keep the last known active-run snapshot until the service responds. */ }
       finally { polling = false; }
     };
@@ -397,8 +464,10 @@ export default function App() {
     const active = workspaceRef.current.sessions.find((item) => item.id === activeId);
     const target = active?.messages.find((message) => message.id === id);
     const dismissedNames = target ? workerNoticeNames(target.content) : [];
-    const dismissedSignatures = active && dismissedNames.length ? visibleGptSessions
-      .filter((worker) => dismissedNames.includes(worker.name) && sessionOwnsWorker(active, worker.name, effectiveCwd, runtimeCwd))
+    const ownerKey = active ? `${active.id}\\0${normalizedWorkerCwd(effectiveCwd)}` : "";
+    const ownerWorkers = active ? workerSnapshotsRef.current.get(ownerKey) : undefined;
+    const dismissedSignatures = active && dismissedNames.length ? [...(ownerWorkers?.values() || [])]
+      .filter((worker) => worker.ownerSessionId === active.id && dismissedNames.includes(worker.name))
       .map((worker) => workerSignature(worker, effectiveCwd)) : [];
     if (dismissedNames.length) {
       setWorkerWakeNotices((current) => current.flatMap((notice) => {
@@ -510,6 +579,8 @@ export default function App() {
     return next.id;
   }
   const selectSession = (id: string) => {
+    if (!workspaceRef.current.sessions.some((item) => item.id === id)) return;
+    updateSessionUrl(id);
     setWorkspace((current) => ({ ...current, active: id, followPi: false }));
   };
   const renameSession = (id: string, title: string) => setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === id ? { ...item, title } : item) }));
@@ -681,11 +752,11 @@ export default function App() {
     setSessionStarting(sessionId, true);
     setSessionRunError(sessionId);
     setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === sessionId ? { ...item, runs: [record, ...item.runs].slice(0, 30) } : item) }));
-    if (currentWorkspace.active === sessionId) { setSelectedRun(runId); setDebugPanel(null); setScrollRequest((value) => value + 1); }
+    if (currentWorkspace.active === sessionId) { setSelectedRun(runId); setDebugPanel(null); }
     updateStreamView(sessionId, () => emptyStreamView);
     let remoteRunId = "";
     let runControl: RunControl | null = null;
-    let text = ""; let thought = ""; let currentMessageId = uid(); let terminalReceived = false; let errorEventReceived = false;
+    let text = ""; let thought = ""; let currentMessageId = uid(); let terminalReceived = false; let errorEventReceived = false; let failureMessage = "";
     let finalGenerationStatus = "done";
     const textById = new Map<string, string>(); const trace: Message[] = []; const requests: unknown[] = [];
     const updateRun = (values: Partial<Run>) => setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === sessionId ? { ...item, runs: item.runs.map((run) => run.id === runId ? { ...run, ...values, elapsed: Date.now() - started } : run) } : item) }));
@@ -796,15 +867,23 @@ export default function App() {
         if (event.type === "tool_activity") updateStreamView(sessionId, (current) => ({ ...current, toolActivity: event as ToolActivity }));
         if (event.type === "tool_activity_end") updateStreamView(sessionId, (current) => ({ ...current, toolActivity: null }));
         if (event.type === "done") { finalGenerationStatus = event.reason === "length" ? "length" : event.reason === "turn_limit" ? "turn_limit" : "done"; updateRun({ status: finalGenerationStatus, usage: event.usage, turns: event.turns, output: text }); if (workspaceRef.current.active === sessionId && event.reason === "turn_limit") setNotice("已达到 Agent 最大轮数；可检查轨迹后继续。"); if (workspaceRef.current.active === sessionId && event.reason === "length") setNotice("已达到输出上限，回复未完成。"); }
-        if (event.type === "error") { errorEventReceived = true; const message = typeof event.message === "string" ? event.message : "模型运行发生错误。"; updateRun({ status: "error", error: message, output: text }); setSessionRunError(sessionId, message); }
+        if (event.type === "error") { errorEventReceived = true; failureMessage = typeof event.message === "string" ? event.message : "模型运行发生错误。"; updateRun({ status: "error", error: failureMessage, output: text }); setSessionRunError(sessionId, failureMessage); }
         if (event.type === "run_status") {
           terminalReceived = true;
           completedRunIdsRef.current.add(remoteRunId);
           if (completedRunIdsRef.current.size > 100)
             completedRunIdsRef.current.delete(completedRunIdsRef.current.values().next().value!);
-          if (event.status === "completed") updateRun({ status: finalGenerationStatus, output: text });
+          if (event.status === "completed") {
+            updateRun({ status: finalGenerationStatus, error: undefined, output: text });
+            if (!errorEventReceived) setSessionRunError(sessionId);
+          }
           else if (event.status === "aborted") { settlePendingToolCalls("执行已停止，未收到该工具的完整结果。操作可能已经部分完成，请检查实际文件状态后再继续。"); updateRun({ status: "stopped", error: undefined, output: text }); setSessionRunError(sessionId); }
-          else if (event.status === "failed") { const message = typeof event.message === "string" ? event.message : "模型运行失败。"; updateRun({ status: "error", ...(errorEventReceived ? {} : { error: message }), output: text }); if (!errorEventReceived) setSessionRunError(sessionId, message); }
+          else if (event.status === "failed") {
+            const message = typeof event.message === "string" ? event.message : failureMessage || "模型运行失败。";
+            settlePendingToolCalls(message);
+            updateRun({ status: "error", error: message, output: text });
+            setSessionRunError(sessionId, message);
+          }
           if (runControl) { runControlsRef.current.delete(sessionId); setActiveRunForSession(sessionId, undefined); }
           updateStreamView(sessionId, () => emptyStreamView);
           if (forkSwitchSourceRef.current === sessionId) forkSwitchSourceRef.current = null;
@@ -938,8 +1017,10 @@ export default function App() {
   function rememberReviewedWorkers(sessionId: string, cwd: string, names: string[]) {
     const owner = workspaceRef.current.sessions.find((item) => item.id === sessionId);
     if (!owner) return;
-    const signatures = visibleGptSessions
-      .filter((worker) => names.includes(worker.name) && sessionOwnsWorker(owner, worker.name, cwd, runtimeCwd))
+    const ownerKey = `${sessionId}\\0${normalizedWorkerCwd(cwd)}`;
+    const ownerWorkers = workerSnapshotsRef.current.get(ownerKey);
+    const signatures = [...(ownerWorkers?.values() || [])]
+      .filter((worker) => worker.ownerSessionId === sessionId && names.includes(worker.name))
       .map((worker) => workerSignature(worker, cwd));
     if (!signatures.length) return;
     setWorkspace((current) => ({
@@ -951,7 +1032,10 @@ export default function App() {
   }
   function reviewWorkers(review: WorkerReview) {
     const target = workspaceRef.current.sessions.find((item) => item.id === review.sessionId);
-    const unique = target ? [...new Set(review.names.filter((name) => sessionOwnsWorker(target, name, review.cwd, runtimeCwd)))] : [];
+    const ownerKey = target ? `${target.id}\\0${normalizedWorkerCwd(review.cwd)}` : "";
+    const ownerWorkers = target ? workerSnapshotsRef.current.get(ownerKey) : undefined;
+    const ownedNames = new Set([...(ownerWorkers?.values() || [])].filter((worker) => worker.ownerSessionId === target?.id).map((worker) => worker.name));
+    const unique = target ? [...new Set(review.names.filter((name) => ownedNames.has(name)))] : [];
     const matchesNotice = (notice: WorkerWakeNotice | WorkerReview) => notice.sessionId === review.sessionId && normalizedWorkerCwd(notice.cwd) === normalizedWorkerCwd(review.cwd);
     if (!target || !unique.length) {
       setWorkerWakeNotices((current) => current.filter((notice) => !matchesNotice(notice)));
@@ -965,7 +1049,7 @@ export default function App() {
       setNotice("所属会话正在运行；工兵交卷提醒已保留，运行结束后请再次点击审阅。");
       return;
     }
-    const prompt = `后台 GPT 工兵已交卷：${unique.map((name) => `「${name}」`).join("、")}。请使用 gpt_session_read 读取这些工兵的新回复，核对完成情况，给用户一份简洁、准确的中文汇报；如有失败、问题或待决策事项，请明确指出。不要重启或打断仍在运行的工兵。`;
+    const prompt = `后台 GPT 工兵已交卷：${unique.map((name) => `「${name}」`).join("、")}。请使用 subagent_query 对每个工兵执行 action=status，读取新简报并核对完成情况，给用户一份简洁、准确的中文汇报；如有失败、diagnostics、问题或待决策事项，请明确指出。不要重启或打断仍在运行的工兵。`;
     if (!sendMessage(prompt, "user", true, target.id)) {
       setNotice("已保留工兵交卷提醒，但所属会话暂时不能运行；可稍后再次点击审阅。");
       return;
@@ -998,11 +1082,14 @@ export default function App() {
       <div className="workspace-body">
         {rightOpen && <button type="button" className="right-panel-backdrop" aria-label="关闭工作台遮罩" onClick={() => setRightOpen(false)} />}
         <section className="conversation-pane">
-          <MessageStream sessionId={session.id} scrollRequest={scrollRequest} directoryOpen={directoryOpen} onDirectoryOpenChange={setDirectoryOpen} archiveRequest={archiveToolRequest} onArchiveableGroupsChange={reportArchiveableToolGroups} messages={session.messages} busy={busy} compactTools={compactTools} streamingId={streamingId} streamingThinking={streamingThinking} toolActivity={toolActivity} gptWorkers={visibleGptSessions} lineage={session.parentSessionId ? { parentSessionId: session.parentSessionId, parentSessionTitle: session.parentSessionTitle, forkSummary: session.forkSummary } : undefined} forkNotice={forkNotice?.sourceId === session.id ? { forkId: forkNotice.forkId, title: forkNotice.title } : undefined} onSwitchFork={selectSession} onJumpToSession={selectSession} onFork={() => setForkModalOpen(true)} onMessage={updateMessage} onCall={updateCall} onAdd={addMessage} onMove={moveMessage} onDelete={deleteMessage} onDeleteCall={deleteToolCall} onAddToolResult={addManualToolResult} onBranch={branchAt} onCopy={(text) => void copyText(text)} />
-          {runErrors[session.id] && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>本次运行失败</strong><span>{runErrors[session.id]}</span></div><button onClick={() => setSessionRunError(session.id)} aria-label="关闭运行错误">关闭<X size={14} /></button></div>}
-          <ComposerBar busy={busy} blocked={!!session.piSync} toolName={toolActivity?.name} messageCount={session.messages.length} contextTokens={contextMetrics.context} savedPercent={contextMetrics.savedPercent} draft={composerText} onDraftChange={updateComposerText} backgroundWorkers={visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={workerWakeNotice} onDismissWake={() => dismissSessionWorkerWake(session.id)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={sendMessage} onRun={() => void run()} onStop={() => void abortRun()} />
+          <ThreadTabs ownerSessionId={session.id} cwd={effectiveCwd} workers={visibleGptSessions} selectedId={selectedWorkerId} onSelect={setSelectedWorkerId} onWorkerUpdate={updateWorkerSummary} onWorkersUpdate={updateWorkerSummaries} onRefresh={() => void fetchGptSessions()} sessionsError={gptSessionsError} />
+          {!selectedWorkerId && <>
+            <MessageStream sessionId={session.id} scrollRequest={scrollRequest} directoryOpen={directoryOpen} onDirectoryOpenChange={setDirectoryOpen} archiveRequest={archiveToolRequest} onArchiveableGroupsChange={reportArchiveableToolGroups} messages={session.messages} busy={busy} compactTools={compactTools} streamingId={streamingId} streamingThinking={streamingThinking} toolActivity={toolActivity} gptWorkers={visibleGptSessions} lineage={session.parentSessionId ? { parentSessionId: session.parentSessionId, parentSessionTitle: session.parentSessionTitle, forkSummary: session.forkSummary } : undefined} forkNotice={forkNotice?.sourceId === session.id ? { forkId: forkNotice.forkId, title: forkNotice.title } : undefined} onSwitchFork={selectSession} onJumpToSession={selectSession} onFork={() => setForkModalOpen(true)} onMessage={updateMessage} onCall={updateCall} onAdd={addMessage} onMove={moveMessage} onDelete={deleteMessage} onDeleteCall={deleteToolCall} onAddToolResult={addManualToolResult} onBranch={branchAt} onCopy={(text) => void copyText(text)} />
+            {runErrors[session.id] && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>本次运行失败</strong><span>{runErrors[session.id]}</span></div><button onClick={() => setSessionRunError(session.id)} aria-label="关闭运行错误">关闭<X size={14} /></button></div>}
+            <ComposerBar busy={busy} blocked={!!session.piSync} toolName={toolActivity?.name} messageCount={session.messages.length} contextTokens={contextMetrics.context} savedPercent={contextMetrics.savedPercent} draft={composerText} onDraftChange={updateComposerText} backgroundWorkers={visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={workerWakeNotice} onDismissWake={() => dismissSessionWorkerWake(session.id)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={sendMessage} onRun={() => void run()} onStop={() => void abortRun()} />
+          </>}
         </section>
-        <RightPanel hidden={!rightOpen} onClose={() => setRightOpen(false)} session={session} busy={busy} runtimeCwd={runtimeCwd} onSessionsChange={reportGptSessions} apiKey={currentApiKey} models={piConnection?.models || []} piConnected={piConnection?.connected} piDefaultModel={piConnection?.defaultModel} activeRun={activeRun} onSetting={updateSetting} onNotice={setNotice} onApiKey={(key) => setApiKeys((current) => ({ ...current, [session.id]: key }))} onRefreshAuth={() => void refreshPiStatus()} onExport={exportSession} onImport={(file) => void importSession(file)} />
+        <RightPanel hidden={!rightOpen} onClose={() => setRightOpen(false)} session={session} busy={busy} runtimeCwd={runtimeCwd} apiKey={currentApiKey} models={piConnection?.models || []} piConnected={piConnection?.connected} piDefaultModel={piConnection?.defaultModel} activeRun={activeRun} onSetting={updateSetting} onNotice={setNotice} onApiKey={(key) => setApiKeys((current) => ({ ...current, [session.id]: key }))} onRefreshAuth={() => void refreshPiStatus()} onExport={exportSession} onImport={(file) => void importSession(file)} />
       </div>
     </main>
     {debugPanel && <div className="debug-overlay" role="presentation" onClick={() => setDebugPanel(null)}>

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """After a grace period, hand port 3000 from pi 2 to pilab without force-killing."""
 from __future__ import annotations
-import copy
 import json
 import os
 import shutil
@@ -11,6 +10,7 @@ import time
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlencode
 
 PROJECT = Path(__file__).resolve().parents[1]
 SOURCE = Path("/Users/linlu/Desktop/pi 2")
@@ -18,8 +18,6 @@ PORT = 3000
 AGENT = Path.home() / ".pi" / "agent"
 LOG = Path("/tmp/pilab-delayed-takeover.log")
 STOPPER = PROJECT / "scripts" / "stop-old-pi2.py"
-DATA_SYNC = PROJECT / "scripts" / "sync-pi2-data.py"
-GPT_SYNC = PROJECT / "scripts" / "sync-pi2-gpt-sessions.py"
 
 
 def log(message: str) -> None:
@@ -56,24 +54,6 @@ def listeners() -> list[int]:
         text=True, capture_output=True,
     )
     return sorted({int(line) for line in result.stdout.splitlines() if line.strip().isdigit()})
-
-
-def wait_stable(path: Path, timeout: int = 90) -> None:
-    deadline = time.monotonic() + timeout
-    previous = None
-    stable = 0
-    while time.monotonic() < deadline:
-        stat = path.stat()
-        current = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
-        if current == previous:
-            stable += 1
-            if stable >= 3:
-                return
-        else:
-            stable = 0
-            previous = current
-        time.sleep(1)
-    raise RuntimeError("Pi 2 workspace 未能稳定；为保护最后一轮消息，没有继续接管。")
 
 
 def health() -> dict | None:
@@ -143,30 +123,30 @@ def main() -> int:
     try:
         env = runtime_env()
         run_logged([shutil.which("npm", path=env["PATH"]) or "/opt/homebrew/bin/npm", "run", "build"], cwd=PROJECT, env=env, timeout=240)
-        workspace_path = SOURCE / ".pi-lab" / "workspace.json"
-        wait_stable(workspace_path)
-        run_logged([sys.executable, str(DATA_SYNC), "--force"], cwd=PROJECT, env=env, timeout=180)
-        run_logged([sys.executable, str(GPT_SYNC)], cwd=PROJECT, env=env, timeout=180)
-        log("等待期已过、首轮数据同步完成；现在温和停止旧实例以刷新最后状态。")
+        log("Pi Lab 生产构建通过；现在检查并温和停止旧实例。")
         run_logged([sys.executable, str(STOPPER), "--port", str(PORT), "--timeout", "90"], cwd=PROJECT, env=env, timeout=100)
         old_stopped = True
-        # SIGTERM runs Pi Lab's graceful shutdown (flushes workspace and suspends
-        # GPT workers). Re-sync afterward so the final reply and worker event tail
-        # are included before pilab starts serving 3000.
-        wait_stable(workspace_path)
-        run_logged([sys.executable, str(DATA_SYNC), "--force"], cwd=PROJECT, env=env, timeout=180)
-        run_logged([sys.executable, str(GPT_SYNC)], cwd=PROJECT, env=env, timeout=180)
         if listeners():
-            raise RuntimeError("3000 在同步后被另一个进程重新占用；不会终止它。")
+            raise RuntimeError("旧实例停止后 3000 被另一个进程占用；不会终止它。")
         new_process = start_server(PROJECT, production=True)
         if not wait_health(str(PROJECT), 90):
             raise RuntimeError(f"pilab 新服务未能通过健康检查；启动 PID={new_process.pid}。")
         with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/workspace", timeout=5) as response:
-            workspace = json.load(response)["workspace"]
-        titles = {session.get("title") for session in workspace.get("sessions", [])}
-        if not {"PPT", "pi", "pi · 分支"}.issubset(titles):
-            raise RuntimeError("新服务工作区缺少预期主会话。")
-        with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/gpt-sessions", timeout=10) as response:
+            workspace = json.load(response).get("workspace")
+        if not isinstance(workspace, dict):
+            raise RuntimeError("新服务未返回有效工作区。")
+        sessions = workspace.get("sessions")
+        if not isinstance(sessions, list) or not sessions:
+            raise RuntimeError("新服务工作区没有可用会话。")
+        session_ids = {
+            session.get("id") for session in sessions
+            if isinstance(session, dict) and isinstance(session.get("id"), str)
+        }
+        active_session_id = workspace.get("active")
+        if not isinstance(active_session_id, str) or active_session_id not in session_ids:
+            raise RuntimeError("新服务工作区没有有效的当前会话。")
+        workers_url = f"http://127.0.0.1:{PORT}/api/gpt-sessions?{urlencode({'ownerSessionId': active_session_id})}"
+        with urllib.request.urlopen(workers_url, timeout=10) as response:
             workers = json.load(response).get("sessions", [])
         log(
             f"接管成功：3000 工作目录={PROJECT}；workspace revision={workspace.get('revision')}，"
