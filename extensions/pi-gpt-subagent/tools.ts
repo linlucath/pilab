@@ -6,7 +6,7 @@ import type { Static, TSchema } from "typebox";
 import { subagentToolUi, type SubagentToolUiMetadata } from "./tool-ui.ts";
 import { ToolRegistry } from "./registry.ts";
 import {
-  GPT_WAIT_TIMEOUT_SECONDS, rolePresetLabels, type GptRolePreset, type GptSessionManager,
+  rolePresetLabels, type GptRolePreset, type GptSessionManager,
   type ProgressEvent, type SessionInfo, type SessionStatus,
 } from "./sessions.ts";
 
@@ -52,15 +52,10 @@ const taskSchema = Type.Object({
 }, { additionalProperties: false });
 type DispatchTask = Static<typeof taskSchema>;
 const maxChars = Type.Optional(Type.Integer({ minimum: MIN_REPLY_MAX_CHARS, maximum: MAX_REPLY_MAX_CHARS }));
-const timeoutSeconds = Type.Optional(Type.Integer({
-  minimum: 1, maximum: GPT_WAIT_TIMEOUT_SECONDS,
-  description: "Optional hard deadline for this wait. Omit to wait indefinitely; an elapsed deadline returns an error, not a partial result for repeated polling.",
-}));
 const dispatchSchema = Type.Object({
   task: Type.Optional(taskSchema),
   tasks: Type.Optional(Type.Array(taskSchema, { minItems: 1, maxItems: 8 })),
   mode: Type.Optional(Type.Union([Type.Literal("async"), Type.Literal("sync")])),
-  timeoutSeconds,
   maxChars,
 }, { additionalProperties: false });
 type DispatchInput = Static<typeof dispatchSchema>;
@@ -86,14 +81,12 @@ const legacyCreateSchema = Type.Object({
   cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000 })),
   model: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
   wait: Type.Optional(Type.Boolean()),
-  timeoutSeconds,
   maxChars,
 }, { additionalProperties: false });
 const legacySendSchema = Type.Object({
   name: sessionName, message, rolePreset: Type.Optional(rolePreset),
   mode: Type.Optional(Type.Union([Type.Literal("steer"), Type.Literal("followUp"), Type.Literal("interrupt")])),
   wait: Type.Optional(Type.Boolean()),
-  timeoutSeconds,
   maxChars,
 }, { additionalProperties: false });
 const legacyBatchTaskSchema = Type.Object({
@@ -106,7 +99,6 @@ const legacyBatchTaskSchema = Type.Object({
 const legacyBatchSchema = Type.Object({
   tasks: Type.Array(legacyBatchTaskSchema, { minItems: 1, maxItems: 8 }),
   wait: Type.Optional(Type.Union([Type.Literal("none"), Type.Literal("any"), Type.Literal("all")])),
-  timeoutSeconds,
   maxChars,
 }, { additionalProperties: false });
 const legacyListSchema = Type.Object({}, { additionalProperties: false });
@@ -114,7 +106,6 @@ const legacyReadSchema = Type.Object({ name: sessionName, limit: Type.Optional(T
 const legacyWaitSchema = Type.Object({
   names: Type.Array(sessionName, { minItems: 1, maxItems: 8 }),
   mode: Type.Optional(Type.Union([Type.Literal("any"), Type.Literal("all")])),
-  timeoutSeconds,
   maxChars,
 }, { additionalProperties: false });
 const legacyLogsSchema = Type.Object({ name: sessionName, limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 5 })) }, { additionalProperties: false });
@@ -460,8 +451,7 @@ async function dispatch(input: DispatchInput, context: ToolContext, signal?: Abo
 
   // wait() installs its listeners synchronously before the sends can settle; startPromise
   // is a barrier so a very fast worker cannot race the synchronous handoff.
-  const waiting = manager.wait(ready.map((item) => item.name), input.timeoutSeconds === undefined ? undefined : input.timeoutSeconds * 1_000,
-    signal, context.waitMode ?? "all", startPromise);
+  const waiting = manager.wait(ready.map((item) => item.name), signal, context.waitMode ?? "all", startPromise);
   const [startedResults, waited] = await Promise.all([startPromise, waiting]);
   failures.push(...settledFailures(startedResults, ready.map((item) => item.name)));
   const reports = waited.sessions.map((session) => queryStatus(context, session.id, { maxChars: input.maxChars }));
@@ -496,8 +486,7 @@ async function legacyCreate(input: LegacyCreateInput, context: ToolContext) {
       cwd: input.cwd, model: await context.resolveModel(input.model),
     });
     if (input.wait) {
-      const waited = await context.manager.wait([session.name], input.timeoutSeconds === undefined ? undefined : input.timeoutSeconds * 1_000,
-        context.signal, "any");
+      const waited = await context.manager.wait([session.name], context.signal, "any");
       const current = waited.sessions[0] ?? session;
       return response({ ...conversationSummary(current), model: current.model });
     }
@@ -507,7 +496,7 @@ async function legacyCreate(input: LegacyCreateInput, context: ToolContext) {
     name: input.name, message: input.message, rolePreset: input.rolePreset,
     action: "create", cwd: input.cwd, model: input.model,
   };
-  const result = await dispatch({ task, mode: input.wait ? "sync" : "async", timeoutSeconds: input.timeoutSeconds, maxChars: input.maxChars },
+  const result = await dispatch({ task, mode: input.wait ? "sync" : "async", maxChars: input.maxChars },
     { ...context, waitMode: "any" }, context.signal);
   const details = asRecord(result.details);
   const session = context.manager.read(input.name, 0, 1).session;
@@ -518,7 +507,7 @@ async function legacySend(input: LegacySendInput, context: ToolContext) {
   context.manager.assertOwner(input.name, context.owner);
   const result = await dispatch({
     task: { name: input.name, message: input.message, rolePreset: input.rolePreset, action: "send", sendMode: input.mode ?? "steer" },
-    mode: input.wait ? "sync" : "async", timeoutSeconds: input.timeoutSeconds, maxChars: input.maxChars,
+    mode: input.wait ? "sync" : "async", maxChars: input.maxChars,
   }, { ...context, waitMode: "any" }, context.signal);
   const details = asRecord(result.details);
   if (input.wait) return response(details, result.content.map((part) => part.type === "text" ? part.text : "").join("\n"));
@@ -535,7 +524,7 @@ async function legacyBatch(input: LegacyBatchInput, context: ToolContext) {
       model: task.model, cwd: task.cwd, sendMode: task.mode,
     })),
     mode: wait === "none" ? "async" : "sync",
-    timeoutSeconds: input.timeoutSeconds, maxChars: input.maxChars,
+    maxChars: input.maxChars,
   }, { ...context, waitMode: wait === "any" ? "any" : "all" }, context.signal);
   const details = asRecord(result.details);
   if (wait === "none") return response({ ...details, wait }, result.content.map((part) => part.type === "text" ? part.text : "").join("\n"));
@@ -545,8 +534,7 @@ async function legacyBatch(input: LegacyBatchInput, context: ToolContext) {
 async function legacyWait(input: LegacyWaitInput, context: ToolContext) {
   for (const name of input.names) context.manager.assertOwner(name, context.owner);
   const waited = await context.manager.wait(
-    input.names, input.timeoutSeconds === undefined ? undefined : input.timeoutSeconds * 1_000,
-    context.signal, input.mode ?? "any",
+    input.names, context.signal, input.mode ?? "any",
   );
   const reports = waited.sessions.map((session) => queryStatus(context, session.id, { maxChars: input.maxChars }));
   const details = {
@@ -568,7 +556,7 @@ export function createSessionTools(
   registry
     .register<typeof dispatchSchema, AgentToolResult<unknown>>({
       name: "subagent_dispatch",
-      description: `Delegate one task or up to eight independent tasks. mode="async" (default) starts work in the background and returns stable tracking handles. mode="sync" quietly blocks until each current turn finishes, fails, needs input, or is cancelled; it has no default timeout. Omit timeoutSeconds to wait indefinitely; an explicitly reached deadline returns an error, not a partial result. Do not call wait or query repeatedly to monitor a synchronous dispatch. New task instructions receive the four-section Feynman handoff protocol. Use action=send to continue an existing worker.`,
+      description: `Delegate one task or up to eight independent tasks. mode="async" (default) starts work in the background and returns stable tracking handles. mode="sync" quietly blocks until each current turn finishes, fails, needs input, or is cancelled. Do not call wait or query repeatedly to monitor a synchronous dispatch. New task instructions receive the four-section Feynman handoff protocol. Use action=send to continue an existing worker.`,
       parameters: dispatchSchema,
       ui: subagentToolUi.subagent_dispatch,
       execute: (input, context) => dispatch(input, context, context.signal),
@@ -619,14 +607,14 @@ export function createSessionTools(
     ui: SubagentToolUiMetadata,
     execute: (input: Static<Parameters>, context: ToolContext) => Promise<AgentToolResult<unknown>>,
   ) => registry.register({ name, description, parameters, ui, defaultActive: false, execute });
-  addLegacy("gpt_session_create", "Create GPT conversation", "Legacy alias for subagent_dispatch; retained for saved transcripts and direct integrations. wait=true has no default timeout; an explicit timeout returns an error.", legacyCreateSchema, subagentToolUi.subagent_dispatch, legacyCreate);
-  addLegacy("gpt_session_send", "Message GPT conversation", "Legacy alias for subagent_dispatch action=send. wait=true blocks for the current turn with no default timeout; do not repeatedly call it to poll.", legacySendSchema, subagentToolUi.subagent_dispatch, legacySend);
-  addLegacy("gpt_session_batch", "Run GPT tasks in parallel", "Legacy alias for subagent_dispatch with tasks[]. Waiting has no default timeout; an explicit deadline returns an error.", legacyBatchSchema, subagentToolUi.subagent_dispatch, legacyBatch);
+  addLegacy("gpt_session_create", "Create GPT conversation", "Legacy alias for subagent_dispatch; retained for saved transcripts and direct integrations. wait=true blocks until the current worker turn finishes.", legacyCreateSchema, subagentToolUi.subagent_dispatch, legacyCreate);
+  addLegacy("gpt_session_send", "Message GPT conversation", "Legacy alias for subagent_dispatch action=send. wait=true blocks for the current turn; do not repeatedly call it to poll.", legacySendSchema, subagentToolUi.subagent_dispatch, legacySend);
+  addLegacy("gpt_session_batch", "Run GPT tasks in parallel", "Legacy alias for subagent_dispatch with tasks[].", legacyBatchSchema, subagentToolUi.subagent_dispatch, legacyBatch);
   addLegacy("gpt_session_list", "List GPT conversations", "Legacy alias for subagent_query action=list.", legacyListSchema, subagentToolUi.subagent_query,
     async (_input, context) => response(context.manager.list(context.owner).map(conversationSummary)));
   addLegacy("gpt_session_read", "Read GPT conversation", "Legacy alias for subagent_query action=status.", legacyReadSchema, subagentToolUi.subagent_query,
     async (input, context) => queryStatus(context, input.name, input));
-  addLegacy("gpt_session_wait", "Wait for GPT conversations", "Legacy blocking alias for subagent_dispatch mode=sync. Waits indefinitely by default; an explicit deadline returns an error. Do not call repeatedly to poll.", legacyWaitSchema, subagentToolUi.subagent_query, legacyWait);
+  addLegacy("gpt_session_wait", "Wait for GPT conversations", "Legacy blocking alias for subagent_dispatch mode=sync. Do not call repeatedly to poll.", legacyWaitSchema, subagentToolUi.subagent_query, legacyWait);
   addLegacy("gpt_session_logs", "Diagnose GPT conversation", "Legacy alias for subagent_query diagnostics.", legacyLogsSchema, subagentToolUi.subagent_query,
     async (input, context) => queryStatus(context, input.name, { diagnostics: true, limit: input.limit }));
   addLegacy("gpt_session_interrupt", "Interrupt GPT conversation", "Legacy alias for subagent_control action=abort.", legacyNameSchema, subagentToolUi.subagent_control,

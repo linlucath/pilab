@@ -334,6 +334,20 @@ test("provider failures are surfaced as errors, not a successful empty output", 
     await mock.close();
   }
 });
+test("model preparation strips retired timeout fields from persisted subagent calls", () => {
+  const assistant: Message = {
+    id: "old-subagent-calls", role: "assistant", content: "", enabled: true,
+    toolCalls: [
+      { id: "dispatch", name: "subagent_dispatch", arguments: JSON.stringify({ task: { name: "worker", message: "work" }, mode: "sync", timeoutSeconds: 60 }) },
+      { id: "wait", name: "gpt_session_wait", arguments: JSON.stringify({ names: ["worker"], timeoutSeconds: 30 }) },
+    ],
+  };
+  const prepared = prepareMessagesForModel([assistant])[0];
+  for (const call of prepared.toolCalls ?? [])
+    assert.equal("timeoutSeconds" in JSON.parse(call.arguments), false);
+  assert.equal(JSON.parse(assistant.toolCalls![0].arguments).timeoutSeconds, 60, "stored transcript remains unchanged");
+});
+
 test("model context dehydrates marked tool results while retaining valid call/result pairing", () => {
   const summary = "Reviewed the release notes and identified three actionable changes.";
   const assistant: Message = {

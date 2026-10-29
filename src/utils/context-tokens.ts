@@ -24,7 +24,7 @@ function estimateCompactedMessageTokens(message: Message, summary: string, inclu
   let tokens = includeSummary ? 4 + estimateTextTokens(`[已脱水归档] ${summary}`) : 0;
   if (message.role === "assistant") {
     for (const call of message.toolCalls || []) {
-      const args = ["subagent_dispatch", "gpt_session_create", "gpt_session_send", "gpt_session_batch"].includes(call.name)
+      const args = ["subagent_dispatch", "gpt_session_create", "gpt_session_send", "gpt_session_batch", "gpt_session_wait"].includes(call.name)
         ? compactSubagentDispatchArguments(call.arguments, summary)
         : call.arguments;
       tokens += 4 + estimateTextTokens(`${call.name} ${call.id} ${args}`);

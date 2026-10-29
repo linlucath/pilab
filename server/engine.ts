@@ -22,7 +22,7 @@ import {
   type Message,
   type Settings,
 } from "../shared/schema";
-import { compactSubagentDispatchArguments } from "../shared/subagent-tools";
+import { compactSubagentDispatchArguments, stripRetiredSubagentTimeoutArgument } from "../shared/subagent-tools";
 import { piRuntime, resolvePiModel } from "./pi-subscription";
 import { randomUUID } from "node:crypto";
 import { agentTools } from "./tools";
@@ -35,6 +35,16 @@ import {
   preparePiMessageForModel,
   validateToolHistory,
 } from "./transcript";
+
+const subagentDispatchToolNames = new Set([
+  "subagent_dispatch", "gpt_session_create", "gpt_session_send", "gpt_session_batch", "gpt_session_wait",
+]);
+
+function stripRetiredTimeoutFromToolCall<T extends { name: string; arguments: string }>(call: T): T {
+  if (!subagentDispatchToolNames.has(call.name)) return call;
+  const arguments_ = stripRetiredSubagentTimeoutArgument(call.arguments);
+  return arguments_ === call.arguments ? call : { ...call, arguments: arguments_ };
+}
 
 export type Emit = (event: Record<string, unknown>) => void;
 function inspectorPayload(value: unknown): unknown {
@@ -59,7 +69,12 @@ export function prepareMessagesForModel(messages: Message[]): Message[] {
   let previousSummary = "";
   return messages.map((message) => {
     const compacted = message.compactedByModel === true || !!message.modelSummary?.trim();
-    if (!compacted) { previousSummary = ""; return message; }
+    if (!compacted) {
+      previousSummary = "";
+      if (message.role !== "assistant") return message;
+      const toolCalls = (message.toolCalls || []).map(stripRetiredTimeoutFromToolCall);
+      return toolCalls.some((call, index) => call !== message.toolCalls?.[index]) ? { ...message, toolCalls } : message;
+    }
     const summary = message.modelSummary?.trim() || "工具调用已归档。";
     if (message.role === "tool") {
       const includeSummary = summary !== previousSummary;
@@ -74,7 +89,7 @@ export function prepareMessagesForModel(messages: Message[]): Message[] {
     const includeSummary = !(message.toolCalls?.length) && summary !== previousSummary;
     if (includeSummary) previousSummary = summary;
     const toolCalls = (message.toolCalls || []).map((call) => {
-      if (!["subagent_dispatch", "gpt_session_create", "gpt_session_send", "gpt_session_batch"].includes(call.name)) return call;
+      if (!subagentDispatchToolNames.has(call.name)) return call;
       const arguments_ = compactSubagentDispatchArguments(call.arguments, summary);
       return arguments_ === call.arguments ? call : { ...call, arguments: arguments_ };
     });
@@ -110,15 +125,27 @@ function prepareAgentContext(messages: AgentMessage[], sources: Message[]): Agen
       return { ...value, content: [{ type: "text", text: includeSummary ? `[已脱水归档] ${summary}` : "[已脱水归档] 结果已并入同组摘要。" }], details: undefined } as AgentMessage;
     }
     if (value.role === "assistant" && Array.isArray(value.content)) {
-      const summaries: string[] = [...new Set<string>(value.content.flatMap((block: any) => block?.type === "toolCall" && compactedCalls.has(wireId(block.id)) ? [compactedCalls.get(wireId(block.id))!] : []))];
-      if (!summaries.length) { previousSummary = ""; return message; }
+      const sanitizedContent = value.content.map((block: any) => {
+        if (block?.type !== "toolCall" || !subagentDispatchToolNames.has(block.name)) return block;
+        const source = JSON.stringify(block.arguments);
+        if (typeof source !== "string") return block;
+        const sanitized = stripRetiredSubagentTimeoutArgument(source);
+        if (sanitized === source) return block;
+        try { return { ...block, arguments: JSON.parse(sanitized) }; } catch { return block; }
+      });
+      const summaries: string[] = [...new Set<string>(sanitizedContent.flatMap((block: any) => block?.type === "toolCall" && compactedCalls.has(wireId(block.id)) ? [compactedCalls.get(wireId(block.id))!] : []))];
+      if (!summaries.length) {
+        previousSummary = "";
+        return sanitizedContent.some((block: any, index: number) => block !== value.content[index]) ? { ...value, content: sanitizedContent } as AgentMessage : message;
+      }
       const summary = summaries[0];
-      const content = value.content.flatMap((block: any) => {
+      const content = sanitizedContent.flatMap((block: any) => {
         if (block?.type === "thinking" || block?.type === "text") return [];
         if (block?.type !== "toolCall" || !compactedCalls.has(wireId(block.id))) return [block];
-        if (!["subagent_dispatch", "gpt_session_create", "gpt_session_send", "gpt_session_batch"].includes(block.name)) return [block];
-        const compacted = compactSubagentDispatchArguments(JSON.stringify(block.arguments), summary);
-        if (compacted === JSON.stringify(block.arguments)) return [block];
+        if (!subagentDispatchToolNames.has(block.name)) return [block];
+        const source = JSON.stringify(block.arguments);
+        const compacted = compactSubagentDispatchArguments(source, summary);
+        if (compacted === source) return [block];
         try { return [{ ...block, arguments: JSON.parse(compacted) }]; } catch { return [block]; }
       });
       return { ...value, content } as AgentMessage;

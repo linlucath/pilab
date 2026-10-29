@@ -8,6 +8,7 @@ import { ToolRegistry } from "../extensions/pi-gpt-subagent/registry";
 import { subagentToolUi } from "../extensions/pi-gpt-subagent/tool-ui";
 import { GptSessionManager } from "../extensions/pi-gpt-subagent/sessions";
 import { createSessionTools, type SessionTool } from "../extensions/pi-gpt-subagent/tools";
+import { compactSubagentDispatchArguments } from "../shared/subagent-tools";
 import type { RpcTransport } from "../extensions/pi-gpt-subagent/rpc";
 
 const model = "subagent-tool-fixture";
@@ -73,6 +74,13 @@ function fixture(root: string) {
   return { manager, tools };
 }
 
+test("historical dispatch arguments discard the retired timeout parameter", () => {
+  const compacted = compactSubagentDispatchArguments(JSON.stringify({
+    task: { name: "worker", message: "finish the task" }, mode: "sync", timeoutSeconds: 90,
+  }), "task summary");
+  assert.equal("timeoutSeconds" in JSON.parse(compacted), false);
+});
+
 test("ToolRegistry uses one TypeBox schema for declaration, inferred handler input, and runtime validation", async () => {
   const schema = Type.Object({ count: Type.Integer({ minimum: 1 }) }, { additionalProperties: false });
   const registry = new ToolRegistry<{ offset: number }>().register({
@@ -100,8 +108,13 @@ test("the model surface is exactly three active native tools; legacy names remai
     assert.ok(findTool(tools, "gpt_session_send"), "saved transcripts/integrations retain a direct compatibility alias");
     assert.equal(findTool(tools, "gpt_session_send").defaultActive, false);
     assert.equal(typeof findTool(tools, "subagent_dispatch").parameters, "object");
-    assert.match(findTool(tools, "subagent_dispatch").description, /no default timeout/i);
     assert.match(findTool(tools, "subagent_dispatch").description, /Do not call wait or query repeatedly/i);
+    const parameters = findTool(tools, "subagent_dispatch").parameters as { properties: Record<string, unknown> };
+    assert.equal(Object.hasOwn(parameters.properties, "timeoutSeconds"), false);
+    for (const alias of ["gpt_session_create", "gpt_session_send", "gpt_session_batch", "gpt_session_wait"]) {
+      const aliasParameters = findTool(tools, alias).parameters as { properties: Record<string, unknown> };
+      assert.equal(Object.hasOwn(aliasParameters.properties, "timeoutSeconds"), false, `${alias} must not expose a timeout`);
+    }
     assert.equal(subagentToolUi.subagent_dispatch.summarizeInput({ task: { name: "scout-a" } }), "派发工兵「scout-a」任务");
     assert.match(subagentToolUi.subagent_dispatch.summarizeResult({ mode: "async", started: [{}] }), /后台派发/);
     assert.equal(manager.list(owner).length, 0);
@@ -150,7 +163,7 @@ test("dispatch supports background batches and synchronous Feynman handoff; quer
   }
 });
 
-test("synchronous dispatch quietly waits for its current worker turn with no default deadline", async () => {
+test("synchronous dispatch quietly waits for its current worker turn without a timeout parameter", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "subagent-sync-wait-"));
   let release!: () => void;
   let promptStarted = false;
@@ -176,12 +189,6 @@ test("synchronous dispatch quietly waits for its current worker turn with no def
       }, async reply() {}, async stop() {},
     }),
   });
-  const originalWait = manager.wait.bind(manager);
-  let observedTimeout: number | undefined = 0;
-  manager.wait = (async (...args: Parameters<typeof manager.wait>) => {
-    observedTimeout = args[1];
-    return originalWait(...args);
-  }) as typeof manager.wait;
   try {
     const dispatch = findTool(createSessionTools(async () => ({ manager, resolveModel: () => model }), undefined, owner), "subagent_dispatch");
     let settled = false;
@@ -191,7 +198,6 @@ test("synchronous dispatch quietly waits for its current worker turn with no def
     await until(() => promptStarted && manager.read("quiet-worker").session.status === "running");
     await new Promise((resolve) => setTimeout(resolve, 30));
     assert.equal(settled, false, "sync dispatch must remain blocked until the worker turn finishes");
-    assert.equal(observedTimeout, undefined, "omitting timeoutSeconds must pass no wait deadline");
     assert.equal(manager.hasActiveWaiter("quiet-worker"), true);
     assert.equal(notices, 0, "a synchronous handoff must not queue a duplicate parent notification");
     release();
@@ -233,6 +239,10 @@ test("query exposes bounded failure diagnostics and control handles respond, abo
 
     const invalid = await findTool(tools, "subagent_dispatch").execute("invalid", { task: { name: "bad", message: "invalid" }, unexpected: true });
     assert.equal(invalid.isError, true);
+    const removedTimeout = await findTool(tools, "subagent_dispatch").execute("removed-timeout", {
+      task: { name: "bad-timeout", message: "invalid" }, timeoutSeconds: 1,
+    });
+    assert.equal(removedTimeout.isError, true, "removed timeout arguments must be rejected by schema validation");
   } finally {
     await manager.shutdown();
     await rm(root, { recursive: true, force: true });
