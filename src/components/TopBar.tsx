@@ -1,73 +1,22 @@
-import { useRef } from "react";
-import { Archive, BookOpen, Bug, Check, ChevronDown, Download, Moon, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Sparkles, Sun, Upload, Wrench } from "lucide-react";
-import type { PiLiveSession } from "../../shared/pi-sync";
+import { PanelLeftClose, PanelLeftOpen, Sparkles } from "lucide-react";
 import type { Session } from "../workspace-store";
 
-type DebugPanel = "request" | "history" | "diagnostics";
 type Props = {
-  session: Session; saveState: "saved" | "saving" | "error"; onDebugView: (view: DebugPanel) => void;
-  sidebarCollapsed: boolean; onToggleSidebar: () => void; theme: "light" | "dark"; onTheme: () => void;
-  compactTools: boolean; onCompactTools: () => void;
-  piSessions: PiLiveSession[]; followPi: boolean; onFollowPi: (value: boolean) => void;
-  syncError: string; onSelectPi: (id: string) => void; onApplyPi: () => void; onDiscardPi: () => void; onCancelPending: () => void;
-  onTitle: (value: string) => void; onExport: () => void; onImport: (file?: File) => void;
-  onFork: () => void; forkDisabled?: boolean;
-  directoryOpen?: boolean; onDirectoryToggle?: () => void;
-  archiveableToolGroups?: number; onArchiveOldTools?: () => void;
+  session: Session;
+  sidebarCollapsed: boolean;
+  onToggleSidebar: () => void;
+  onTitle: (value: string) => void;
 };
 
-export function TopBar(props: Props) {
-  const debugMenu = useRef<HTMLDetailsElement>(null);
-  const sessionDataMenu = useRef<HTMLDetailsElement>(null);
-  const importInput = useRef<HTMLInputElement>(null);
-  const currentPi = props.piSessions.find((entry) => entry.id === props.session.piSync?.id);
-  const onlineCount = props.piSessions.filter((entry) => entry.online).length;
-  const saveLabel = props.saveState === "saving" ? "保存中" : props.saveState === "error" ? "保存失败" : "已保存";
-  const openDebug = (view: DebugPanel) => {
-    props.onDebugView(view);
-    debugMenu.current?.removeAttribute("open");
-  };
+export function TopBar({ session, sidebarCollapsed, onToggleSidebar, onTitle }: Props) {
   return <header className="topbar">
     <div className="topbar-leading">
-      <button className="icon-button sidebar-top-toggle sidebar-mobile-toggle" onClick={props.onToggleSidebar} aria-label={props.sidebarCollapsed ? "展开会话栏 / 展开侧栏" : "收起会话栏 / 收起侧栏"} title={props.sidebarCollapsed ? "展开会话栏" : "收起会话栏"}>{props.sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button>
-      <div className="title-line"><Sparkles size={16} /><input aria-label="会话标题" value={props.session.title} maxLength={200} onChange={(event) => props.onTitle(event.target.value)} /></div>
-      <span className={`save-state ${props.saveState}`}><span />{saveLabel}</span>
-    </div>
-    <div className="topbar-trailing">
-      <button type="button" className={`topbar-directory-button ${props.directoryOpen ? "active" : ""}`} aria-label="目录与搜索" aria-expanded={!!props.directoryOpen} title="打开对话目录与搜索 · ⌘F / Ctrl+F" onClick={props.onDirectoryToggle}><BookOpen size={14} /><span>目录</span></button>
-      {(props.archiveableToolGroups || 0) > 0 && <button type="button" className="topbar-archive-button" disabled={props.forkDisabled} onClick={props.onArchiveOldTools} title={`精简 ${props.archiveableToolGroups} 个较旧的工具组`} aria-label={`精简 ${props.archiveableToolGroups} 个较旧的工具组`}><Archive size={14} /><span>{props.archiveableToolGroups}</span></button>}
-      <button className={`tool-fold-button ${props.compactTools ? "active" : ""}`} onClick={props.onCompactTools} title={props.compactTools ? "展开工具过程" : "收起工具过程"} aria-label={props.compactTools ? "展开工具" : "收起工具"}><Wrench size={15} /><span>{props.compactTools ? "展开工具" : "收起工具"}</span></button>
-      <button className="fork-topbar-button" disabled={props.forkDisabled} onClick={props.onFork} aria-label="创建提纯分身" title="创建一个携带提纯记忆的新会话分身"><Sparkles size={14} /><span>提纯分身</span></button>
-      <details className="pi-sync-menu">
-        <summary className={`pi-sync-pill ${currentPi?.online ? "online" : ""}`} aria-label="Pi 同步" title={currentPi ? `${currentPi.name} · ${currentPi.online ? "在线" : "离线"}` : "Pi 同步"}><span className="pi-status-dot" /><span>Pi 同步</span><ChevronDown size={14} /></summary>
-        <div className="pi-sync-popover">
-          <div className="popover-heading"><strong>Pi CLI 同步</strong><small>{onlineCount} 个在线</small></div>
-          <select aria-label="选择 Pi CLI 会话" value={props.session.piSync?.id || ""} onChange={(event) => event.target.value && props.onSelectPi(event.target.value)}><option value="">选择 Pi 会话…</option>{props.piSessions.map((item) => <option key={item.id} value={item.id}>{item.online ? "●" : "○"} {item.name} · {item.cwd.split(/[\\/]/).at(-1)}</option>)}</select>
-          <label className="follow-toggle"><input type="checkbox" checked={props.followPi} onChange={(event) => props.onFollowPi(event.target.checked)} />跟随最新活跃会话</label>
-          {props.syncError && <p className="inline-error">{props.syncError}</p>}
-          {props.session.piSync && <>
-            <div className="sync-status-copy">{props.session.piSync.pending ? "等待 Pi 确认应用…" : props.session.piSync.dirty ? "本地消息有修改，尚未应用到 Pi" : currentPi?.online ? currentPi.busy ? "Pi 正在执行" : "实时同步中" : "Pi 会话离线"}</div>
-            {props.session.piSync.pending && <button className="link-button" onClick={props.onCancelPending}>保留草稿并解除等待</button>}
-            {props.session.piSync.dirty && <div className="sync-actions"><button onClick={props.onDiscardPi}>放弃修改</button><button className="solid-small" disabled={!currentPi?.online || currentPi.busy || !!props.session.piSync.pending} onClick={props.onApplyPi}><Check size={13} />应用到 Pi</button></div>}
-          </>}
-          <div className="popover-footnote">选择会话可导入或继续同步其上下文</div>
-        </div>
-      </details>
-      <details className="debug-menu" ref={debugMenu}>
-        <summary className="icon-button" aria-label="打开调试工具" title="调试工具"><Bug size={16} /></summary>
-        <div className="debug-popover" aria-label="调试工具">
-          <strong>调试工具</strong>
-          <button onClick={() => openDebug("request")}>请求检查</button>
-          <button onClick={() => openDebug("history")}>运行记录</button>
-          <button onClick={() => openDebug("diagnostics")}>诊断日志</button>
-        </div>
-      </details>
-      <details className="session-data-menu" ref={sessionDataMenu}>
-        <summary className="icon-button" aria-label="会话导入导出" title="会话导入导出"><MoreHorizontal size={17} /></summary>
-        <div className="session-data-popover"><button onClick={() => { sessionDataMenu.current?.removeAttribute("open"); props.onExport(); }}><Download size={14} />导出当前会话</button><button onClick={() => { sessionDataMenu.current?.removeAttribute("open"); importInput.current?.click(); }}><Upload size={14} />导入会话 JSON</button></div>
-        <input ref={importInput} type="file" accept=".json,application/json" hidden onChange={(event) => { props.onImport(event.target.files?.[0]); event.currentTarget.value = ""; }} />
-      </details>
-      <button className="icon-button theme-button" aria-label={props.theme === "light" ? "切换深色模式" : "切换浅色模式"} title={props.theme === "light" ? "切换深色模式" : "切换浅色模式"} onClick={props.onTheme}>{props.theme === "light" ? <Moon size={17} /> : <Sun size={17} />}</button>
+      <button className="icon-button sidebar-top-toggle sidebar-mobile-toggle" onClick={onToggleSidebar}
+        aria-label={sidebarCollapsed ? "展开会话栏 / 展开侧栏" : "收起会话栏 / 收起侧栏"}
+        title={sidebarCollapsed ? "展开会话栏" : "收起会话栏"}>
+        {sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+      </button>
+      <div className="title-line"><Sparkles size={16} /><input aria-label="会话标题" value={session.title} maxLength={200} onChange={(event) => onTitle(event.target.value)} /></div>
     </div>
   </header>;
 }

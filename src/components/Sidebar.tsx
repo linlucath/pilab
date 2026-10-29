@@ -123,8 +123,8 @@ export function Sidebar({ sessions, folders, rootSessionIds, active, collapsed, 
       </button>
     </div>
     <div className="sidebar-create-row">
-      <button className="new-conversation" onClick={onCreate} title="新建对话 (⌘N)" aria-label="新建对话">
-        <Plus size={17} />{!collapsed && <><span>新建对话</span><kbd>⌘N</kbd></>}
+      <button className="new-conversation" onClick={onCreate} title="新建对话" aria-label="新建对话">
+        <Plus size={17} />{!collapsed && <span>新建对话</span>}
       </button>
       <button className="icon-button new-folder-button" onClick={() => { setSearch(""); onCreateFolder("新建文件夹"); }} title="新建文件夹" aria-label="新建文件夹"><FolderPlus size={17} /></button>
     </div>
@@ -155,6 +155,5 @@ export function Sidebar({ sessions, folders, rootSessionIds, active, collapsed, 
       })}
       {!hasMatches && <div className="sidebar-empty">{collapsed ? "·" : "没有匹配的会话"}</div>}
     </div>
-    {!collapsed && <footer className="sidebar-footer"><span className="live-dot" />本地工作区<span className="footer-spacer" />自动保存</footer>}
   </aside>;
 }

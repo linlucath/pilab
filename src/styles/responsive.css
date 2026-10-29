@@ -1,15 +1,11 @@
 @media (max-width: 1280px) {
   :root { --sidebar-width: 236px; }
   .topbar { gap: 12px; padding: 0 16px; }
-  .topbar-leading, .topbar-trailing { gap: 8px; }
-  .tool-fold-button span { display: none; }
+  .topbar-leading { gap: 8px; }
   .stream-inner { padding-right: 30px; padding-left: 30px; }
 }
 @media (max-width: 1060px) {
   :root { --sidebar-width: 206px; }
-  .save-state { font-size: 0; }
-  .fork-topbar-button span { display: none; }
-  .fork-topbar-button { width: 30px; justify-content: center; padding: 0; }
   .sidebar-create-row .new-folder-button { width: 34px; height: 34px; flex-basis: 34px; padding: 0; }
   .topbar { gap: 8px; padding: 0 12px; }
   .stream-inner { padding-right: 22px; padding-left: 22px; }
@@ -17,49 +13,34 @@
 @media (max-width: 860px) {
   :root { --sidebar-width: 68px; --topbar-height: 62px; }
   .sidebar { width: 68px; min-width: 68px; align-items: center; padding: 15px 8px; }
-  .sidebar-brand-row { justify-content: center; padding: 0; }.sidebar-brand-row > strong, .sidebar-collapse, .new-conversation span, .session-search, .session-copy, .session-row-actions, .sidebar-folder-actions, .sidebar-footer { display: none; }
+  .sidebar-brand-row { justify-content: center; padding: 0; }.sidebar-brand-row > strong, .sidebar-collapse, .new-conversation span, .session-search, .session-copy, .session-row-actions, .sidebar-folder-actions { display: none; }
   .sidebar-mobile-toggle { display: grid; }
   .sidebar:not(.is-collapsed) .session-initial { display: grid; }
   .sidebar-create-row { flex-direction: column; gap: 6px; }.new-conversation { width: 34px; height: 34px; flex: 0 0 34px; justify-content: center; padding: 0; }.sidebar-create-row .new-folder-button { width: 34px; height: 34px; flex-basis: 34px; }
   .session-list { width: 100%; margin: 0; padding: 0; }.session-row { justify-content: center; }.session-main { flex: 0 0 auto; padding: 6px; }.session-initial { width: 34px; height: 34px; }
   .folder-children { display: none; }.folder-heading { justify-content: center; }.folder-toggle { width: 34px; min-width: 34px; height: 34px; min-height: 34px; flex: 0 0 34px; justify-content: center; padding: 0; }.folder-toggle > svg:first-child { display: none; }.folder-toggle > svg:nth-child(2) { width: 18px; height: 18px; }.folder-name, .folder-count { display: none; }
   .topbar { height: var(--topbar-height); min-height: var(--topbar-height); flex-wrap: nowrap; gap: 7px; padding: 0 10px; }
-  .topbar-leading, .topbar-trailing { gap: 5px; }
-  .topbar-leading { flex: 1 1 auto; overflow: hidden; }
-  .topbar-trailing { flex: 0 0 auto; flex-wrap: nowrap; }
+  .topbar-leading { flex: 1 1 auto; gap: 5px; overflow: hidden; }
   .sidebar-top-toggle { display: inline-grid; }
   .title-line input { width: 125px; font-size: 11px; }
-  .save-state { display: none; }
-  .pi-sync-pill { gap: 5px; min-height: 29px; padding: 0 7px; font-size: 9px; }.pi-sync-pill > span:nth-child(2) { max-width: 80px; }
-  .tool-fold-button { min-height: 29px; padding: 0 7px; }
   .composer-bar { padding-right: 13px; padding-left: 13px; }
 }
 @media (max-width: 680px) {
   :root { --topbar-height: 54px; }
   .topbar { display: flex; height: var(--topbar-height); min-height: var(--topbar-height); flex-wrap: nowrap; gap: 4px; padding: 0 8px; }
   .topbar-leading { flex: 1 1 auto; grid-column: auto; grid-row: auto; gap: 4px; overflow: hidden; }
-  .topbar-trailing { flex: 0 0 auto; grid-column: auto; grid-row: auto; flex-wrap: nowrap; justify-content: flex-end; gap: 3px; }
   .sidebar-compact .sidebar { width: 0; min-width: 0; padding: 0; overflow: hidden; border-right: 0; pointer-events: none; }
   .title-line { gap: 3px; }.title-line input { width: min(28vw, 108px); padding: 3px; font-size: 10px; }
-  .topbar-directory-button span, .topbar-archive-button, .tool-fold-button span, .fork-topbar-button span, .pi-sync-pill > span:nth-child(2), .pi-sync-pill > svg { display: none; }
-  .topbar-directory-button, .tool-fold-button, .fork-topbar-button, .pi-sync-pill { width: 30px; min-width: 30px; justify-content: center; padding: 0; }
-  .pi-sync-pill { min-height: 30px; }
-  .pi-sync-popover { position: fixed; top: calc(var(--topbar-height) + 5px); right: 8px; width: min(310px, calc(100vw - 16px)); }
   .stream-inner { padding: 16px 12px 12px; }
   .message-actions { opacity: .85; }.message-actions button span { display: none; }.message-actions button { min-width: 24px; padding: 0 4px; }
   .composer-bar { padding: 9px 10px max(10px, env(safe-area-inset-bottom)); }.composer-meta > span { display: none; }.composer-input-row { min-height: 58px; padding: 7px; }.composer-input-row textarea { font-size: 11px; }.send-button, .add-only-button { min-height: 33px; padding: 0 8px; font-size: 9px; }.run-current { min-width: 125px; }
-  .scroll-view { padding: 16px 12px; }.inspector-toolbar { align-items: flex-start; flex-direction: column; }.inspector-actions { justify-content: flex-start; }
 }
 @media (max-width: 440px) {
   :root { --sidebar-width: 58px; }
   .sidebar { width: 58px; min-width: 58px; padding-right: 6px; padding-left: 6px; }
   .sidebar .new-conversation { width: 34px; height: 34px; flex-basis: 34px; }.sidebar-create-row .new-folder-button { width: 34px; height: 34px; flex-basis: 34px; }
-  .topbar-leading, .topbar-trailing { gap: 3px; }
-  .topbar-archive-button > span { display: none; }
+  .topbar-leading { gap: 3px; }
   .title-line > svg { display: none; }.title-line input { width: 108px; padding-left: 3px; font-size: 10px; }
-  .topbar-trailing .theme-button { width: 27px; }
-  .pi-sync-pill { width: 30px; min-width: 30px; overflow: hidden; padding: 0 7px; }.pi-sync-pill > span:nth-child(2), .pi-sync-pill > svg { display: none; }
-  .tool-fold-button { width: 27px; min-width: 27px; }
   .system-banner-head { gap: 7px; padding: 8px; }.system-banner-copy strong { font-size: 9px; }.system-banner-copy small { max-width: 170px; }
   .message-head { gap: 5px; padding-right: 7px; padding-left: 8px; }.message-actions { gap: 0; }.message-actions button { min-width: 22px; width: 22px; height: 24px; }.message-actions button:nth-child(2) { display: none; }
   .message-content { padding-right: 11px; padding-left: 11px; }.tool-group-desc { display: none; }.tool-state { font-size: 7px; }
@@ -88,36 +69,14 @@
   .question-directory-toggle, .archive-old-tools { min-height: 31px; padding: 0 6px; font-size: 8px; }
   .question-result-role { font-size: 7px; }
   .context-count { max-width: 58vw; font-size: 7px; }
-  .composer-shortcuts { font-size: 8px; }
 }
 @media (max-width: 680px) {
-  .stream-tools-row .fork-toolbar-button { min-height: 31px; flex: 1; justify-content: center; padding: 0 6px; font-size: 8px; }
   .background-task-bar { height: auto; max-height: none; min-height: 32px; align-items: flex-start; flex-direction: column; gap: 6px; padding: 7px 10px; }
   .background-task-bar > div { width: 100%; flex-wrap: wrap; }
   .worker-wake-banner { align-items: flex-start; flex-direction: column; }
   .worker-wake-banner > div { width: 100%; justify-content: flex-end; }
-  .session-fork-modal { max-height: 92vh; padding: 14px; overflow: auto; }
-  .session-fork-modal > footer { flex-wrap: wrap; }
-  .session-fork-modal > footer button { flex: 1 1 auto; justify-content: center; }
   .session-fork-created-card { align-items: flex-start; flex-direction: column; }
   .session-fork-created-card > button { width: 100%; }
-}
-@media (max-width: 680px) {
-  .diagnostics-view { gap: 8px; padding: 11px 9px; }
-  .diagnostics-header { align-items: flex-start; flex-direction: column; }
-  .diagnostics-actions { width: 100%; }
-  .diagnostics-actions button { flex: 1; justify-content: center; }
-  .diagnostics-filters { flex-wrap: wrap; }
-  .diagnostics-filters label { flex: 1; }
-  .diagnostics-filters label select { min-width: 0; flex: 1; }
-  .diagnostics-filters > input { flex-basis: 100%; order: 2; }
-  .diagnostics-filters > span { margin-left: auto; }
-  .diagnostic-entry > summary { grid-template-columns: minmax(0,1fr) auto; gap: 5px; }
-  .diagnostic-entry time { grid-column: 1; }
-  .diagnostic-entry strong { grid-column: 1; grid-row: 2; }
-  .diagnostic-entry .diagnostic-category { grid-column: 2; grid-row: 1; }
-  .diagnostic-entry > summary > small { grid-column: 2; grid-row: 2; }
-  .diagnostic-summary { grid-column: 1 / -1; grid-row: 3; }
 }
 @media (max-width: 680px) {
   .thread-tabs-bar { min-height: 38px; gap: 4px; padding: 4px 7px; }
