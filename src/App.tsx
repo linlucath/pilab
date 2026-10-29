@@ -33,6 +33,9 @@ type CompactedMessage = Message & { compactedByModel?: boolean; modelSummary?: s
 type WorkerWakeNotice = { sessionId: string; cwd: string; names: string[] };
 type WorkerReview = Pick<WorkerWakeNotice, "sessionId" | "cwd" | "names">;
 type ForkNotice = { sourceId: string; forkId: string; title: string };
+type SessionStreamView = { streamingId: string; thinking: string; toolActivity: ToolActivity | null };
+type RunControl = { sessionId: string; runId: string; lastSeq: number; shouldSubscribe: boolean; readerController?: AbortController; resume?: () => void };
+const emptyStreamView: SessionStreamView = { streamingId: "", thinking: "", toolActivity: null };
 const activeWorkerStatuses = new Set(["starting", "running", "waiting_input"]);
 const pretty = (value: unknown) => JSON.stringify(value, null, 2);
 
@@ -116,12 +119,11 @@ export default function App() {
   const [directoryOpen, setDirectoryOpen] = useState(false);
   const [archiveableToolGroupCount, setArchiveableToolGroupCount] = useState(0);
   const [archiveToolRequest, setArchiveToolRequest] = useState(0);
-  const [busy, setBusy] = useState(false);
-  const [runError, setRunError] = useState<{ sessionId: string; message: string } | null>(null);
+  const [runErrors, setRunErrors] = useState<Record<string, string>>({});
   const [scrollRequest, setScrollRequest] = useState(0);
-  const [toolActivity, setToolActivity] = useState<ToolActivity | null>(null);
-  const [streamingId, setStreamingId] = useState("");
-  const [streamingThinking, setStreamingThinking] = useState("");
+  const [streamViews, setStreamViews] = useState<Record<string, SessionStreamView>>({});
+  const [activeRuns, setActiveRuns] = useState<Map<string, string>>(() => new Map());
+  const [startingSessions, setStartingSessions] = useState<Set<string>>(() => new Set());
   const [runtimeCwd, setRuntimeCwd] = useState("");
   const [piConnection, setPiConnection] = useState<PiConnection | null>(null);
   const [piSessions, setPiSessions] = useState<PiLiveSession[]>([]);
@@ -135,10 +137,10 @@ export default function App() {
   const [syncError, setSyncError] = useState("");
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [selectedRun, setSelectedRun] = useState<string>();
-  const controller = useRef<AbortController | null>(null);
-  const runLockRef = useRef(false);
-  const runInFlightRef = runLockRef;
-  const runSessionRef = useRef<string | null>(null);
+  const activeRunsRef = useRef(activeRuns);
+  const startingSessionsRef = useRef(startingSessions);
+  const runControlsRef = useRef(new Map<string, RunControl>());
+  const busyForSessionRef = useRef<(sessionId: string) => boolean>(() => false);
   const piStreamOnline = useRef(false);
 
   const { workspace, setWorkspace, workspaceRef, ready, error: storageError, status: storageStatus } =
@@ -146,6 +148,30 @@ export default function App() {
   const session = workspace.sessions.find((item) => item.id === workspace.active) || workspace.sessions[0] || newSession(runtimeCwd);
   const currentApiKey = apiKeys[session.id] || "";
   const activeRun = session.runs.find((run) => run.id === selectedRun) || session.runs[0];
+  const busy = activeRuns.has(session.id) || startingSessions.has(session.id) || runControlsRef.current.has(session.id);
+  const streamView = streamViews[session.id] || emptyStreamView;
+  const streamingId = streamView.streamingId;
+  const streamingThinking = streamView.thinking;
+  const toolActivity = streamView.toolActivity;
+  activeRunsRef.current = activeRuns;
+  startingSessionsRef.current = startingSessions;
+  busyForSessionRef.current = (sessionId) => activeRunsRef.current.has(sessionId) || runControlsRef.current.has(sessionId) || startingSessionsRef.current.has(sessionId);
+  const setActiveRunForSession = (sessionId: string, runId: string | undefined) => {
+    const next = new Map(activeRunsRef.current);
+    if (runId) next.set(sessionId, runId); else next.delete(sessionId);
+    activeRunsRef.current = next; setActiveRuns(next);
+  };
+  const setSessionStarting = (sessionId: string, starting: boolean) => {
+    const next = new Set(startingSessionsRef.current);
+    if (starting) next.add(sessionId); else next.delete(sessionId);
+    startingSessionsRef.current = next; setStartingSessions(next);
+  };
+  const updateStreamView = (sessionId: string, update: (current: SessionStreamView) => SessionStreamView) =>
+    setStreamViews((current) => ({ ...current, [sessionId]: update(current[sessionId] || emptyStreamView) }));
+  const setSessionRunError = (sessionId: string, message?: string) => setRunErrors((current) => {
+    if (message) return { ...current, [sessionId]: message };
+    const next = { ...current }; delete next[sessionId]; return next;
+  });
   const enabledMessages = session.messages.filter((message) => message.enabled);
   const [metricsSnapshot, setMetricsSnapshot] = useState(() => ({ sessionId: session.id, messages: session.messages }));
   const metricMessages = metricsSnapshot.sessionId === session.id ? metricsSnapshot.messages : session.messages;
@@ -222,12 +248,47 @@ export default function App() {
   useEffect(() => {
     if (notice) { const timer = setTimeout(() => setNotice(""), 5000); return () => clearTimeout(timer); }
   }, [notice]);
-  useEffect(() => () => controller.current?.abort(), []);
   useEffect(() => {
+    const control = runControlsRef.current.get(session.id);
+    if (control) {
+      control.shouldSubscribe = true;
+      control.resume?.();
+      control.resume = undefined;
+    }
     setSelectedRun(undefined);
     setDebugPanel(null);
     setDirectoryOpen(false);
+    return () => {
+      const previous = runControlsRef.current.get(session.id);
+      if (!previous) return;
+      previous.shouldSubscribe = false;
+      previous.readerController?.abort();
+    };
   }, [session.id]);
+  useEffect(() => {
+    if (!ready) return;
+    let cancelled = false;
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const response = await fetch("/api/runs/active", { cache: "no-store" });
+        if (!response.ok) return;
+        const data = await response.json() as { runs?: { sessionId?: unknown; runId?: unknown }[] };
+        if (cancelled) return;
+        const next = new Map<string, string>();
+        for (const run of data.runs || [])
+          if (typeof run.sessionId === "string" && typeof run.runId === "string") next.set(run.sessionId, run.runId);
+        activeRunsRef.current = next;
+        setActiveRuns(next);
+      } catch { /* Keep the last known active-run snapshot until the service responds. */ }
+      finally { polling = false; }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 2_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [ready]);
   useEffect(() => {
     if (!debugPanel) return;
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setDebugPanel(null); };
@@ -254,7 +315,7 @@ export default function App() {
   }, [rightOpen]);
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.key !== "Enter" || runInFlightRef.current) return;
+      if (!(event.metaKey || event.ctrlKey) || event.key !== "Enter" || busyForSessionRef.current(workspaceRef.current.active)) return;
       const target = event.target;
       if (target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
       event.preventDefault();
@@ -272,7 +333,7 @@ export default function App() {
     ...(values.messages && current.piSync ? { piSync: { ...current.piSync, dirty: true } } : {}),
   }));
   const updateSetting = <K extends keyof Settings>(key: K, value: Settings[K]) => updateActive((current) => ({ ...current, settings: { ...current.settings, [key]: value } }));
-  const currentRunLocksActiveSession = () => runLockRef.current && runSessionRef.current === workspaceRef.current.active;
+  const currentRunLocksActiveSession = () => busyForSessionRef.current(workspaceRef.current.active);
   const updateMessage = (id: string, values: Partial<Message>) => {
     if (currentRunLocksActiveSession()) return;
     const active = workspaceRef.current.sessions.find((item) => item.id === workspaceRef.current.active);
@@ -371,12 +432,11 @@ export default function App() {
     const updated = nextWorkspace.sessions.find((item) => item.id === active.id);
     if (!updated) return false;
     if (!toolHistoryError(updated.messages.filter((message) => message.enabled)))
-      setRunError((current) => current?.sessionId === active.id && /工具调用|工具结果|Call ID/.test(current.message) ? null : current);
+      if (/工具调用|工具结果|Call ID/.test(runErrors[active.id] || "")) setSessionRunError(active.id);
     setScrollRequest((value) => value + 1);
     return true;
   };
   const createSession = (copy?: Session) => {
-    if (runLockRef.current) return;
     const currentSession = workspaceRef.current.sessions.find((item) => item.id === workspaceRef.current.active) || session;
     const next: Session = copy
       ? { ...structuredClone(copy), id: uid(), title: copy.title, runs: [] }
@@ -387,7 +447,7 @@ export default function App() {
   };
   useEffect(() => {
     const createShortcut = (event: KeyboardEvent) => {
-      if ((!event.metaKey && !event.ctrlKey) || event.altKey || event.key.toLowerCase() !== "n" || runLockRef.current) return;
+      if ((!event.metaKey && !event.ctrlKey) || event.altKey || event.key.toLowerCase() !== "n") return;
       event.preventDefault();
       createSession();
     };
@@ -396,7 +456,7 @@ export default function App() {
   }, [createSession]);
   const duplicateSession = (source: Session) => createSession({ ...source, title: `${source.title} · 副本` });
   const deleteSession = (id: string) => {
-    if (runLockRef.current) return;
+    if (busyForSessionRef.current(id)) return;
     const target = workspaceRef.current.sessions.find((item) => item.id === id);
     if (!target || !window.confirm(`删除「${target.title}」？此操作无法撤销。`)) return;
     setWorkspace((current) => {
@@ -413,7 +473,7 @@ export default function App() {
     });
   };
   const branchAt = (message: Message, index: number) => {
-    if (runLockRef.current) return;
+    if (busyForSessionRef.current(workspaceRef.current.active)) return;
     const currentSession = workspaceRef.current.sessions.find((item) => item.id === workspaceRef.current.active);
     if (!currentSession) return;
     const end = completeToolBranchEnd(currentSession.messages, index);
@@ -421,8 +481,9 @@ export default function App() {
     createSession({ ...currentSession, title: `${currentSession.title} · 分支`, messages: currentSession.messages.slice(0, end + 1) });
   };
   function createForkSession(title: string, memory: string, keepRecentTurns = 0, switchActive = true, sourceId?: string, allowWhileRunning = false, forkId?: string, forkMessages?: Message[]) {
-    if (runLockRef.current && !allowWhileRunning) return undefined;
-    const source = workspaceRef.current.sessions.find((item) => item.id === (sourceId || workspaceRef.current.active));
+    const sourceSessionId = sourceId || workspaceRef.current.active;
+    if (busyForSessionRef.current(sourceSessionId) && !allowWhileRunning) return undefined;
+    const source = workspaceRef.current.sessions.find((item) => item.id === sourceSessionId);
     if (!source || !memory.trim()) return undefined;
     const id = forkId || uid();
     const existing = workspaceRef.current.sessions.find((item) => item.id === id);
@@ -443,7 +504,6 @@ export default function App() {
     return next.id;
   }
   const selectSession = (id: string) => {
-    if (runLockRef.current) return;
     setWorkspace((current) => ({ ...current, active: id, followPi: false }));
   };
   const renameSession = (id: string, title: string) => setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === id ? { ...item, title } : item) }));
@@ -516,7 +576,6 @@ export default function App() {
     receivePiSession(source, activate, discard); return source;
   }
   async function selectPiSession(id: string) {
-    if (runLockRef.current) return;
     setWorkspace((current) => ({ ...current, followPi: false }));
     const identity = piSessions.find((item) => item.id === id)?.sessionId;
     const existing = workspace.sessions.find((item) => item.piSync && piSessionIdentity(item.piSync) === identity);
@@ -581,7 +640,7 @@ export default function App() {
     setNotice("已导出会话 JSON（不含 API Key）。");
   }
   async function importSession(file?: File) {
-    if (!file || runLockRef.current) return;
+    if (!file) return;
     try {
       if (file.size > 5_000_000) throw new Error("JSON 文件不能超过 5 MB");
       const parsed = fileSchema.parse(JSON.parse(await file.text()));
@@ -595,31 +654,33 @@ export default function App() {
   async function copyText(value: string) { try { await navigator.clipboard.writeText(value); setNotice("已复制到剪贴板。"); } catch { setNotice("无法访问剪贴板。"); } }
 
   async function run(messagesToRun?: Message[], targetSessionId?: string) {
-    if (!ready || runLockRef.current) return;
+    if (!ready) return;
     const currentWorkspace = workspaceRef.current;
-    const activeSession = currentWorkspace.sessions.find((item) => item.id === (targetSessionId || currentWorkspace.active));
+    const sessionId = targetSessionId || currentWorkspace.active;
+    if (busyForSessionRef.current(sessionId)) return;
+    const activeSession = currentWorkspace.sessions.find((item) => item.id === sessionId);
     if (!activeSession) return;
     if (activeSession.piSync) { setNotice("请先在 Pi CLI 同步菜单中应用或放弃本地修改。"); return; }
     const runMessages = messagesToRun || activeSession.messages;
     const activeMessages = runMessages.filter((message) => message.enabled);
     if (!activeMessages.length || !activeMessages.some((message) => message.content.trim() || message.toolCalls?.length || message.role === "tool")) {
       const message = "请先添加至少一条有内容且已启用的消息。";
-      setRunError({ sessionId: activeSession.id, message }); return;
+      setSessionRunError(activeSession.id, message); return;
     }
     const historyIssue = toolHistoryError(activeMessages);
-    if (historyIssue) { setRunError({ sessionId: activeSession.id, message: historyIssue }); return; }
-    const runId = uid(); const sessionId = activeSession.id; const started = Date.now();
-    const settings = { ...activeSession.settings, apiKey: apiKeys[activeSession.id] || "" };
+    if (historyIssue) { setSessionRunError(activeSession.id, historyIssue); return; }
+    const runId = uid(); const started = Date.now();
+    const settings = { ...activeSession.settings, apiKey: apiKeys[sessionId] || "" };
     const record: Run = { id: runId, at: started, status: "running", output: "", thinking: "", elapsed: 0, snapshot: { settings: { ...settings, apiKey: "" }, messages: structuredClone(runMessages) } };
-    runLockRef.current = true;
-    runSessionRef.current = sessionId;
-    setRunError(null);
+    setSessionStarting(sessionId, true);
+    setSessionRunError(sessionId);
     setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === sessionId ? { ...item, runs: [record, ...item.runs].slice(0, 30) } : item) }));
-    setSelectedRun(runId); setDebugPanel(null); setBusy(true);
-    if (currentWorkspace.active === sessionId) setScrollRequest((value) => value + 1);
-    setStreamingId(""); setStreamingThinking("");
-    const abort = new AbortController(); controller.current = abort;
-    let text = ""; let thought = ""; let currentMessageId = uid(); let terminalReceived = false; let errorEventReceived = false; let streamStarted = false;
+    if (currentWorkspace.active === sessionId) { setSelectedRun(runId); setDebugPanel(null); setScrollRequest((value) => value + 1); }
+    updateStreamView(sessionId, () => emptyStreamView);
+    let remoteRunId = "";
+    let runControl: RunControl | null = null;
+    let text = ""; let thought = ""; let currentMessageId = uid(); let terminalReceived = false; let errorEventReceived = false;
+    let finalGenerationStatus = "done";
     const textById = new Map<string, string>(); const trace: Message[] = []; const requests: unknown[] = [];
     const updateRun = (values: Partial<Run>) => setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === sessionId ? { ...item, runs: item.runs.map((run) => run.id === runId ? { ...run, ...values, elapsed: Date.now() - started } : run) } : item) }));
     const applyContextCompacted = (event: Record<string, unknown>) => {
@@ -659,7 +720,7 @@ export default function App() {
         messages: annotate(item.messages),
         runs: item.runs.map((run) => run.id !== runId ? run : { ...run, snapshot: { ...run.snapshot, messages: annotate(run.snapshot.messages) }, trace: run.trace ? annotate(run.trace) : run.trace }),
       }) }));
-      setNotice(`上下文已压缩：${targets.size} 条历史消息已标记为摘要记录。`);
+      if (workspaceRef.current.active === sessionId) setNotice(`上下文已压缩：${targets.size} 条历史消息已标记为摘要记录。`);
     };
     const upsert = (message: Message) => {
       const index = trace.findIndex((item) => item.id === message.id); if (index < 0) trace.push(message); else trace[index] = { ...trace[index], ...message };
@@ -685,11 +746,15 @@ export default function App() {
       }
     };
     try {
-      const response = await fetch("/api/run", { method: "POST", headers: { "Content-Type": "application/json", "X-PiLab-Run-Id": runId, "X-PiLab-Session-Id": sessionId }, body: pretty({ messages: runMessages, settings }), signal: abort.signal });
+      const response = await fetch("/api/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: pretty({ sessionId, settings, messages: runMessages }) });
       if (!response.ok) { const data = await response.json(); throw new Error(data.error || `HTTP ${response.status}`); }
-      if (!response.body) throw new Error("浏览器不支持流式响应");
-      streamStarted = true;
-      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+      const submitted = await response.json() as { runId?: unknown; sessionId?: unknown };
+      if (typeof submitted.runId !== "string" || submitted.sessionId !== sessionId) throw new Error("服务未返回有效的后台运行 ID。");
+      remoteRunId = submitted.runId;
+      runControl = { sessionId, runId: remoteRunId, lastSeq: 0, shouldSubscribe: workspaceRef.current.active === sessionId };
+      runControlsRef.current.set(sessionId, runControl);
+      setActiveRunForSession(sessionId, remoteRunId);
+      setSessionStarting(sessionId, false);
       const consumeEvent = (event: any) => {
         if (event.type === "heartbeat") return;
         if (event.type === "context_compacted") applyContextCompacted(event as Record<string, unknown>);
@@ -697,8 +762,9 @@ export default function App() {
           const fork = (event as { fork?: { id?: unknown; title?: unknown; forkSummary?: unknown; keepRecentTurns?: unknown; messages?: unknown } }).fork;
           const parsedMessages = messageSchema.array().max(500).safeParse(fork?.messages);
           if (fork && typeof fork.id === "string" && typeof fork.title === "string" && typeof fork.forkSummary === "string" && parsedMessages.success) {
-            const switchAfterCreate = forkSwitchSourceRef.current === sessionId;
-            if (switchAfterCreate) forkSwitchSourceRef.current = null;
+            const requestedSwitch = forkSwitchSourceRef.current === sessionId;
+            const switchAfterCreate = requestedSwitch && workspaceRef.current.active === sessionId;
+            if (requestedSwitch) forkSwitchSourceRef.current = null;
             createForkSession(fork.title, fork.forkSummary,
               typeof fork.keepRecentTurns === "number" ? fork.keepRecentTurns : 0,
               switchAfterCreate, sessionId, true, fork.id, parsedMessages.data);
@@ -707,62 +773,123 @@ export default function App() {
         if (event.type === "runtime") updateRun({ cwd: event.cwd as string | undefined });
         if (event.type === "request") { requests.push(event.payload); updateRun({ request: event.payload, requests: [...requests], turns: event.turn }); }
         if (event.type === "assistant_start") {
-          currentMessageId = event.id; setStreamingId(event.id); setStreamingThinking(""); textById.set(event.id, "");
+          currentMessageId = event.id; updateStreamView(sessionId, (current) => ({ ...current, streamingId: event.id, thinking: "" })); textById.set(event.id, "");
           upsert({ id: event.id, role: "assistant", content: "", enabled: true });
         }
         if (event.type === "text") { const id = event.id || currentMessageId; const next = (textById.get(id) || "") + event.delta; textById.set(id, next); upsert({ id, role: "assistant", content: next, enabled: true }); text = [...textById.values()].filter(Boolean).join("\n\n"); updateRun({ output: text }); }
-        if (event.type === "thinking") { thought += event.delta; setStreamingThinking((current) => current + event.delta); updateRun({ thinking: thought }); }
+        if (event.type === "thinking") { thought += event.delta; updateStreamView(sessionId, (current) => ({ ...current, thinking: current.thinking + event.delta })); updateRun({ thinking: thought }); }
         if (event.type === "assistant" || event.type === "message") {
           const message = event.message as Message;
           const failedEmpty = message.role === "assistant" && ["error", "aborted"].includes(message.providerState?.stopReason || "") && !message.content.trim() && !message.toolCalls?.length && !message.images?.length && !message.providerState?.thinking.some((item) => item.thinking);
           if (failedEmpty) removeEmpty(message.id); else upsert(message);
           if (message.role === "assistant") { textById.set(message.id, message.content); text = [...textById.values()].filter(Boolean).join("\n\n"); updateRun({ output: text }); }
         }
-        if (event.type === "tool_activity") setToolActivity(event as ToolActivity);
-        if (event.type === "tool_activity_end") setToolActivity(null);
-        if (event.type === "done") { terminalReceived = true; updateRun({ status: event.reason === "length" ? "length" : event.reason === "turn_limit" ? "turn_limit" : "done", usage: event.usage, turns: event.turns, output: text }); if (event.reason === "turn_limit") setNotice("已达到 Agent 最大轮数；可检查轨迹后继续。"); if (event.reason === "length") setNotice("已达到输出上限，回复未完成。"); }
-        if (event.type === "error") { terminalReceived = true; errorEventReceived = true; throw new Error(event.message); }
+        if (event.type === "tool_activity") updateStreamView(sessionId, (current) => ({ ...current, toolActivity: event as ToolActivity }));
+        if (event.type === "tool_activity_end") updateStreamView(sessionId, (current) => ({ ...current, toolActivity: null }));
+        if (event.type === "done") { finalGenerationStatus = event.reason === "length" ? "length" : event.reason === "turn_limit" ? "turn_limit" : "done"; updateRun({ status: finalGenerationStatus, usage: event.usage, turns: event.turns, output: text }); if (workspaceRef.current.active === sessionId && event.reason === "turn_limit") setNotice("已达到 Agent 最大轮数；可检查轨迹后继续。"); if (workspaceRef.current.active === sessionId && event.reason === "length") setNotice("已达到输出上限，回复未完成。"); }
+        if (event.type === "error") { errorEventReceived = true; const message = typeof event.message === "string" ? event.message : "模型运行发生错误。"; updateRun({ status: "error", error: message, output: text }); setSessionRunError(sessionId, message); }
+        if (event.type === "run_status") {
+          terminalReceived = true;
+          if (event.status === "completed") updateRun({ status: finalGenerationStatus, output: text });
+          else if (event.status === "aborted") { settlePendingToolCalls("执行已停止，未收到该工具的完整结果。操作可能已经部分完成，请检查实际文件状态后再继续。"); updateRun({ status: "stopped", output: text }); setSessionRunError(sessionId); }
+          else if (event.status === "failed") { const message = typeof event.message === "string" ? event.message : "模型运行失败。"; updateRun({ status: "error", error: message, output: text }); if (!errorEventReceived) setSessionRunError(sessionId, message); }
+          if (runControl) { runControlsRef.current.delete(sessionId); setActiveRunForSession(sessionId, undefined); }
+          updateStreamView(sessionId, () => emptyStreamView);
+          if (forkSwitchSourceRef.current === sessionId) forkSwitchSourceRef.current = null;
+        }
       };
-      while (true) {
-        const chunk = await reader.read(); buffer += decoder.decode(chunk.value, { stream: !chunk.done });
-        const lines = buffer.split("\n"); buffer = lines.pop() || "";
-        for (const line of lines) if (line.trim()) consumeEvent(JSON.parse(line));
-        if (chunk.done) break;
-      }
-      if (buffer.trim()) consumeEvent(JSON.parse(buffer));
-      if (!terminalReceived) {
-        settlePendingToolCalls("网络流意外中断 (Connection closed)。未收到该工具的完整结果，操作可能已经部分完成，请检查实际状态后再继续。");
-        const message = "⚠️ 回复流意外中断（未收到完成信号），已记录至诊断日志";
-        reportClientDiagnostic("stream_unexpected_eof", undefined, { runId, sessionId, inputMessageCount: activeMessages.length, receivedChars: text.length, startedAt: new Date(started).toISOString() });
-        updateRun({ status: "error", error: message, output: text });
-        setRunError({ sessionId, message });
+      const control = runControl;
+      if (!control) throw new Error("后台运行订阅未初始化。");
+      const waitUntilAttached = () => new Promise<void>((resolve) => {
+        if (control.shouldSubscribe) resolve(); else control.resume = resolve;
+      });
+      while (!terminalReceived) {
+        if (!control.shouldSubscribe) await waitUntilAttached();
+        if (terminalReceived) break;
+        const streamAbort = new AbortController();
+        control.readerController = streamAbort;
+        try {
+          const response = await fetch(`/api/runs/${encodeURIComponent(remoteRunId)}/stream?afterSeq=${control.lastSeq}`, { cache: "no-store", signal: streamAbort.signal });
+          if (!response.ok) {
+            const data = await response.json().catch(() => null) as { error?: string } | null;
+            const error = new Error(data?.error || `HTTP ${response.status}`) as Error & { status?: number };
+            error.status = response.status;
+            throw error;
+          }
+          if (!response.body) throw new Error("浏览器不支持流式响应");
+          const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+          const consumeLine = (line: string) => {
+            if (!line.trim()) return;
+            const envelope = JSON.parse(line) as { seq?: unknown; event?: unknown };
+            if (!Number.isSafeInteger(envelope.seq) || (envelope.seq as number) <= control.lastSeq || !envelope.event || typeof envelope.event !== "object") return;
+            control.lastSeq = envelope.seq as number;
+            consumeEvent(envelope.event);
+          };
+          while (true) {
+            const chunk = await reader.read(); buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
+            const lines = buffer.split("\n"); buffer = lines.pop() || "";
+            for (const line of lines) consumeLine(line);
+            if (chunk.done) break;
+          }
+          if (buffer.trim()) consumeLine(buffer);
+          if (!terminalReceived && !streamAbort.signal.aborted) {
+            const message = "⚠️ 回复流意外中断，正在尝试重新连接并追帧。";
+            reportClientDiagnostic("stream_unexpected_eof", undefined, { runId, sessionId, inputMessageCount: activeMessages.length, receivedChars: text.length, startedAt: new Date(started).toISOString() });
+            updateRun({ status: "error", error: message, output: text });
+            setSessionRunError(sessionId, message);
+            await new Promise((resolve) => setTimeout(resolve, 1_000));
+          }
+        } catch (error) {
+          if (streamAbort.signal.aborted) continue;
+          const status = (error as Error & { status?: number }).status;
+          const detail = error instanceof Error ? error.message : String(error);
+          if (status === 404) {
+            const message = `后台运行已不可用：${detail}`;
+            updateRun({ status: "error", error: message, output: text });
+            setSessionRunError(sessionId, message);
+            terminalReceived = true;
+          } else {
+            const message = `⚠️ 回复流连接失败，正在重试：${detail}`;
+            reportClientDiagnostic("run_stream_read_error", error, { runId, sessionId, receivedChars: text.length, startedAt: new Date(started).toISOString() });
+            updateRun({ status: "error", error: message, output: text });
+            setSessionRunError(sessionId, message);
+            await new Promise((resolve) => setTimeout(resolve, 1_000));
+          }
+        } finally {
+          if (control.readerController === streamAbort) control.readerController = undefined;
+        }
       }
     } catch (error) {
       removeEmpty(currentMessageId);
-      if (abort.signal.aborted) {
-        settlePendingToolCalls("执行已停止，未收到该工具的完整结果。操作可能已经部分完成，请检查实际文件状态后再继续。");
-        updateRun({ status: "stopped", output: text });
-      } else {
-        const detail = error instanceof Error ? error.message : String(error);
-        const networkFailure = /^(Failed to fetch|Load failed|NetworkError.*|The operation was aborted.*)$/i.test(detail);
-        const streamInterrupted = streamStarted && !errorEventReceived;
-        if (streamInterrupted)
-          settlePendingToolCalls("网络流意外中断 (Connection closed)。未收到该工具的完整结果，操作可能已经部分完成，请检查实际状态后再继续。");
-        const message = streamInterrupted
-          ? `⚠️ 回复流连接意外中断，已保留已生成内容：${detail}`
-          : networkFailure ? `网页连接本地服务失败：${detail}` : detail;
-        reportClientDiagnostic(errorEventReceived ? "run_stream_error_event" : streamStarted ? "run_stream_read_error" : "run_request_error", error, { runId, sessionId, inputMessageCount: activeMessages.length, receivedChars: text.length, startedAt: new Date(started).toISOString() });
-        updateRun({ status: "error", error: message, output: text });
-        setRunError({ sessionId, message });
-      }
+      const detail = error instanceof Error ? error.message : String(error);
+      reportClientDiagnostic("run_request_error", error, { runId, sessionId, inputMessageCount: activeMessages.length, receivedChars: text.length, startedAt: new Date(started).toISOString() });
+      updateRun({ status: "error", error: detail, output: text });
+      setSessionRunError(sessionId, detail);
     } finally {
-      setBusy(false); setStreamingId(""); setToolActivity(null); controller.current = null;
-      runSessionRef.current = null; runLockRef.current = false;
+      setSessionStarting(sessionId, false);
+      if (runControl && runControlsRef.current.get(sessionId) === runControl) {
+        runControl.readerController?.abort();
+        runControlsRef.current.delete(sessionId);
+        setActiveRunForSession(sessionId, undefined);
+      }
+      updateStreamView(sessionId, () => emptyStreamView);
       if (forkSwitchSourceRef.current === sessionId) forkSwitchSourceRef.current = null;
     }
   }
+  async function abortRun() {
+    const sessionId = workspaceRef.current.active;
+    const runId = activeRunsRef.current.get(sessionId) || runControlsRef.current.get(sessionId)?.runId;
+    if (!runId) return;
+    try {
+      const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/abort`, { method: "POST" });
+      if (!response.ok) {
+        const data = await response.json().catch(() => null) as { error?: string } | null;
+        setNotice(data?.error || "无法停止该后台运行。");
+      }
+    } catch (error) { setNotice(`停止运行失败：${error instanceof Error ? error.message : String(error)}`); }
+  }
   const sendMessage = (content: string, role: Message["role"], shouldRun: boolean, targetSessionId?: string): boolean => {
-    if (runLockRef.current || !ready) return false;
+    if (busyForSessionRef.current(targetSessionId || workspaceRef.current.active) || !ready) return false;
     const activeId = targetSessionId || workspaceRef.current.active;
     const activeSession = workspaceRef.current.sessions.find((item) => item.id === activeId);
     if (!activeSession || activeSession.piSync) return false;
@@ -819,8 +946,8 @@ export default function App() {
       setNotice("该工兵属于 Pi 同步只读会话；请先应用或放弃同步修改，再审阅交卷。");
       return;
     }
-    if (runLockRef.current) {
-      setNotice("Gemini 正在运行；工兵交卷提醒已保留，运行结束后请再次点击审阅。");
+    if (busyForSessionRef.current(target.id)) {
+      setNotice("所属会话正在运行；工兵交卷提醒已保留，运行结束后请再次点击审阅。");
       return;
     }
     const prompt = `后台 GPT 工兵已交卷：${unique.map((name) => `「${name}」`).join("、")}。请使用 gpt_session_read 读取这些工兵的新回复，核对完成情况，给用户一份简洁、准确的中文汇报；如有失败、问题或待决策事项，请明确指出。不要重启或打断仍在运行的工兵。`;
@@ -850,15 +977,15 @@ export default function App() {
 
   if (!ready) return <div className="app-loading" role="status">{storageError || "正在打开本地工作区…"}{storageError && <button onClick={() => location.reload()}>重试</button>}</div>;
   return <div className={`app-shell ${sidebarCollapsed ? "sidebar-compact" : ""} ${rightOpen ? "right-visible" : ""}`}>
-    <Sidebar sessions={workspace.sessions} folders={workspace.folders} rootSessionIds={workspace.rootSessionIds} active={session.id} collapsed={sidebarCollapsed} disabled={busy || !!session.piSync?.pending} onToggle={() => setSidebarCollapsed((value) => !value)} onCreate={() => createSession()} onCreateFolder={createFolder} onSelect={selectSession} onRename={renameSession} onDuplicate={duplicateSession} onDelete={deleteSession} onRenameFolder={renameFolder} onDeleteFolder={deleteFolder} onToggleFolder={toggleFolder} onMoveSession={moveSession} />
+    <Sidebar sessions={workspace.sessions} folders={workspace.folders} rootSessionIds={workspace.rootSessionIds} active={session.id} collapsed={sidebarCollapsed} activeRuns={activeRuns} onToggle={() => setSidebarCollapsed((value) => !value)} onCreate={() => createSession()} onCreateFolder={createFolder} onSelect={selectSession} onRename={renameSession} onDuplicate={duplicateSession} onDelete={deleteSession} onRenameFolder={renameFolder} onDeleteFolder={deleteFolder} onToggleFolder={toggleFolder} onMoveSession={moveSession} />
     <main className="app-main">
       <TopBar session={session} saveState={storageStatus} onDebugView={(panel) => { setDebugPanel(panel); setDirectoryOpen(false); }} directoryOpen={directoryOpen} onDirectoryToggle={() => setDirectoryOpen((open) => !open)} archiveableToolGroups={archiveableToolGroupCount} onArchiveOldTools={() => setArchiveToolRequest((request) => request + 1)} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} theme={theme} onTheme={() => setTheme((value) => value === "light" ? "dark" : "light")} rightOpen={rightOpen} onRight={() => setRightOpen((value) => !value)} compactTools={compactTools} onCompactTools={() => setCompactTools((value) => !value)} piSessions={piSessions} followPi={workspace.followPi} onFollowPi={setFollowPi} syncError={syncError} onSelectPi={(id) => void selectPiSession(id)} onApplyPi={() => void applyToPi()} onDiscardPi={() => { if (session.piSync) void readPiSession(session.piSync.id, false, true).catch((error) => setSyncError(error.message)); }} onCancelPending={() => void cancelPiApply()} onTitle={(title) => patchSession({ title })} onWorkingDirectory={(workingDirectory) => updateSetting("workingDirectory", workingDirectory)} onFork={() => session.settings.toolMode === "agent" && !session.piSync ? requestSmartFork(`${session.title} · 提纯分身`, 0, true) : setForkModalOpen(true)} forkDisabled={busy} />
       <div className="workspace-body">
         {rightOpen && <button type="button" className="right-panel-backdrop" aria-label="关闭工作台遮罩" onClick={() => setRightOpen(false)} />}
         <section className="conversation-pane">
           <MessageStream sessionId={session.id} scrollRequest={scrollRequest} directoryOpen={directoryOpen} onDirectoryOpenChange={setDirectoryOpen} archiveRequest={archiveToolRequest} onArchiveableGroupsChange={reportArchiveableToolGroups} messages={session.messages} busy={busy} compactTools={compactTools} streamingId={streamingId} streamingThinking={streamingThinking} toolActivity={toolActivity} gptWorkers={visibleGptSessions} lineage={session.parentSessionId ? { parentSessionId: session.parentSessionId, parentSessionTitle: session.parentSessionTitle, forkSummary: session.forkSummary } : undefined} forkNotice={forkNotice?.sourceId === session.id ? { forkId: forkNotice.forkId, title: forkNotice.title } : undefined} onSwitchFork={selectSession} onJumpToSession={selectSession} onFork={() => setForkModalOpen(true)} onMessage={updateMessage} onCall={updateCall} onAdd={addMessage} onMove={moveMessage} onDelete={deleteMessage} onDeleteCall={deleteToolCall} onAddToolResult={addManualToolResult} onBranch={branchAt} onCopy={(text) => void copyText(text)} />
-          {runError?.sessionId === session.id && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>本次运行失败</strong><span>{runError.message}</span></div><button onClick={() => setRunError(null)} aria-label="关闭运行错误">关闭<X size={14} /></button></div>}
-          <ComposerBar busy={busy} blocked={!!session.piSync} toolName={toolActivity?.name} messageCount={session.messages.length} contextTokens={contextMetrics.context} savedPercent={contextMetrics.savedPercent} draft={composerText} onDraftChange={updateComposerText} backgroundWorkers={visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={workerWakeNotice} onDismissWake={() => dismissSessionWorkerWake(session.id)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={sendMessage} onRun={() => void run()} onStop={() => controller.current?.abort()} />
+          {runErrors[session.id] && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>本次运行失败</strong><span>{runErrors[session.id]}</span></div><button onClick={() => setSessionRunError(session.id)} aria-label="关闭运行错误">关闭<X size={14} /></button></div>}
+          <ComposerBar busy={busy} blocked={!!session.piSync} toolName={toolActivity?.name} messageCount={session.messages.length} contextTokens={contextMetrics.context} savedPercent={contextMetrics.savedPercent} draft={composerText} onDraftChange={updateComposerText} backgroundWorkers={visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={workerWakeNotice} onDismissWake={() => dismissSessionWorkerWake(session.id)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={sendMessage} onRun={() => void run()} onStop={() => void abortRun()} />
         </section>
         <RightPanel hidden={!rightOpen} onClose={() => setRightOpen(false)} session={session} busy={busy} runtimeCwd={runtimeCwd} onSessionsChange={reportGptSessions} apiKey={currentApiKey} models={piConnection?.models || []} piConnected={piConnection?.connected} piDefaultModel={piConnection?.defaultModel} activeRun={activeRun} onSetting={updateSetting} onNotice={setNotice} onApiKey={(key) => setApiKeys((current) => ({ ...current, [session.id]: key }))} onRefreshAuth={() => void refreshPiStatus()} onExport={exportSession} onImport={(file) => void importSession(file)} />
       </div>
@@ -868,7 +995,7 @@ export default function App() {
         <header><div><small>SECONDARY TOOLS</small><h2 id="debug-drawer-title">{debugPanel === "request" ? "请求检查" : debugPanel === "history" ? "运行记录" : "诊断日志"}</h2></div><button className="icon-button" aria-label="关闭调试面板" title="关闭" onClick={() => setDebugPanel(null)}><X size={17} /></button></header>
         <div className="debug-drawer-content">
           {debugPanel === "request" && <RequestInspector draft={inspectorDraft} activeRun={activeRun} onCopy={(text) => void copyText(text)} />}
-          {debugPanel === "history" && <RunHistory runs={session.runs} activeId={activeRun?.id} onSelect={setSelectedRun} onRestore={(settings, messages) => { if (runLockRef.current) return; patchSession({ settings, messages }); setDebugPanel(null); setNotice("已恢复运行前的消息与参数。"); setScrollRequest((value) => value + 1); }} onInspect={(id) => { setSelectedRun(id); setDebugPanel("request"); }} />}
+          {debugPanel === "history" && <RunHistory runs={session.runs} activeId={activeRun?.id} onSelect={setSelectedRun} onRestore={(settings, messages) => { if (busyForSessionRef.current(session.id)) return; patchSession({ settings, messages }); setDebugPanel(null); setNotice("已恢复运行前的消息与参数。"); setScrollRequest((value) => value + 1); }} onInspect={(id) => { setSelectedRun(id); setDebugPanel("request"); }} />}
           {debugPanel === "diagnostics" && <DiagnosticsView />}
         </div>
       </section>

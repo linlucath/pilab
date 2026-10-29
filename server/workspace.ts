@@ -78,9 +78,15 @@ export class ProjectWorkspaceStore {
       const session = workspace.sessions.find((item) => item.id === sessionId);
       if (!session) throw new Error(`目标会话不存在：${sessionId}`);
       if (!messages.length) { this.remember(workspace); return workspace; }
-      const sessions = workspace.sessions.map((item) => item.id === sessionId
-        ? { ...item, messages: [...item.messages, ...messages].slice(-500) }
-        : item);
+      const sessions = workspace.sessions.map((item) => {
+        if (item.id !== sessionId) return item;
+        // The browser streams partial assistant messages into workspace storage too;
+        // final generated messages must upsert by ID rather than create duplicates.
+        const merged = new Map(item.messages.map((message) => [message.id, message]));
+        for (const message of messages)
+          merged.set(message.id, { ...merged.get(message.id), ...message });
+        return { ...item, messages: [...merged.values()].slice(-500) };
+      });
       const updated = projectWorkspaceSchema.parse({
         ...workspace, revision: workspace.revision + 1, sessions,
       });

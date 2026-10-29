@@ -128,6 +128,10 @@ test("completed run messages are atomically appended to the requested session", 
       content: "Persisted output",
       enabled: true,
     };
+    const beforeRun = (await store.get())!;
+    await store.update({ baseRevision: beforeRun.revision, sessions: [{
+      id: "target", messages: [...structuredClone(initialMessages), { ...generated, content: "Partial streamed output" }],
+    }] });
     const manager = new RunManager(store.appendRunMessages.bind(store), async (_input, emit) => {
       emit({ type: "assistant", message: generated });
       return [generated];
@@ -140,6 +144,7 @@ test("completed run messages are atomically appended to the requested session", 
     const other = workspace?.sessions.find((session) => session.id === "other");
     assert.equal(target?.messages.at(-1)?.id, generated.id);
     assert.equal(target?.messages.at(-1)?.content, generated.content);
+    assert.equal(target?.messages.filter((message) => message.id === generated.id).length, 1);
     assert.equal(other?.messages.length, initialMessages.length);
     assert.equal(manager.tasks.get(runId)?.status, "completed");
   } finally {
