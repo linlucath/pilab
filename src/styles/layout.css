@@ -1,5 +1,7 @@
 .app-shell { display: flex; width: 100vw; height: 100vh; min-width: 0; min-height: 0; overflow: hidden; background: var(--app-bg); }
 .sidebar { z-index: 5; display: flex; width: var(--sidebar-width); min-width: var(--sidebar-width); height: 100%; flex-direction: column; gap: 14px; padding: 20px 14px 13px; overflow: hidden; background: var(--sidebar-bg); border-right: 1px solid var(--border); transition: width .18s ease, min-width .18s ease, padding .18s ease; }
+.sidebar-brand-row, .sidebar-create-row, .session-search { flex-shrink: 0; }
+.sidebar > .session-list { min-height: 0; flex: 1 1 auto; overflow-x: hidden; overflow-y: auto; }
 .sidebar.is-collapsed { width: 68px; min-width: 68px; align-items: center; padding: 16px 9px; }
 .app-main { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; background: var(--canvas); }
 .topbar { z-index: 4; display: flex; height: 52px; min-height: 52px; align-items: center; justify-content: space-between; gap: 10px; padding: 0 18px; border-bottom: 1px solid var(--border); background: var(--canvas); }
