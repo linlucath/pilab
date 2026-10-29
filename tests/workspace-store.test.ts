@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -12,9 +12,27 @@ function workspace(): WorkspaceData {
   delete (settings as Partial<typeof settings>).apiKey;
   return {
     sessions: ["a", "b"].map((id) => ({ id, title: `Session ${id}`, settings, messages: structuredClone(initialMessages) })),
-    active: "a", hiddenPiSessions: [], followPi: false,
+    active: "a", hiddenPiSessions: [], followPi: false, folders: [], rootSessionIds: ["b", "a"],
   };
 }
+
+test("v1 workspace migration places newest sessions first and persists schema v2", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "pilab-workspace-migration-"));
+  try {
+    const file = path.join(directory, "workspace.json");
+    const legacy = { ...workspace(), version: 1, revision: 7, deletedSessionIds: [] } as Record<string, unknown>;
+    delete legacy.folders;
+    delete legacy.rootSessionIds;
+    await writeFile(file, JSON.stringify(legacy));
+    const migrated = await new ProjectWorkspaceStore(file).get();
+    assert.equal(migrated?.version, 2);
+    assert.deepEqual(migrated?.folders, []);
+    assert.deepEqual(migrated?.rootSessionIds, ["b", "a"]);
+    const persisted = JSON.parse(await readFile(file, "utf8"));
+    assert.equal(persisted.version, 2);
+    assert.deepEqual(persisted.rootSessionIds, ["b", "a"]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 test("stale server updates are rebased onto the newest on-disk workspace revision", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "pilab-workspace-"));

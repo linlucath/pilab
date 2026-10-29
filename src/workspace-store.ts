@@ -10,12 +10,14 @@ export type Run = {
   snapshot: { settings: Settings; messages: Message[] };
 };
 export type Session = Omit<SavedSession, "settings"> & { settings: Settings; runs: Run[] };
-export type Workspace = { sessions: Session[]; active: string; hiddenPiSessions: string[]; followPi: boolean };
+export type WorkspaceFolder = { id: string; name: string; collapsed: boolean; sessionIds: string[] };
+export type Workspace = { sessions: Session[]; active: string; hiddenPiSessions: string[]; followPi: boolean; folders: WorkspaceFolder[]; rootSessionIds: string[] };
 
 function saved(workspace: Workspace): WorkspaceData {
   return {
     sessions: workspace.sessions.map((session) => savedSessionSchema.parse(session)),
     active: workspace.active, hiddenPiSessions: workspace.hiddenPiSessions, followPi: workspace.followPi,
+    folders: workspace.folders, rootSessionIds: workspace.rootSessionIds,
   };
 }
 function changes(before: WorkspaceData, after: WorkspaceData): WorkspaceChanges {
@@ -35,11 +37,13 @@ function changes(before: WorkspaceData, after: WorkspaceData): WorkspaceChanges 
     restored: before.hiddenPiSessions.filter((id) => !after.hiddenPiSessions.includes(id)),
     ...(before.active !== after.active ? { active: after.active } : {}),
     ...(before.followPi !== after.followPi ? { followPi: after.followPi } : {}),
+    ...(JSON.stringify(before.folders) !== JSON.stringify(after.folders) ? { folders: after.folders } : {}),
+    ...(JSON.stringify(before.rootSessionIds) !== JSON.stringify(after.rootSessionIds) ? { rootSessionIds: after.rootSessionIds } : {}),
   };
 }
 function changed(delta: WorkspaceChanges) {
   return delta.sessions.length || delta.removed.length || delta.hidden.length || delta.restored.length ||
-    delta.active !== undefined || delta.followPi !== undefined;
+    delta.active !== undefined || delta.followPi !== undefined || delta.folders !== undefined || delta.rootSessionIds !== undefined;
 }
 
 export function useProjectWorkspace(loadLegacy: () => Workspace, fresh: () => Session, notify: (message: string) => void) {
@@ -71,10 +75,20 @@ export function useProjectWorkspace(loadLegacy: () => Workspace, fresh: () => Se
       runs: local?.sessions.find((item) => item.id === session.id)?.runs || [],
     }));
     if (!sessions.length) sessions.push(fresh());
+    const sessionIds = new Set(sessions.map((session) => session.id));
+    const assigned = new Set<string>();
+    const folders = project.folders.map((folder) => {
+      const folderSessions = folder.sessionIds.filter((id) => sessionIds.has(id) && !assigned.has(id));
+      folderSessions.forEach((id) => assigned.add(id));
+      return { ...folder, sessionIds: folderSessions };
+    });
+    const rootSessionIds = project.rootSessionIds.filter((id) => sessionIds.has(id) && !assigned.has(id));
+    rootSessionIds.forEach((id) => assigned.add(id));
+    for (const session of sessions) if (!assigned.has(session.id)) rootSessionIds.push(session.id);
     const active = local && sessions.some((session) => session.id === local.active) ? local.active : project.active;
     return {
       sessions, active: sessions.some((session) => session.id === active) ? active : sessions[0].id,
-      hiddenPiSessions: project.hiddenPiSessions, followPi: project.followPi,
+      hiddenPiSessions: project.hiddenPiSessions, followPi: project.followPi, folders, rootSessionIds,
     };
   }
   async function request(method: string, body?: unknown) {

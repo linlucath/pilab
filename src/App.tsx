@@ -382,7 +382,7 @@ export default function App() {
       ? { ...structuredClone(copy), id: uid(), title: copy.title, runs: [] }
       : newSession(currentSession.settings.workingDirectory.trim() || runtimeCwd);
     delete next.piSync;
-    setWorkspace((current) => ({ ...current, sessions: [...current.sessions, next], active: next.id, followPi: false }));
+    setWorkspace((current) => ({ ...current, sessions: [...current.sessions, next], rootSessionIds: [next.id, ...current.rootSessionIds], active: next.id, followPi: false }));
     setSelectedRun(undefined); setScrollRequest((value) => value + 1);
   };
   useEffect(() => {
@@ -401,8 +401,14 @@ export default function App() {
     if (!target || !window.confirm(`删除「${target.title}」？此操作无法撤销。`)) return;
     setWorkspace((current) => {
       const sessions = current.sessions.filter((item) => item.id !== id);
-      if (!sessions.length) sessions.push(newSession(session.settings.workingDirectory.trim() || runtimeCwd));
-      return { ...current, sessions, active: current.active === id ? sessions[0].id : current.active, followPi: false,
+      const folders = current.folders.map((folder) => ({ ...folder, sessionIds: folder.sessionIds.filter((sessionId) => sessionId !== id) }));
+      let rootSessionIds = current.rootSessionIds.filter((sessionId) => sessionId !== id);
+      if (!sessions.length) {
+        const replacement = newSession(session.settings.workingDirectory.trim() || runtimeCwd);
+        sessions.push(replacement);
+        rootSessionIds = [replacement.id, ...rootSessionIds];
+      }
+      return { ...current, sessions, folders, rootSessionIds, active: current.active === id ? sessions[0].id : current.active, followPi: false,
         hiddenPiSessions: target.piSync ? [...new Set([...current.hiddenPiSessions, piSessionIdentity(target.piSync)])] : current.hiddenPiSessions };
     });
   };
@@ -427,7 +433,7 @@ export default function App() {
       messages: forkMessages || buildForkMessages({ messages: source.messages, distilledMemory: memory, keepRecentTurns, id: uid }),
       runs: [], parentSessionId: source.id, parentSessionTitle: source.title, forkSummary: memory.trim().slice(0, 20_000),
     };
-    setWorkspace((current) => ({ ...current, sessions: [...current.sessions, next], ...(switchActive ? { active: next.id, followPi: false } : {}) }));
+    setWorkspace((current) => ({ ...current, sessions: [...current.sessions, next], rootSessionIds: [next.id, ...current.rootSessionIds], ...(switchActive ? { active: next.id, followPi: false } : {}) }));
     const key = apiKeys[source.id] || source.settings.apiKey || "";
     if (key) setApiKeys((current) => ({ ...current, [next.id]: key }));
     setForkNotice({ sourceId: source.id, forkId: next.id, title: next.title });
@@ -441,6 +447,36 @@ export default function App() {
     setWorkspace((current) => ({ ...current, active: id, followPi: false }));
   };
   const renameSession = (id: string, title: string) => setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === id ? { ...item, title } : item) }));
+  const createFolder = (name = "新建文件夹") => setWorkspace((current) => ({
+    ...current, folders: [...current.folders, { id: uid(), name: name.trim().slice(0, 120) || "新建文件夹", collapsed: false, sessionIds: [] }],
+  }));
+  const renameFolder = (id: string, name: string) => setWorkspace((current) => ({
+    ...current, folders: current.folders.map((folder) => folder.id === id ? { ...folder, name: name.trim().slice(0, 120) } : folder),
+  }));
+  const toggleFolder = (id: string) => setWorkspace((current) => ({
+    ...current, folders: current.folders.map((folder) => folder.id === id ? { ...folder, collapsed: !folder.collapsed } : folder),
+  }));
+  const deleteFolder = (id: string) => setWorkspace((current) => {
+    const folder = current.folders.find((item) => item.id === id);
+    if (!folder) return current;
+    const alreadyRoot = new Set(current.rootSessionIds);
+    return {
+      ...current, folders: current.folders.filter((item) => item.id !== id),
+      rootSessionIds: [...current.rootSessionIds, ...folder.sessionIds.filter((sessionId) => !alreadyRoot.has(sessionId))],
+    };
+  });
+  const moveSession = (sessionId: string, targetFolderId: string | null, targetId?: string, position: "before" | "after" | "end" = "end") => setWorkspace((current) => {
+    if (!current.sessions.some((item) => item.id === sessionId) || targetId === sessionId) return current;
+    const folders = current.folders.map((folder) => ({ ...folder, sessionIds: folder.sessionIds.filter((id) => id !== sessionId) }));
+    const rootSessionIds = current.rootSessionIds.filter((id) => id !== sessionId);
+    const folder = targetFolderId ? folders.find((item) => item.id === targetFolderId) : undefined;
+    const destination = folder ? folder.sessionIds : rootSessionIds;
+    let index = targetId ? destination.indexOf(targetId) : -1;
+    if (index < 0) index = destination.length;
+    else if (position === "after") index += 1;
+    destination.splice(index, 0, sessionId);
+    return { ...current, folders, rootSessionIds };
+  });
 
   async function refreshPiStatus() {
     try { const response = await fetch("/api/pi-status", { cache: "no-store" }); if (!response.ok) throw new Error("Pi 状态请求失败"); setPiConnection(await response.json() as PiConnection); }
@@ -470,7 +506,7 @@ export default function App() {
       }
       if (!next) return current;
       const sessions = local ? current.sessions.map((item) => item.id === local.id ? next! : item) : [...current.sessions, next];
-      return { ...current, sessions, active: activate ? next.id : current.active };
+      return { ...current, sessions, ...(!local ? { rootSessionIds: [next.id, ...current.rootSessionIds] } : {}), active: activate ? next.id : current.active };
     });
   }
   async function readPiSession(id: string, activate = false, discard = false) {
@@ -798,7 +834,7 @@ export default function App() {
 
   if (!ready) return <div className="app-loading" role="status">{storageError || "正在打开本地工作区…"}{storageError && <button onClick={() => location.reload()}>重试</button>}</div>;
   return <div className={`app-shell ${sidebarCollapsed ? "sidebar-compact" : ""} ${rightOpen ? "right-visible" : ""}`}>
-    <Sidebar sessions={workspace.sessions} active={session.id} collapsed={sidebarCollapsed} disabled={busy || !!session.piSync?.pending} onToggle={() => setSidebarCollapsed((value) => !value)} onCreate={() => createSession()} onSelect={selectSession} onRename={renameSession} onDuplicate={duplicateSession} onDelete={deleteSession} />
+    <Sidebar sessions={workspace.sessions} folders={workspace.folders} rootSessionIds={workspace.rootSessionIds} active={session.id} collapsed={sidebarCollapsed} disabled={busy || !!session.piSync?.pending} onToggle={() => setSidebarCollapsed((value) => !value)} onCreate={() => createSession()} onCreateFolder={createFolder} onSelect={selectSession} onRename={renameSession} onDuplicate={duplicateSession} onDelete={deleteSession} onRenameFolder={renameFolder} onDeleteFolder={deleteFolder} onToggleFolder={toggleFolder} onMoveSession={moveSession} />
     <main className="app-main">
       <TopBar session={session} saveState={storageStatus} onDebugView={(panel) => { setDebugPanel(panel); setDirectoryOpen(false); }} directoryOpen={directoryOpen} onDirectoryToggle={() => setDirectoryOpen((open) => !open)} archiveableToolGroups={archiveableToolGroupCount} onArchiveOldTools={() => setArchiveToolRequest((request) => request + 1)} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} theme={theme} onTheme={() => setTheme((value) => value === "light" ? "dark" : "light")} rightOpen={rightOpen} onRight={() => setRightOpen((value) => !value)} compactTools={compactTools} onCompactTools={() => setCompactTools((value) => !value)} piSessions={piSessions} followPi={workspace.followPi} onFollowPi={setFollowPi} syncError={syncError} onSelectPi={(id) => void selectPiSession(id)} onApplyPi={() => void applyToPi()} onDiscardPi={() => { if (session.piSync) void readPiSession(session.piSync.id, false, true).catch((error) => setSyncError(error.message)); }} onCancelPending={() => void cancelPiApply()} onTitle={(title) => patchSession({ title })} onWorkingDirectory={(workingDirectory) => updateSetting("workingDirectory", workingDirectory)} onFork={() => session.settings.toolMode === "agent" && !session.piSync ? requestSmartFork(`${session.title} · 提纯分身`, 0, true) : setForkModalOpen(true)} forkDisabled={busy} />
       <div className="workspace-body">

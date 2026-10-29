@@ -19,7 +19,13 @@ export class ProjectWorkspaceStore {
     return result;
   }
   private async read(): Promise<ProjectWorkspace | null> {
-    try { return projectWorkspaceSchema.parse(JSON.parse(await readFile(this.file, "utf8"))); }
+    try {
+      const stored = JSON.parse(await readFile(this.file, "utf8")) as Record<string, unknown>;
+      const workspace = projectWorkspaceSchema.parse(stored);
+      if (stored.version !== workspace.version || !Array.isArray(stored.folders) || !Array.isArray(stored.rootSessionIds))
+        await this.write(workspace);
+      return workspace;
+    }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw new Error("项目会话文件无法读取，请检查 .pi-lab/workspace.json。", { cause: error });
@@ -57,7 +63,7 @@ export class ProjectWorkspaceStore {
       const existing = await this.read();
       if (existing) { this.remember(existing); return existing; }
       const workspace = projectWorkspaceSchema.parse({
-        ...workspaceDataSchema.parse(input), version: 1, revision: 1, deletedSessionIds: [],
+        ...workspaceDataSchema.parse(input), version: 2, revision: 1, deletedSessionIds: [],
       });
       await this.write(workspace);
       this.remember(workspace);

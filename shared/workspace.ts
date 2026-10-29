@@ -2,6 +2,9 @@ import { z } from "zod";
 import { fileSchema } from "./schema";
 
 const id = z.string().min(1).max(200);
+export const workspaceFolderSchema = z.object({
+  id, name: z.string().trim().min(1).max(120), collapsed: z.boolean(), sessionIds: z.array(id),
+});
 export const savedSessionSchema = fileSchema.omit({ version: true }).extend({
   id,
   piSync: z.object({
@@ -13,20 +16,41 @@ export const savedSessionSchema = fileSchema.omit({ version: true }).extend({
 // This is the persisted experiment-session model used by the current workspace store.
 export const experimentSessionSchema = savedSessionSchema;
 export type ExperimentSession = SavedSession;
-export const workspaceDataSchema = z.object({
+const workspaceDataFields = {
   sessions: z.array(savedSessionSchema).max(500), active: id,
   hiddenPiSessions: z.array(id).default([]), followPi: z.boolean().default(false),
-});
-export const projectWorkspaceSchema = workspaceDataSchema.extend({
-  version: z.literal(1), revision: z.number().int().nonnegative(),
+  folders: z.array(workspaceFolderSchema).default([]), rootSessionIds: z.array(id),
+};
+function migrateWorkspaceData(input: unknown): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  const data = input as Record<string, unknown>;
+  const sessions = Array.isArray(data.sessions) ? data.sessions as { id?: unknown }[] : [];
+  return {
+    ...data,
+    folders: Array.isArray(data.folders) ? data.folders : [],
+    rootSessionIds: Array.isArray(data.rootSessionIds)
+      ? data.rootSessionIds
+      : sessions.map((session) => session.id).filter((sessionId): sessionId is string => typeof sessionId === "string").reverse(),
+  };
+}
+export const workspaceDataSchema = z.preprocess(migrateWorkspaceData, z.object(workspaceDataFields));
+const projectWorkspaceV2Schema = z.object({
+  ...workspaceDataFields, version: z.literal(2), revision: z.number().int().nonnegative(),
   deletedSessionIds: z.array(id).default([]),
 });
+export const projectWorkspaceSchema = z.preprocess((input) => {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  const data = input as Record<string, unknown>;
+  if (data.version !== 1) return input;
+  return { ...migrateWorkspaceData(data) as Record<string, unknown>, version: 2 };
+}, projectWorkspaceV2Schema);
 export const workspaceChangesSchema = z.object({
   baseRevision: z.number().int().nonnegative().optional(),
   sessions: z.array(savedSessionSchema.partial().required({ id: true })).default([]),
   removed: z.array(id).default([]),
   hidden: z.array(id).default([]), restored: z.array(id).default([]),
   active: id.optional(), followPi: z.boolean().optional(),
+  folders: z.array(workspaceFolderSchema).optional(), rootSessionIds: z.array(id).optional(),
 });
 export type SavedSession = z.infer<typeof savedSessionSchema>;
 export type WorkspaceData = z.infer<typeof workspaceDataSchema>;
@@ -127,6 +151,8 @@ export function mergeProjectWorkspace(base: ProjectWorkspace, local: ProjectWork
     ...remote, revision: Math.max(local.revision, remote.revision) + 1,
     sessions: visibleSessions, active, hiddenPiSessions, deletedSessionIds,
     followPi: mergeField(base.followPi, local.followPi, remote.followPi),
+    folders: mergeField(base.folders, local.folders, remote.folders),
+    rootSessionIds: mergeField(base.rootSessionIds, local.rootSessionIds, remote.rootSessionIds),
   });
 }
 
@@ -146,10 +172,15 @@ export function applyWorkspaceChanges(workspace: ProjectWorkspace, changes: Work
   for (const [id, session] of sessions)
     if (deleted.has(id) || (session.piSync && hidden.has(piSessionIdentity(session.piSync)))) sessions.delete(id);
   const active = changes.active ?? workspace.active;
+  const remaining = new Set(sessions.keys());
+  const folders = (changes.folders ?? workspace.folders).map((folder) => ({
+    ...folder, sessionIds: folder.sessionIds.filter((id) => remaining.has(id)),
+  }));
+  const rootSessionIds = (changes.rootSessionIds ?? workspace.rootSessionIds).filter((id) => remaining.has(id));
   return projectWorkspaceSchema.parse({
     ...workspace, revision: workspace.revision + 1,
     sessions: [...sessions.values()], active: sessions.has(active) ? active : sessions.keys().next().value || active,
-    hiddenPiSessions: [...hidden], deletedSessionIds: [...deleted],
+    hiddenPiSessions: [...hidden], deletedSessionIds: [...deleted], folders, rootSessionIds,
     followPi: changes.followPi ?? workspace.followPi,
   });
 }

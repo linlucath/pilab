@@ -52,6 +52,8 @@ export function loadLegacyWorkspace(): Workspace {
       });
       if (sessions.length) return {
         sessions,
+        folders: [],
+        rootSessionIds: sessions.map((item: Session) => item.id).reverse(),
         hiddenPiSessions: [],
         followPi: false,
         active: sessions.some((item: Session) => item.id === saved.active) ? saved.active : sessions[0].id,
@@ -59,7 +61,7 @@ export function loadLegacyWorkspace(): Workspace {
     }
   } catch { /* Recover a fresh session if legacy browser data is corrupt. */ }
   const session = newSession();
-  return { sessions: [session], active: session.id, hiddenPiSessions: [], followPi: false };
+  return { sessions: [session], active: session.id, hiddenPiSessions: [], followPi: false, folders: [], rootSessionIds: [session.id] };
 }
 
 export function statusText(status: string) {
