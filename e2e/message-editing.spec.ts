@@ -1,6 +1,6 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 import type { Message } from "../shared/schema";
-import { e2eSession, openWorkspace, seedWorkspace, setMockScript, ui } from "./fixtures/index";
+import { e2eSession, openRequestInspector, openWorkspace, seedWorkspace, setMockScript, ui } from "./fixtures/index";
 
 const msg = (id: string, role: Message["role"], content: string, extra: Partial<Message> = {}): Message => ({ id, role, content, enabled: true, ...extra });
 const row = (page: Page, id: string) => page.locator(`.message-row[data-message-id="${id}"]`);
@@ -30,7 +30,7 @@ test("MSG-01 仅添加各角色消息、从消息入口插入并在系统区添�
     msg("msg-01-tool-result", "tool", "existing tool result", { toolCallId: call.id, toolName: call.name }),
   ]);
   let modelRequests = 0;
-  page.on("request", (request) => { if (request.url().endsWith("/api/run") && request.method() === "POST") modelRequests++; });
+  page.on("request", (request) => { if (request.url().endsWith("/api/runs") && request.method() === "POST") modelRequests++; });
   const composer = ui(page).composer;
   const rolePicker = page.getByRole("combobox", { name: "新消息角色" });
   for (const [role, content] of [["user", "added user only"], ["assistant", "added assistant only"], ["system", "added system only"]] as const) {
@@ -120,7 +120,7 @@ test("MSG-02 编辑消息可保存、Esc 取消并用 Ctrl/Command+Enter 保存�
   await setMockScript(page, [{ type: "text", text: "MSG-02-CONTEXT-OK" }]);
   let submitted: { messages: Message[] } | undefined;
   page.on("request", (request) => {
-    if (request.url().endsWith("/api/run") && request.method() === "POST") submitted = JSON.parse(request.postData() || "{}") as { messages: Message[] };
+    if (request.url().endsWith("/api/runs") && request.method() === "POST") submitted = JSON.parse(request.postData() || "{}") as { messages: Message[] };
   });
   await page.getByRole("button", { name: "重新运行" }).click();
   await expect(page.getByText("MSG-02-CONTEXT-OK")).toBeVisible();
@@ -251,18 +251,14 @@ test("MSG-04 排除和恢复消息影响请求，工具调用与结果成组切�
   await setMockScript(page, [{ type: "text", text: "MSG-04-CONTEXT-OK" }]);
   let submitted: { messages: Message[] } | undefined;
   page.on("request", (request) => {
-    if (request.url().endsWith("/api/run") && request.method() === "POST") submitted = JSON.parse(request.postData() || "{}") as { messages: Message[] };
+    if (request.url().endsWith("/api/runs") && request.method() === "POST") submitted = JSON.parse(request.postData() || "{}") as { messages: Message[] };
   });
-  const responsePromise = page.waitForResponse((response) => response.url().endsWith("/api/run") && response.request().method() === "POST");
   await page.getByRole("button", { name: "重新运行" }).click();
-  const runResponse = await responsePromise;
   await expect(page.getByText("MSG-04-CONTEXT-OK")).toBeVisible();
   expect(submitted?.messages.map((message) => message.id)).toEqual(["msg-04-system", "msg-04-user-excluded", "msg-04-owner", "msg-04-result", "msg-04-last"]);
   expect(submitted?.messages.find((message) => message.id === "msg-04-owner")?.enabled).toBe(false);
-  const events = (await runResponse.text()).trim().split("\n").map((line) => JSON.parse(line) as { type: string; payload?: unknown });
-  const modelRequest = events.find((event) => event.type === "request");
-  expect(modelRequest).toBeDefined();
-  const modelPayload = JSON.stringify(modelRequest?.payload);
+  await openRequestInspector(page);
+  const modelPayload = await page.locator(".request-turn pre").innerText();
   expect(modelPayload).toContain("remaining context");
   expect(modelPayload).not.toContain("temporarily hidden context");
   expect(modelPayload).not.toContain("tool pair owner");
@@ -286,7 +282,7 @@ test("MSG-05 合法消息可重排、首末边界禁用且破坏工具配对的�
   await setMockScript(page, [{ type: "text", text: "MSG-05-ORDER-OK" }]);
   let submitted: { messages: Message[] } | undefined;
   page.on("request", (request) => {
-    if (request.url().endsWith("/api/run") && request.method() === "POST") submitted = JSON.parse(request.postData() || "{}") as { messages: Message[] };
+    if (request.url().endsWith("/api/runs") && request.method() === "POST") submitted = JSON.parse(request.postData() || "{}") as { messages: Message[] };
   });
   await page.getByRole("button", { name: "重新运行" }).click();
   await expect(page.getByText("MSG-05-ORDER-OK")).toBeVisible();

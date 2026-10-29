@@ -37,7 +37,11 @@
 .session-row.selected .session-main, .session-row.selected .session-main > svg { color: var(--text); }
 .session-row.selected .session-copy > strong { font-weight: 620; }
 .session-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
-.session-copy > strong { overflow: hidden; color: inherit; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.session-copy > strong { display: flex; min-width: 0; align-items: center; gap: 7px; overflow: hidden; color: inherit; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.session-title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-running-indicator { position: relative; width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 42%, transparent); animation: session-running-pulse 1.7s ease-out infinite; }
+@keyframes session-running-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
+@media (prefers-reduced-motion: reduce) { .session-running-indicator { animation: none; } }
 .session-initial { display: grid; width: 27px; height: 27px; place-items: center; border-radius: 8px; color: var(--text-subtle); background: var(--surface-hover); }
 .session-initial > svg { width: 15px; height: 15px; }
 .sidebar:not(.is-collapsed) .session-initial { display: none; }

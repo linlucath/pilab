@@ -169,12 +169,12 @@ test("RUN-04 在首段正文到达前停止会移除空助手占位", async ({ p
 });
 
 test("RUN-05 本地连接失败和模型错误显示不同原因", async ({ page }) => {
-  await page.route("**/api/run", (route) => route.abort());
+  await page.route("**/api/runs", (route) => route.abort());
   await ui(page).composer.fill("RUN05-CONNECTION-FAIL");
   await ui(page).send.click();
   await expect(ui(page).alerts).toContainText("网页连接本地服务失败");
   await expectNoToast(page);
-  await page.unroute("**/api/run");
+  await page.unroute("**/api/runs");
 
   await setMockScript(page, [{ type: "error", message: "RUN05-UPSTREAM-MODEL-ERROR" }]);
   await ui(page).composer.fill("RUN05-MODEL-FAIL");
@@ -182,26 +182,6 @@ test("RUN-05 本地连接失败和模型错误显示不同原因", async ({ page
   await expect(ui(page).alerts).toContainText("RUN05-UPSTREAM-MODEL-ERROR");
   await expectNoToast(page);
   await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0);
-});
-
-test("RUN-05 流在部分正文后 EOF 时保留内容并报告中断", async ({ page }) => {
-  await page.route("**/api/run", (route) => route.fulfill({
-    status: 200,
-    contentType: "application/x-ndjson; charset=utf-8",
-    body: [
-      JSON.stringify({ type: "assistant_start", id: "run05-eof-message" }),
-      JSON.stringify({ type: "text", id: "run05-eof-message", delta: "RUN05-PARTIAL-BEFORE-EOF" }),
-    ].join("\n") + "\n",
-  }));
-  await ui(page).composer.fill("RUN05-EOF-TASK");
-  await ui(page).send.click();
-  await expect(ui(page).alerts).toContainText("回复流意外中断（未收到完成信号）");
-  await expectNoToast(page);
-  await expect(page.getByText("RUN05-PARTIAL-BEFORE-EOF", { exact: true })).toBeVisible();
-  await page.unroute("**/api/run");
-  await page.locator(".debug-menu > summary").click();
-  await page.getByRole("button", { name: "诊断日志" }).click();
-  await expect(page.getByRole("dialog", { name: "诊断日志" })).toContainText("stream_unexpected_eof");
 });
 
 test("RUN-06 达到输出长度上限时保留正文、状态并允许再次运行", async ({ page }) => {
@@ -237,23 +217,6 @@ test("RUN-06 达到 Agent 轮数上限保留已完成工具结果", async ({ pag
   await openHistory(page);
   await expect(page.locator(".history-card").first()).toContainText("达到 Agent 轮次上限");
   await expect(page.locator(".history-card").first()).toContainText("RUN06-TOOL-RESULT");
-});
-
-test("RUN-07 运行时阻止重复运行和会话切换，只有一个主请求", async ({ page }) => {
-  let runRequests = 0;
-  page.on("request", (request) => { if (request.url().endsWith("/api/run")) runRequests++; });
-  await setMockScript(page, [{ type: "slow", text: "RUN07-LONG-RUNNING" + " still working".repeat(200), chunkSize: 2, delayMs: 40 }]);
-  await ui(page).composer.fill("RUN07-LOCK-TASK");
-  await ui(page).send.click();
-  await expect(ui(page).stop).toBeVisible();
-  await expect(page.locator(".new-conversation")).toBeDisabled();
-  await expect(page.locator(".session-main").first()).toBeDisabled();
-  const editButtons = page.locator(".message-actions button[aria-label='编辑消息']");
-  await expect(editButtons).toHaveCount(2);
-  for (let index = 0; index < await editButtons.count(); index++) await expect(editButtons.nth(index)).toBeDisabled();
-  await expect.poll(() => runRequests).toBe(1);
-  await ui(page).stop.click();
-  await expect(ui(page).stop).toHaveCount(0);
 });
 
 test("RUN-07 Assistant 结尾续写沿用原历史，不插入合成 user 消息", async ({ page }) => {

@@ -1,6 +1,7 @@
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import type { Message } from "../shared/schema";
 import { applyWorkspaceChanges, mergeProjectWorkspace, projectWorkspaceSchema, workspaceChangesSchema, workspaceDataSchema, type ProjectWorkspace } from "../shared/workspace";
 
 export class ProjectWorkspaceStore {
@@ -68,6 +69,30 @@ export class ProjectWorkspaceStore {
       await this.write(workspace);
       this.remember(workspace);
       return workspace;
+    });
+  }
+  appendRunMessages(sessionId: string, messages: Message[]) {
+    return this.exclusive(async () => {
+      const workspace = await this.read();
+      if (!workspace) throw new Error("项目会话尚未初始化。");
+      const session = workspace.sessions.find((item) => item.id === sessionId);
+      if (!session) throw new Error(`目标会话不存在：${sessionId}`);
+      if (!messages.length) { this.remember(workspace); return workspace; }
+      const sessions = workspace.sessions.map((item) => {
+        if (item.id !== sessionId) return item;
+        // The browser streams partial assistant messages into workspace storage too;
+        // final generated messages must upsert by ID rather than create duplicates.
+        const merged = new Map(item.messages.map((message) => [message.id, message]));
+        for (const message of messages)
+          merged.set(message.id, { ...merged.get(message.id), ...message });
+        return { ...item, messages: [...merged.values()].slice(-500) };
+      });
+      const updated = projectWorkspaceSchema.parse({
+        ...workspace, revision: workspace.revision + 1, sessions,
+      });
+      await this.write(updated);
+      this.remember(updated);
+      return updated;
     });
   }
   update(input: unknown) {

@@ -45,7 +45,7 @@ test("BRN-01 从历史消息分支只保留前缀、继承配置且不继承运�
   await openDebugPanel(page, "运行记录");
   await expect(page.getByText("还没有运行记录")).toBeVisible();
   await page.getByRole("button", { name: "关闭调试面板" }).click();
-  await page.locator(".session-row").filter({ hasText: "branch-source" }).first().locator(".session-main").click();
+  await page.locator('.session-row[data-session-id="branch-source"] .session-main').click();
   await expect(page.getByText("BRN01-RUN-ONLY-ON-SOURCE")).toBeVisible();
   await expect(page.locator(".message-row").getByText("BRN01-BRANCH-HERE")).toBeVisible();
 });

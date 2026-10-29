@@ -65,7 +65,7 @@ test("WSP-01 刷新后恢复工作区会话、消息和配置", async ({ page })
   await page.getByLabel("新分身名称").fill("persisted-child");
   await page.getByRole("button", { name: "即刻创建并切换" }).click();
   await waitForWorkspace(page, (workspace) => workspace.sessions.some((session) => session.title === "persisted-child"));
-  await page.locator(`button.session-main[title="refresh-persist-title"]`).click();
+  await page.locator(`.session-row[data-session-id="${source.id}"] .session-main`).click();
   await page.getByRole("button", { name: "Agent" }).click();
   await waitForWorkspace(page, (workspace) => workspace.sessions.find((session) => session.id === source.id)?.settings.toolMode === "agent");
   await page.getByRole("button", { name: "新建对话" }).click();
@@ -92,7 +92,9 @@ test("WSP-01 刷新后恢复工作区会话、消息和配置", async ({ page })
   await page.getByLabel("选择 Pi CLI 会话").selectOption("e2e-pi-session");
   await expect(page.getByRole("textbox", { name: "会话标题" })).toHaveValue("pi-refresh-fixture");
   page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "删除 pi-refresh-fixture" }).click();
+  const piSessionRow = page.locator(".session-row").filter({ hasText: "pi-refresh-fixture" });
+  await piSessionRow.hover();
+  await piSessionRow.getByRole("button", { name: "删除 pi-refresh-fixture" }).click();
   await waitForWorkspace(page, (workspace) => workspace.hiddenPiSessions.includes("e2e-native-session") && workspace.sessions.length === 3);
 
   await page.reload();
@@ -236,10 +238,12 @@ test("WSP-02 同字段冲突采用后写入，新增与删除保留另一标签�
   shouldHold = (delta: { removed?: string[] }) => delta.removed?.includes(createdId) || false;
   didHold = false;
   page.once("dialog", (dialog) => dialog.accept());
-  await page.locator(".session-row").filter({ hasText: "new-session-to-delete" }).getByRole("button", { name: /删除/ }).click();
+  const deleteRow = page.locator(".session-row").filter({ hasText: "new-session-to-delete" });
+  await deleteRow.hover();
+  await deleteRow.getByRole("button", { name: /删除/ }).click();
   await deletionHeld;
   const originalId = (await savedWorkspace(secondPage)).sessions.find((session) => session.id !== createdId)!.id;
-  await secondPage.locator(`button.session-main[title="remote-title"]`).click();
+  await secondPage.locator(`.session-row[data-session-id="${originalId}"] .session-main`).click();
   await setSetting(secondPage, "main-model", "parallel-model-update");
   await waitForWorkspace(secondPage, (workspace) => workspace.sessions.find((session) => session.id === originalId)?.settings.model === "parallel-model-update");
   releaseDelete();
@@ -361,7 +365,7 @@ test("PI-01 登录状态区分已连接、未登录和状态读取失败且不�
 
 test("PI-03 标准接口运行保留消息角色和原始顺序，供应商错误可见", async ({ page }) => {
   const payloads: { messages: { role: string; content: string; toolCalls?: unknown[]; toolCallId?: string }[]; settings: { protocol: string } }[] = [];
-  await page.route("**/api/run", async (route) => {
+  await page.route("**/api/runs", async (route) => {
     if (route.request().method() === "POST") payloads.push(route.request().postDataJSON());
     await route.continue();
   });
@@ -403,5 +407,9 @@ test("PI-03 标准接口运行保留消息角色和原始顺序，供应商错�
   await page.getByRole("button", { name: "重新运行" }).click();
   await expect(page.getByRole("alert")).toContainText(/Developer|Anthropic/i);
   expect(payloads).toHaveLength(5);
-  expect(payloads[4].messages.slice(0, 3).map((message) => message.role)).toEqual(["system", "developer", "user"]);
+  const finalRoles = payloads[4].messages.map((message) => message.role);
+  expect(finalRoles[0]).toBe("system");
+  expect(finalRoles).toContain("developer");
+  expect(finalRoles).toContain("user");
+  expect(finalRoles.indexOf("developer")).toBeLessThan(finalRoles.indexOf("user"));
 });

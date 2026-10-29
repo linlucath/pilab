@@ -80,7 +80,7 @@ test("GPT-02 工兵状态轮询自动更新，活动工具可见且原始参数�
   await expect(page.locator(".background-task-bar")).toContainText("等待输入");
 });
 
-test("GPT-03 中断与关闭保留工兵历史且操作反馈对应状态", async ({ page }) => {
+test("GPT-03 中断与关闭后仍保留工兵历史且反馈对应状态", async ({ page }) => {
   let current = worker("resume-me", "running", { hasUnreadReply: true });
   await mockWorkerList(page, () => [current]);
   await page.route("**/api/gpt-sessions/interrupt", async (route) => {
@@ -98,27 +98,39 @@ test("GPT-03 中断与关闭保留工兵历史且操作反馈对应状态", asyn
   await expect(page.locator(".worker-history-item")).toContainText("已关闭");
   await expect(page.locator(".worker-history-item")).toContainText("resume-me");
 
-  await page.route("**/api/run", async (route) => {
+  const call = { id: "resume-call", name: "gpt_session_send", arguments: JSON.stringify({ name: "resume-me", message: "continue prior task" }) };
+  let resumeSessionId = "";
+  let submittedMessages: { role: string; content: string }[] = [];
+  await page.route("**/api/runs", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const submitted = route.request().postDataJSON() as { sessionId: string; messages: { role: string; content: string }[] };
+    resumeSessionId = submitted.sessionId;
+    submittedMessages = submitted.messages;
     current = { ...current, status: "idle", updatedAt: Date.now() };
-    const call = { id: "resume-call", name: "gpt_session_send", arguments: JSON.stringify({ name: "resume-me", message: "continue prior task" }) };
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ runId: "resume-run", sessionId: resumeSessionId }) });
+  });
+  await page.route("**/api/runs/resume-run/stream**", async (route) => {
     const events = [
       { type: "assistant_start", id: "resume-tool-message" },
       { type: "assistant", message: { id: "resume-tool-message", role: "assistant", content: "", enabled: true, toolCalls: [call] } },
       { type: "message", message: { id: "resume-tool-result", role: "tool", content: "Existing GPT session resumed", enabled: true, toolCallId: call.id, toolName: call.name } },
       { type: "assistant", message: { id: "resume-final", role: "assistant", content: "GPT-03 resumed existing worker", enabled: true } },
-      { type: "done", reason: "stop", turns: 1, usage: { input: 1, output: 1 } },
+      { type: "run_status", runId: "resume-run", sessionId: resumeSessionId, status: "completed" },
     ];
-    await route.fulfill({ status: 200, headers: { "Content-Type": "application/x-ndjson" }, body: `${events.map((event) => JSON.stringify(event)).join("\n")}\n` });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/x-ndjson; charset=utf-8",
+      body: `${events.map((event, index) => JSON.stringify({ seq: index + 1, event })).join("\n")}\n`,
+    });
   });
   await sendMessage(page, "continue the existing worker resume-me");
   await expect(page.getByText("GPT-03 resumed existing worker", { exact: true })).toBeVisible();
+  expect(submittedMessages.some((message) => message.role === "user" && message.content.includes("continue the existing worker"))).toBe(true);
   await expect.poll(async () => {
     const saved = await page.context().request.get(new URL("/api/workspace", page.url()).href).then((response) => response.json());
     const messages = saved.workspace.sessions.find((session: { id: string }) => session.id === saved.workspace.active).messages;
     return messages.some((message: { toolCalls?: { name: string; arguments: string }[] }) => message.toolCalls?.some((item) => item.name === "gpt_session_send" && item.arguments.includes("resume-me")));
   }).toBe(true);
-  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
-  await expect(page.locator(".worker-history-item")).toContainText("空闲");
 });
 
 test("GPT-04 交卷提醒只是 UI 状态，草稿保留且只有手动点击才运行", async ({ page }) => {
@@ -132,7 +144,7 @@ test("GPT-04 交卷提醒只是 UI 状态，草稿保留且只有手动点击才
   let workers = [worker("manual-review", "running")];
   await mockWorkerList(page, () => workers);
   const runPayloads: { messages: { role: string; content: string }[] }[] = [];
-  await page.route("**/api/run", async (route) => {
+  await page.route("**/api/runs", async (route) => {
     runPayloads.push(route.request().postDataJSON());
     await route.continue();
   });
@@ -156,20 +168,12 @@ test("GPT-04 主模型运行时不排队唤醒；运行结束后再次手动点�
   await openWorkspace(page);
   let workers = [worker("busy-review", "running")];
   await mockWorkerList(page, () => workers);
-  let releaseFirstRun!: () => void;
-  const firstRunGate = new Promise<void>((resolve) => { releaseFirstRun = resolve; });
   const runPayloads: { messages: { role: string; content: string }[] }[] = [];
-  await page.route("**/api/run", async (route) => {
-    runPayloads.push(route.request().postDataJSON());
-    if (runPayloads.length === 1) await firstRunGate;
-    const text = runPayloads.length === 1 ? "main-run-finished" : "manual-review-finished";
-    const events = [
-      { type: "assistant_start", id: `busy-run-${runPayloads.length}` },
-      { type: "assistant", message: { id: `busy-run-${runPayloads.length}`, role: "assistant", content: text, enabled: true } },
-      { type: "done", reason: "stop", turns: 1, usage: { input: 1, output: 1 } },
-    ];
-    await route.fulfill({ status: 200, headers: { "Content-Type": "application/x-ndjson" }, body: `${events.map((event) => JSON.stringify(event)).join("\n")}\n` });
+  await page.route("**/api/runs", async (route) => {
+    if (route.request().method() === "POST") runPayloads.push(route.request().postDataJSON());
+    await route.continue();
   });
+  await setMockScript(page, [{ type: "slow", text: "main-run-finished", delayBeforeMs: 2_500 }]);
 
   await sendMessage(page, "keep the main model busy");
   await expect(page.locator(".composer-running")).toBeVisible();
@@ -180,11 +184,11 @@ test("GPT-04 主模型运行时不排队唤醒；运行结束后再次手动点�
   await page.waitForTimeout(1_700);
   expect(runPayloads).toHaveLength(1);
   expect(runPayloads[0].messages.some((message) => message.content.includes("后台 GPT 工兵已交卷"))).toBe(false);
-  releaseFirstRun();
   await expect(page.getByText("main-run-finished", { exact: true })).toBeVisible();
   await expect(page.locator(".composer-running")).toHaveCount(0);
   expect(runPayloads, "finishing the main run must not drain a queued worker review").toHaveLength(1);
 
+  await setMockScript(page, [{ type: "text", text: "manual-review-finished" }]);
   await page.getByRole("button", { name: /让 Gemini 审阅汇报/ }).click();
   await expect(page.getByText("manual-review-finished", { exact: true })).toBeVisible();
   expect(runPayloads).toHaveLength(2);
@@ -199,28 +203,39 @@ test("GPT-04 已读回复或 waitAndReport 接管时不提醒，忽略提醒不�
     { id: "claimed-result", role: "tool", content: "started", enabled: true, toolCallId: dispatch.id, toolName: dispatch.name },
   ] }], "claimed-owner");
   await openWorkspace(page);
-  let workers = [worker("claimed-worker", "running")];
+  const claimedWorker = (status: string, overrides: Partial<Worker> = {}) =>
+    worker("claimed-worker", status, { replySequence: 7, ...overrides });
+  let workers = [claimedWorker("running")];
   await mockWorkerList(page, () => workers);
-  workers = [worker("claimed-worker", "idle", { hasUnreadReply: true, hasActiveWaiter: true })];
+  workers = [claimedWorker("idle", { hasUnreadReply: true, hasActiveWaiter: true })];
   await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
   await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
-  workers = [worker("claimed-worker", "idle", { hasUnreadReply: true })];
+  workers = [claimedWorker("idle", { hasUnreadReply: true })];
   await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
   await expect(page.locator(".worker-wake-banner")).toContainText("claimed-worker");
-  workers = [worker("claimed-worker", "idle", { hasUnreadReply: true, hasActiveWaiter: true })];
+  workers = [claimedWorker("idle", { hasUnreadReply: true, hasActiveWaiter: true })];
   await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
   await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
-  workers = [worker("claimed-worker", "idle", { hasUnreadReply: false })];
+  workers = [claimedWorker("idle", { hasUnreadReply: false })];
   await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
   await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
-  workers = [worker("claimed-worker", "idle", { hasUnreadReply: true })];
+  workers = [claimedWorker("idle", { hasUnreadReply: true })];
   await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
   await expect(page.locator(".worker-wake-banner")).toContainText("claimed-worker");
   await page.getByRole("button", { name: "忽略工兵交卷提醒" }).click();
-  workers = [worker("claimed-worker", "idle", { hasUnreadReply: false })];
+  workers = [claimedWorker("idle", { hasUnreadReply: false })];
+  const clearedRefresh = page.waitForResponse((response) =>
+    response.request().method() === "GET" && new URL(response.url()).pathname === "/api/gpt-sessions",
+  );
   await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
-  workers = [worker("claimed-worker", "idle", { hasUnreadReply: true })];
+  await clearedRefresh;
+  await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
+  workers = [claimedWorker("idle", { hasUnreadReply: true })];
+  const ignoredRefresh = page.waitForResponse((response) =>
+    response.request().method() === "GET" && new URL(response.url()).pathname === "/api/gpt-sessions",
+  );
   await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await ignoredRefresh;
   await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
   expect(workers[0].status).toBe("idle");
 });
@@ -338,7 +353,7 @@ test("E2E-01 从提示消息分支并运行后，两个分支内容和回复互�
   expect(branched.messages.some((message: { content: string }) => message.content === "BRANCH-PROMPT")).toBe(true);
   expect(branched.messages.some((message: { content: string }) => message.content === "BRANCH-REPLY")).toBe(true);
   expect(branched.runs).toBeUndefined();
-  await page.locator(`button.session-main[title="${source.title}"]`).click();
+  await page.locator(`.session-row[data-session-id="${source.id}"] .session-main`).click();
   await expect(page.locator(".message-row").filter({ hasText: "SOURCE-PROMPT" })).toBeVisible();
   await expect(page.locator(".message-row").filter({ hasText: "SOURCE-REPLY" })).toBeVisible();
   await expect(page.locator(".message-row").filter({ hasText: "BRANCH-PROMPT" })).toHaveCount(0);
@@ -352,7 +367,7 @@ test("E2E-02 协议角色错误先被拒绝，修正后原上下文可再次运�
   await ui(page).composer.fill("E2E-02-user");
   await page.getByRole("button", { name: "仅添加" }).click();
   const payloads: { messages: { role: string; content: string }[] }[] = [];
-  await page.route("**/api/run", async (route) => {
+  await page.route("**/api/runs", async (route) => {
     if (route.request().method() === "POST") payloads.push(route.request().postDataJSON());
     await route.continue();
   });

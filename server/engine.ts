@@ -454,4 +454,5 @@ export async function generate(
   } finally {
     signal?.removeEventListener("abort", abort);
   }
+  return generatedTranscript;
 }
