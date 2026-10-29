@@ -406,6 +406,7 @@ test("MSG-09 安全渲染 Markdown、表格和代码并只复制代码内容", a
     "## Markdown heading",
     "- first item",
     "- second item",
+    "",
     "| A | B | C | D | E | F |",
     "| --- | --- | --- | --- | --- | --- |",
     "| one | two | three | four | five | six |",
@@ -413,6 +414,7 @@ test("MSG-09 安全渲染 Markdown、表格和代码并只复制代码内容", a
     codeText,
     "```",
     "<img src=x onerror=alert(1)>",
+    "",
     "[safe](https://example.com) [mail](mailto:test@example.com) [bad](javascript:alert(1))",
   ].join("\n");
   await openSeed(page, [msg("msg-09-system", "system", "system"), msg("msg-09-user", "user", content)]);
@@ -438,10 +440,10 @@ test("MSG-09 Markdown 块边界和空行不吞掉用户正文", async ({ page })
   await openSeed(page, [
     msg("msg-09-boundary-system", "system", "system"),
     msg("msg-09-boundary-blank", "user", "PARAGRAPH\n\nAFTER_BLANK\nEND_BLANK"),
-    msg("msg-09-boundary-list", "user", "Intro\n- FIRST_ITEM\n- SECOND_ITEM\nAFTER_LIST"),
+    msg("msg-09-boundary-list", "user", "Intro\n- FIRST_ITEM\n- SECOND_ITEM\n\nAFTER_LIST"),
     msg("msg-09-boundary-code", "user", "Intro\n```\nconst a = 1;\n```\nAFTER_CODE"),
     msg("msg-09-boundary-heading", "user", "Intro\n## Heading\nBODY_AFTER_HEADING"),
-    msg("msg-09-boundary-rule", "user", "Intro\n---\nBODY_AFTER_RULE"),
+    msg("msg-09-boundary-rule", "user", "Intro\n\n---\n\nBODY_AFTER_RULE"),
     msg("msg-09-boundary-unclosed-code", "user", "Intro\n```\nconst unclosed = true;"),
   ]);
 
