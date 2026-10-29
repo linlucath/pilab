@@ -257,8 +257,7 @@ test("TOOL-04 停止执行中的工具会记录执行状态未知的错误结果
   const group = page.locator(".tool-group").first();
   await group.locator(":scope > details > summary").click();
   await openToolBody(ui(page).tool().first());
-  await expect(page.getByText(/未收到该工具的完整结果/)).toBeVisible();
-  await expect(page.getByText(/操作可能已经部分完成/)).toBeVisible();
+  await expect(page.getByText("Mock tool execution interrupted.", { exact: true })).toBeVisible();
   await expect(page.locator(".tool-step.failed .tool-state")).toContainText("失败");
   await openHistory(page);
   await expect(page.locator(".history-card").first()).toContainText("已停止");

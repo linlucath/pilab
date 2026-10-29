@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -41,28 +41,47 @@ async function waitFor(predicate: () => boolean) {
 
 const runInput: RunInput = { settings: { ...defaults }, messages: structuredClone(initialMessages) };
 
-test("disconnecting an NDJSON subscriber does not abort the detached run", async () => {
-  const entered = deferred();
-  const release = deferred();
-  const manager = new RunManager(async () => {}, async () => {
-    entered.resolve();
-    await release.promise;
-    return [];
-  });
-  const { runId } = manager.startRun("session-a", runInput);
-  await entered.promise;
-  const response = new FakeResponse();
-  manager.subscribe(runId, response as unknown as Response);
-  response.disconnect();
+test("A: disconnecting an NDJSON subscriber lets the run finish and persist its final message", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "pilab-detached-runtime-"));
+  try {
+    const workspacePath = path.join(directory, "workspace.json");
+    const store = new ProjectWorkspaceStore(workspacePath);
+    await store.initialize({
+      sessions: [{ id: "session-a", title: "Session A", settings: { ...defaults }, messages: structuredClone(initialMessages) }],
+      active: "session-a", hiddenPiSessions: [], followPi: false, folders: [], rootSessionIds: ["session-a"],
+    });
+    const entered = deferred();
+    const release = deferred();
+    const generated: Message = { id: "detached-assistant", role: "assistant", content: "finished after disconnect", enabled: true };
+    const manager = new RunManager(store.appendRunMessages.bind(store), async (_input, emit) => {
+      emit({ type: "assistant_start", id: generated.id });
+      emit({ type: "text", id: generated.id, delta: "partial output" });
+      entered.resolve();
+      await release.promise;
+      emit({ type: "assistant", message: generated });
+      return [generated];
+    });
+    const { runId } = manager.startRun("session-a", runInput);
+    await entered.promise;
+    const response = new FakeResponse();
+    manager.subscribe(runId, response as unknown as Response);
+    response.disconnect();
 
-  assert.equal(manager.tasks.get(runId)?.listeners.size, 0);
-  assert.equal(manager.tasks.get(runId)?.abortController.signal.aborted, false);
-  release.resolve();
-  await waitFor(() => manager.tasks.get(runId)?.status !== "running");
-  assert.equal(manager.tasks.get(runId)?.status, "completed");
+    assert.equal(manager.tasks.get(runId)?.listeners.size, 0);
+    assert.equal(manager.tasks.get(runId)?.abortController.signal.aborted, false);
+    release.resolve();
+    await waitFor(() => manager.tasks.get(runId)?.status !== "running");
+    assert.equal(manager.tasks.get(runId)?.status, "completed");
+    const persisted = JSON.parse(await readFile(workspacePath, "utf8")) as { sessions: { id: string; messages: Message[] }[] };
+    const messages = persisted.sessions.find((session) => session.id === "session-a")?.messages || [];
+    assert.equal(messages.filter((message) => message.id === generated.id).length, 1);
+    assert.equal(messages.find((message) => message.id === generated.id)?.content, generated.content);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
-test("a reconnect replays only events after afterSeq and receives live events", async () => {
+test("B: a reconnect replays only events after afterSeq and receives live events", async () => {
   const entered = deferred();
   const release = deferred();
   let emit!: (event: Record<string, unknown>) => void;
@@ -88,23 +107,39 @@ test("a reconnect replays only events after afterSeq and receives live events", 
   assert.equal(response.writableEnded, true);
 });
 
-test("only an explicit abort command aborts the generator", async () => {
-  const entered = deferred();
-  const manager = new RunManager(async () => {}, async (_input, _emit, signal) => {
-    entered.resolve();
-    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
-    return [];
-  });
-  const { runId } = manager.startRun("session-a", runInput);
-  await entered.promise;
-  assert.equal(manager.abortRun(runId), true);
-  await waitFor(() => manager.tasks.get(runId)?.status !== "running");
-  assert.equal(manager.tasks.get(runId)?.abortController.signal.aborted, true);
-  assert.equal(manager.tasks.get(runId)?.status, "aborted");
-  assert.equal(manager.abortRun(runId), false);
+test("C: explicit abort stops the generator and atomically persists its partial assistant output", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "pilab-detached-abort-"));
+  try {
+    const workspacePath = path.join(directory, "workspace.json");
+    const store = new ProjectWorkspaceStore(workspacePath);
+    await store.initialize({
+      sessions: [{ id: "session-a", title: "Session A", settings: { ...defaults }, messages: structuredClone(initialMessages) }],
+      active: "session-a", hiddenPiSessions: [], followPi: false, folders: [], rootSessionIds: ["session-a"],
+    });
+    const entered = deferred();
+    const partial: Message = { id: "partial-assistant", role: "assistant", content: "keep this partial output", enabled: true };
+    const manager = new RunManager(store.appendRunMessages.bind(store), async (_input, emit, signal) => {
+      emit({ type: "assistant", message: partial });
+      entered.resolve();
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      return [partial];
+    });
+    const { runId } = manager.startRun("session-a", runInput);
+    await entered.promise;
+    assert.equal(manager.abortRun(runId), true);
+    await waitFor(() => manager.tasks.get(runId)?.status !== "running");
+    assert.equal(manager.tasks.get(runId)?.abortController.signal.aborted, true);
+    assert.equal(manager.tasks.get(runId)?.status, "aborted");
+    assert.equal(manager.abortRun(runId), false);
+    const persisted = JSON.parse(await readFile(workspacePath, "utf8")) as { sessions: { id: string; messages: Message[] }[] };
+    const saved = persisted.sessions.find((session) => session.id === "session-a")?.messages.find((message) => message.id === partial.id);
+    assert.equal(saved?.content, partial.content);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
-test("completed run messages are atomically appended to the requested session", async () => {
+test("A: completed run messages are atomically upserted into only the requested session", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "pilab-runs-"));
   try {
     const store = new ProjectWorkspaceStore(path.join(directory, "workspace.json"));

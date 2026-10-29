@@ -140,6 +140,7 @@ export default function App() {
   const activeRunsRef = useRef(activeRuns);
   const startingSessionsRef = useRef(startingSessions);
   const runControlsRef = useRef(new Map<string, RunControl>());
+  const completedRunIdsRef = useRef(new Set<string>());
   const busyForSessionRef = useRef<(sessionId: string) => boolean>(() => false);
   const piStreamOnline = useRef(false);
 
@@ -279,7 +280,7 @@ export default function App() {
         if (cancelled) return;
         const next = new Map<string, string>();
         for (const run of data.runs || [])
-          if (typeof run.sessionId === "string" && typeof run.runId === "string") next.set(run.sessionId, run.runId);
+          if (typeof run.sessionId === "string" && typeof run.runId === "string" && !completedRunIdsRef.current.has(run.runId)) next.set(run.sessionId, run.runId);
         activeRunsRef.current = next;
         setActiveRuns(next);
       } catch { /* Keep the last known active-run snapshot until the service responds. */ }
@@ -289,6 +290,11 @@ export default function App() {
     const timer = window.setInterval(() => void poll(), 2_000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [ready]);
+  useEffect(() => {
+    if (!ready || startingSessions.has(session.id) || runControlsRef.current.has(session.id)) return;
+    const runId = activeRuns.get(session.id);
+    if (runId) void run(undefined, session.id, runId);
+  }, [activeRuns, ready, session.id, startingSessions]);
   useEffect(() => {
     if (!debugPanel) return;
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setDebugPanel(null); };
@@ -653,21 +659,21 @@ export default function App() {
   }
   async function copyText(value: string) { try { await navigator.clipboard.writeText(value); setNotice("已复制到剪贴板。"); } catch { setNotice("无法访问剪贴板。"); } }
 
-  async function run(messagesToRun?: Message[], targetSessionId?: string) {
+  async function run(messagesToRun?: Message[], targetSessionId?: string, resumeRunId?: string) {
     if (!ready) return;
     const currentWorkspace = workspaceRef.current;
     const sessionId = targetSessionId || currentWorkspace.active;
-    if (busyForSessionRef.current(sessionId)) return;
+    if (!resumeRunId && busyForSessionRef.current(sessionId)) return;
     const activeSession = currentWorkspace.sessions.find((item) => item.id === sessionId);
     if (!activeSession) return;
     if (activeSession.piSync) { setNotice("请先在 Pi CLI 同步菜单中应用或放弃本地修改。"); return; }
     const runMessages = messagesToRun || activeSession.messages;
     const activeMessages = runMessages.filter((message) => message.enabled);
-    if (!activeMessages.length || !activeMessages.some((message) => message.content.trim() || message.toolCalls?.length || message.role === "tool")) {
+    if (!resumeRunId && (!activeMessages.length || !activeMessages.some((message) => message.content.trim() || message.toolCalls?.length || message.role === "tool"))) {
       const message = "请先添加至少一条有内容且已启用的消息。";
       setSessionRunError(activeSession.id, message); return;
     }
-    const historyIssue = toolHistoryError(activeMessages);
+    const historyIssue = resumeRunId ? undefined : toolHistoryError(activeMessages);
     if (historyIssue) { setSessionRunError(activeSession.id, historyIssue); return; }
     const runId = uid(); const started = Date.now();
     const settings = { ...activeSession.settings, apiKey: apiKeys[sessionId] || "" };
@@ -746,11 +752,14 @@ export default function App() {
       }
     };
     try {
-      const response = await fetch("/api/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: pretty({ sessionId, settings, messages: runMessages }) });
-      if (!response.ok) { const data = await response.json(); throw new Error(data.error || `HTTP ${response.status}`); }
-      const submitted = await response.json() as { runId?: unknown; sessionId?: unknown };
-      if (typeof submitted.runId !== "string" || submitted.sessionId !== sessionId) throw new Error("服务未返回有效的后台运行 ID。");
-      remoteRunId = submitted.runId;
+      if (resumeRunId) remoteRunId = resumeRunId;
+      else {
+        const response = await fetch("/api/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: pretty({ sessionId, settings, messages: runMessages }) });
+        if (!response.ok) { const data = await response.json(); throw new Error(data.error || `HTTP ${response.status}`); }
+        const submitted = await response.json() as { runId?: unknown; sessionId?: unknown };
+        if (typeof submitted.runId !== "string" || submitted.sessionId !== sessionId) throw new Error("服务未返回有效的后台运行 ID。");
+        remoteRunId = submitted.runId;
+      }
       runControl = { sessionId, runId: remoteRunId, lastSeq: 0, shouldSubscribe: workspaceRef.current.active === sessionId };
       runControlsRef.current.set(sessionId, runControl);
       setActiveRunForSession(sessionId, remoteRunId);
@@ -790,9 +799,12 @@ export default function App() {
         if (event.type === "error") { errorEventReceived = true; const message = typeof event.message === "string" ? event.message : "模型运行发生错误。"; updateRun({ status: "error", error: message, output: text }); setSessionRunError(sessionId, message); }
         if (event.type === "run_status") {
           terminalReceived = true;
+          completedRunIdsRef.current.add(remoteRunId);
+          if (completedRunIdsRef.current.size > 100)
+            completedRunIdsRef.current.delete(completedRunIdsRef.current.values().next().value!);
           if (event.status === "completed") updateRun({ status: finalGenerationStatus, output: text });
-          else if (event.status === "aborted") { settlePendingToolCalls("执行已停止，未收到该工具的完整结果。操作可能已经部分完成，请检查实际文件状态后再继续。"); updateRun({ status: "stopped", output: text }); setSessionRunError(sessionId); }
-          else if (event.status === "failed") { const message = typeof event.message === "string" ? event.message : "模型运行失败。"; updateRun({ status: "error", error: message, output: text }); if (!errorEventReceived) setSessionRunError(sessionId, message); }
+          else if (event.status === "aborted") { settlePendingToolCalls("执行已停止，未收到该工具的完整结果。操作可能已经部分完成，请检查实际文件状态后再继续。"); updateRun({ status: "stopped", error: undefined, output: text }); setSessionRunError(sessionId); }
+          else if (event.status === "failed") { const message = typeof event.message === "string" ? event.message : "模型运行失败。"; updateRun({ status: "error", ...(errorEventReceived ? {} : { error: message }), output: text }); if (!errorEventReceived) setSessionRunError(sessionId, message); }
           if (runControl) { runControlsRef.current.delete(sessionId); setActiveRunForSession(sessionId, undefined); }
           updateStreamView(sessionId, () => emptyStreamView);
           if (forkSwitchSourceRef.current === sessionId) forkSwitchSourceRef.current = null;
@@ -862,9 +874,10 @@ export default function App() {
     } catch (error) {
       removeEmpty(currentMessageId);
       const detail = error instanceof Error ? error.message : String(error);
+      const message = error instanceof TypeError ? "网页连接本地服务失败。" : detail;
       reportClientDiagnostic("run_request_error", error, { runId, sessionId, inputMessageCount: activeMessages.length, receivedChars: text.length, startedAt: new Date(started).toISOString() });
-      updateRun({ status: "error", error: detail, output: text });
-      setSessionRunError(sessionId, detail);
+      updateRun({ status: "error", error: message, output: text });
+      setSessionRunError(sessionId, message);
     } finally {
       setSessionStarting(sessionId, false);
       if (runControl && runControlsRef.current.get(sessionId) === runControl) {

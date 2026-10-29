@@ -24,6 +24,11 @@ export interface RunTask {
   listenerCloseHandlers: Map<Response, () => void>;
   lastSeq: number;
   startedAt: number;
+  inputMessageCount: number;
+  inputChars: number;
+  protocol: string;
+  model: string;
+  outputChars: number;
   generatedMessages: Message[];
 }
 
@@ -44,6 +49,7 @@ export class RunManager {
     private readonly appendMessages: AppendRunMessages,
     private readonly generateRun: RunGenerator = generate,
     private readonly eventBufferLimit = DEFAULT_EVENT_BUFFER_LIMIT,
+    private readonly observeEvent?: (task: RunTask, event: RunEvent) => void,
   ) {
     if (!Number.isInteger(eventBufferLimit) || eventBufferLimit < 1)
       throw new Error("eventBufferLimit must be a positive integer.");
@@ -63,6 +69,11 @@ export class RunManager {
       listenerCloseHandlers: new Map(),
       lastSeq: 0,
       startedAt: Date.now(),
+      inputMessageCount: runInput.messages.filter((message) => message.enabled).length,
+      inputChars: runInput.messages.filter((message) => message.enabled).reduce((total, message) => total + message.content.length, 0),
+      protocol: runInput.settings.protocol,
+      model: runInput.settings.model,
+      outputChars: 0,
       generatedMessages: [],
     };
     this.tasks.set(runId, task);
@@ -155,6 +166,8 @@ export class RunManager {
   }
 
   private publish(task: RunTask, event: RunEvent) {
+    if (event.type === "text" && typeof event.delta === "string") task.outputChars += event.delta.length;
+    try { this.observeEvent?.(task, event); } catch { /* Diagnostic observers must never affect the run. */ }
     const item = { seq: ++task.lastSeq, event };
     task.eventBuffer.push(item);
     if (task.eventBuffer.length > this.eventBufferLimit)

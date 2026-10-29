@@ -19,7 +19,17 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataRoot = path.resolve(process.env.PI_LAB_DATA_DIR || root);
 const app = express();
 const workspaceStore = new ProjectWorkspaceStore(path.join(dataRoot, ".pi-lab", "workspace.json"));
-const runManager = new RunManager(workspaceStore.appendRunMessages.bind(workspaceStore));
+const runManager = new RunManager(workspaceStore.appendRunMessages.bind(workspaceStore), undefined, undefined, (task, event) => {
+  const context = {
+    runId: task.runId, sessionId: task.sessionId, durationMs: Date.now() - task.startedAt,
+    inputChars: task.inputChars, outputChars: task.outputChars, messageCount: task.inputMessageCount,
+    protocol: task.protocol, model: task.model,
+  };
+  if (event.type === "run_started") logEvent("run", "info", "run_started", "收到模型运行请求。", context);
+  else if (event.type === "run_status" && event.status === "completed") logEvent("run", "info", "run_done", "模型后台运行正常完成。", { ...context, usage: event.usage });
+  else if (event.type === "run_status" && event.status === "aborted") logEvent("run", "warn", "run_stopped", "模型后台运行已停止。", context);
+  else if (event.type === "error") logEvent("run", "error", "run_error", "模型运行发生错误。", { ...context, reason: event.message });
+});
 app.disable("x-powered-by");
 app.use((req, res, next) => {
   // A local app: prevent third-party pages from making authenticated requests to the backend.
