@@ -84,7 +84,7 @@ Gemini 通过三个原生工具管理这些会话。创建任务时设置唯一�
 
 | 原生工具 | 用途 |
 | --- | --- |
-| `subagent_dispatch` | 传 `task` 或 1–8 个 `tasks`；`mode: "async"`（默认）后台派发并返回 tracking handles，`mode: "sync"` 等待报告并受 `timeoutSeconds` 限制。已存在的会话可用 `action: "send"` 接续。 |
+| `subagent_dispatch` | 传 `task` 或 1–8 个 `tasks`；`mode: "async"`（默认）后台派发并返回 tracking handles；`mode: "sync"` 安静阻塞，等待工兵当前轮次结束、出错、需要输入或被取消，默认无超时。显式 `timeoutSeconds` 到期会报错，不返回“仍在运行”的部分结果。已存在的会话可用 `action: "send"` 接续。 |
 | `subagent_query` | `action: "list"` 查询会话列表；`action: "status"` 加 `name` 或 handle 查询状态、未读简报、问题和近期活动。失败时自动附带有界 diagnostics；也可显式请求。 |
 | `subagent_control` | 使用 `action: "abort"` 中止并清理排队任务、`"respond"` 回答工兵输入，或 `"close"` 关闭进程并保留原生历史。 |
 
@@ -112,7 +112,7 @@ GPT 直接使用自己的 `read`、`grep`、`find`、`ls`、`bash`、`edit`、`w
 
 主模型不会把整段聊天历史自动交给 GPT，由 Gemini 在派发消息中提供相关背景和约束。`subagent_query` 默认只返回当前主会话尚未读过的已生成简报，不发送正在流式生成的草稿；重复读取显示「暂无新简报」，需要重看时可设 `repeat: true`。已读记录随聊天历史保存，不发送给模型；不同主会话和分支独立判断，新的 GPT 回复即使文字相同也会重新送达。终端 `/gpt read` 仍可主动查看最新回复和草稿。主模型与各 GPT 都通过 Pi 的正常凭证机制请求各自的模型，不复制登录 Token。可以通过 `PI_LAB_PI_BIN` 指定其他 Pi 可执行文件。
 
-需要等结果时，Gemini 应使用 `subagent_dispatch({ task: {...}, mode: "sync" })`，而非执行 `bash sleep` 或反复读取进度。批量同步派发会等待所有 worker，遇到错误、停止或需要回答时提前返回；`timeoutSeconds` 可设为 1–1200，默认 1200（20 分钟），超时后 worker 仍在后台继续。取消等待不会停止 worker；需另用 `subagent_control(action="abort")`。等待通过进程状态事件唤醒，不轮询文件；主模型停止或网页关闭时取消当前等待。终端 Pi 在主动等待期间不会再为同一个完成事件额外排入自动通知轮次。
+需要等结果时，Gemini 应使用 `subagent_dispatch({ task: {...}, mode: "sync" })`，而非执行 `bash sleep`。同步派发会安静等待当前轮次结束（或出错、需要回答、被用户取消），不设默认超时；省略 `timeoutSeconds` 即无限等待。同步派发期间无需也不得反复调用 `subagent_query` 或 wait 轮询。仅显式指定 1–1200 秒的 `timeoutSeconds` 才设置等待期限，到期会以错误结束此次工具调用；任务不会因此自动中止，需要停工时用 `subagent_control(action="abort")`。批量同步派发默认等待所有 worker，遇到错误、停止或需要回答时提前返回。等待通过进程状态事件唤醒，不轮询文件；主模型停止或网页关闭时取消当前等待。终端 Pi 在主动等待期间不会再为同一个完成事件额外排入自动通知轮次。
 
 schema、模型声明、运行时校验和 UI 摘要来自统一 ToolRegistry 定义。详细用法写在三个工具的声明中，Gemini 无需额外读取 README，也不需要用户每次重复说明。
 
