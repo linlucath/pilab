@@ -16,7 +16,7 @@ async function until(check: () => boolean) {
   }
 }
 
-test("session waits have no default timeout and explicit deadlines reject instead of returning timedOut", async () => {
+test("session waits have no deadline and AbortSignal cancels the wait without stopping the worker", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "pilab-indefinite-wait-"));
   const releases: (() => void)[] = [];
   const manager = new GptSessionManager({
@@ -44,15 +44,19 @@ test("session waits have no default timeout and explicit deadlines reject instea
     let resolved = false;
     const indefinite = manager.wait(["worker"]).then((result) => { resolved = true; return result; });
     await new Promise((resolve) => setTimeout(resolve, 30));
-    assert.equal(resolved, false, "omitting timeoutMs must keep waiting for the current turn");
+    assert.equal(resolved, false, "wait must remain blocked until the current turn finishes");
     releases.shift()!();
     assert.equal((await indefinite).completed, true);
     await firstSend;
 
-    const secondSend = manager.send("worker", "wait with deadline");
+    const secondSend = manager.send("worker", "wait with external cancellation");
     await until(() => releases.length === 1);
-    await assert.rejects(manager.wait(["worker"], 30), /同步等待超过 0\.03 秒/);
-    assert.equal(manager.hasActiveWaiter("worker"), false, "timeout must unregister the waiter");
+    const controller = new AbortController();
+    const cancelled = manager.wait(["worker"], controller.signal);
+    controller.abort();
+    await assert.rejects(cancelled, /同步等待已取消/);
+    assert.equal(manager.hasActiveWaiter("worker"), false, "cancel must unregister the waiter");
+    assert.equal(manager.read("worker").session.status, "running", "cancelling the wait must not stop the worker");
     releases.shift()!();
     await secondSend;
     assert.equal((await manager.wait(["worker"])).completed, true);
@@ -116,7 +120,7 @@ test("gpt_session_send(wait=true) registers its waiter before a fast prompt can 
     await until(() => manager.list().some((session) => session.name === "fast-worker" && session.status === "idle"));
     const tools = createSessionTools(async () => ({ manager, resolveModel: () => model }), undefined, owner);
     const send = tools.find((tool) => tool.name === "gpt_session_send")!;
-    const result = await send.execute("send", { name: "fast-worker", message: "finish immediately", wait: true, timeoutSeconds: 2 });
+    const result = await send.execute("send", { name: "fast-worker", message: "finish immediately", wait: true });
     const details = result.details as any;
     assert.equal(promptSawWaiter, true, "waitAndReport must claim the session before prompt dispatch begins");
     assert.equal(notices, 0, "a waited reply must not also queue a parent notification");
@@ -211,7 +215,7 @@ test("GPT aggregation joins assistant text segments, removes adjacent duplicates
     await until(() => finish.size === 2 && manager.list().every((session) => session.status === "running"));
     assert.equal(manager.cleanupCandidates().length, 0, "running sessions must never be offered for cleanup");
     let resolved = false;
-    const all = manager.wait(["aggregate", "second"], undefined, undefined, "all").then((result) => { resolved = true; return result; });
+    const all = manager.wait(["aggregate", "second"], undefined, "all").then((result) => { resolved = true; return result; });
     finish.get("second")!();
     await new Promise((resolve) => setTimeout(resolve, 25));
     assert.equal(resolved, false, "all mode must not return on the first completed session");

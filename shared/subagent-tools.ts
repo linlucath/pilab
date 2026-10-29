@@ -4,10 +4,24 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/** Remove the retired wait deadline from persisted tool-call arguments before they re-enter model context. */
+export function stripRetiredSubagentTimeoutArgument(source: string): string {
+  try {
+    const value = record(JSON.parse(source));
+    if (!Object.hasOwn(value, "timeoutSeconds")) return source;
+    const normalized = { ...value };
+    delete normalized.timeoutSeconds;
+    return JSON.stringify(normalized);
+  } catch {
+    return source;
+  }
+}
+
 /** Compact large task messages while preserving the new dispatch shape in model context. */
 export function compactSubagentDispatchArguments(source: string, summary: string, maxMessageChars = 800): string {
   try {
-    const parsed: unknown = JSON.parse(source);
+    const normalizedSource = stripRetiredSubagentTimeoutArgument(source);
+    const parsed: unknown = JSON.parse(normalizedSource);
     const value = record(parsed);
     const compact = (task: Record<string, unknown>) => typeof task.message === "string" && task.message.length > maxMessageChars
       ? { ...task, message: `任务摘要：${summary.slice(0, maxMessageChars)}` }
@@ -16,7 +30,7 @@ export function compactSubagentDispatchArguments(source: string, summary: string
     if (value.task && typeof value.task === "object" && !Array.isArray(value.task))
       return JSON.stringify({ ...value, task: compact(record(value.task)) });
     if (Array.isArray(value.tasks)) return JSON.stringify({ ...value, tasks: value.tasks.map((task) => compact(record(task))) });
-    return source;
+    return normalizedSource;
   } catch {
     return source;
   }

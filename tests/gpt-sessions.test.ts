@@ -271,7 +271,9 @@ test("session persistence recreates its parent directories before manifest and e
     }) });
   try {
     const session = await manager.create({ name: "mkdir recovery", model });
-    await manager.wait([session.id], 2_000);
+    const deadline = new AbortController();
+    const testGuard = setTimeout(() => deadline.abort(), 2_000);
+    try { await manager.wait([session.id], deadline.signal); } finally { clearTimeout(testGuard); }
     await rm(path.dirname(storageDir), { recursive: true, force: true });
     await manager.close(session.id);
     const persisted = JSON.parse(await readFile(path.join(storageDir, "sessions.json"), "utf8"));
