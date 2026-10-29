@@ -8,7 +8,7 @@
 .new-conversation { display: flex; width: 100%; min-width: 0; height: 34px; min-height: 34px; flex: 1; align-items: center; gap: 7px; padding: 0 9px; border: 1px solid var(--border); border-radius: 8px; color: var(--text-muted); background: var(--surface); font-size: 11px; font-weight: 550; text-align: left; box-shadow: none; transition: background .14s ease, border-color .14s ease, color .14s ease; }
 .new-conversation:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); background: var(--surface-hover); }
 .new-conversation > svg { color: var(--accent); }
-.new-conversation > span, .new-conversation kbd { white-space: nowrap; }
+.new-conversation > span { white-space: nowrap; }
 .sidebar-create-row .new-folder-button { display: grid; width: 34px; height: 34px; flex: 0 0 34px; place-items: center; padding: 0; border-color: transparent; border-radius: 8px; color: var(--text-muted); background: transparent; }
 .sidebar-create-row .new-folder-button:hover:not(:disabled) { color: var(--text); border-color: transparent; background: var(--surface-hover); }
 .sidebar.is-collapsed .sidebar-create-row { flex-direction: column; gap: 6px; }
@@ -73,7 +73,6 @@
 .sidebar.is-collapsed .folder-toggle small,
 .sidebar.is-collapsed .folder-chevron,
 .sidebar.is-collapsed .new-conversation span,
-.sidebar.is-collapsed .new-conversation kbd,
 .sidebar.is-collapsed .sidebar-footer { display: none; }
 .sidebar.is-collapsed .session-row { justify-content: center; }
 .sidebar.is-collapsed .session-main { width: 38px; flex: 0 0 38px; justify-content: center; padding: 6px; }
@@ -589,3 +588,23 @@
 :root[data-theme="dark"] .session-row.selected { background: color-mix(in srgb, var(--accent) 13%, var(--surface)); }
 :root[data-theme="dark"] .session-item:not(.active):hover,
 :root[data-theme="dark"] .session-row:not(.selected):hover { background: rgba(255, 255, 255, 0.045); }
+
+/* Prompt and message editing surfaces */
+.system-message-list { gap: 8px; padding-bottom: 8px; }
+.system-message-meta { min-height: 36px; gap: 8px; padding: 0 11px; }
+.system-message-meta > span { display: inline-flex; min-width: 0; align-items: center; gap: 7px; }
+.system-message-meta > span > svg { width: 13px; height: 13px; flex: 0 0 auto; }
+.system-message-edit:focus-within { border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 9%, transparent); }
+.system-message-edit textarea { display: block; width: 100%; min-width: 0; min-height: 90px; padding: 12px 14px; resize: none; box-sizing: border-box; border: 0; border-top: 1px solid var(--border); background: var(--surface); font-size: 11px; line-height: 1.6; }
+.system-message-edit textarea:focus-visible { outline: 0; }
+.system-banner-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 13px 13px; border-top: 1px solid var(--border); }
+.system-banner-tools, .system-banner-edit-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.system-banner-edit-actions { margin-left: auto; }
+.system-banner-edit-actions .text-button, .message-editor-actions .text-button { min-height: 32px; padding: 0 11px; border: 1px solid var(--border); border-radius: 8px; font-size: 10px; }
+.system-banner-edit-actions .system-prompt-save, .message-editor-actions .message-editor-save { border-color: var(--accent); color: #fff; background: var(--accent); font-weight: 650; }
+.system-banner-edit-actions .system-prompt-save:hover:not(:disabled), .message-editor-actions .message-editor-save:hover:not(:disabled) { border-color: var(--accent); color: #fff; background: color-mix(in srgb, var(--accent) 88%, #000); }
+.message-row--user-bubble.is-editing > .chat-message.user { width: 100%; min-width: 0; max-width: 100%; flex: 0 1 100%; margin-left: 0; padding: 14px 16px 12px; border-color: var(--accent); border-radius: 14px; background: var(--surface); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent), var(--shadow-sm); }
+.message-row--user-bubble.is-editing > .chat-message.user > .message-content { width: 100%; min-width: 0; padding: 0; }
+.message-content > textarea { display: block; width: 100%; min-width: 0; max-width: 100%; min-height: 56px; max-height: 480px; height: auto; box-sizing: border-box; padding: 2px 0 8px; resize: none; overflow-x: hidden; overflow-y: hidden; border: 0; border-radius: 0; outline: 0; color: var(--text); background: transparent; box-shadow: none; font-size: 12px; line-height: 1.65; }
+.message-editor-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
+.message-editor-actions .message-editor-cancel { color: var(--text-muted); background: var(--surface); }

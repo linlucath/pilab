@@ -23,7 +23,7 @@ test("MSG-01 仅添加各角色消息、从消息入口插入并在系统区添�
   const call = { id: "msg-01-call", name: "e2e_mock_tool", arguments: "{}" };
   await openSeed(page, [
     msg("msg-01-system", "system", "system prompt"),
-    msg("msg-01-developer", "developer", "developer prompt"),
+    msg("msg-01-developer", "developer", "developer prompt", { enabled: false }),
     msg("msg-01-existing", "user", "existing user"),
     msg("msg-01-assistant", "assistant", "existing assistant"),
     msg("msg-01-tool-owner", "assistant", "tool owner", { toolCalls: [call] }),
@@ -54,15 +54,42 @@ test("MSG-01 仅添加各角色消息、从消息入口插入并在系统区添�
   const userOrder = await page.locator(".message-row--user-bubble").evaluateAll((items) => items.map((item) => item.textContent));
   expect(userOrder.findIndex((text) => text?.includes("inserted in history"))).toBe(userOrder.findIndex((text) => text?.includes("existing user")) + 1);
 
-  await page.locator(".system-banner").getByRole("button", { name: "展开 / 编辑" }).click();
-  await page.locator(".system-banner").getByRole("button", { name: "添加 Developer" }).click();
+  const systemBanner = page.locator(".system-banner");
+  await systemBanner.getByRole("button", { name: "展开 / 编辑" }).click();
+  const systemEditors = page.getByRole("textbox", { name: "system 人设内容" });
   const developerEditors = page.getByRole("textbox", { name: "developer 人设内容" });
+  await expect(systemEditors).toHaveCount(1);
+  await expect(developerEditors).toHaveCount(1);
+  await expect(systemEditors.first()).toBeEditable();
+  await expect(developerEditors.first()).toBeEditable();
+  await expect(systemEditors.first()).toBeFocused();
+  await expect(systemEditors.first()).toHaveCSS("resize", "none");
+  await expect(systemBanner.locator(".system-banner-actions kbd")).toHaveCount(0);
+  await expect(systemBanner.getByRole("button", { name: "取消" })).toHaveAttribute("title", "Esc 取消");
+  await expect(systemBanner.getByRole("button", { name: "保存" })).toHaveAttribute("title", "⌘/Ctrl + Enter 保存");
+
+  await systemEditors.first().fill("system prompt edited directly");
+  await developerEditors.first().fill("developer prompt edited directly");
+  await systemBanner.getByRole("button", { name: "添加 Developer" }).click();
   await expect(developerEditors).toHaveCount(2);
-  await page.locator(".system-banner").getByRole("button", { name: "编辑指令" }).click();
   await expect(developerEditors.last()).toBeEditable();
   await developerEditors.last().fill("developer added from system prompt area");
-  await page.locator(".system-banner").getByRole("button", { name: /保存/ }).click();
-  await expect(developerEditors.last()).toHaveValue("developer added from system prompt area");
+  await systemBanner.getByRole("button", { name: "保存" }).click();
+  await expect.poll(async () => (await savedWorkspace(page)).sessions[0].messages.slice(0, 3).map((message: Message) => [message.role, message.content, message.enabled])).toEqual([
+    ["system", "system prompt edited directly", true],
+    ["developer", "developer prompt edited directly", false],
+    ["developer", "developer added from system prompt area", true],
+  ]);
+
+  await systemBanner.getByRole("button", { name: "展开 / 编辑" }).click();
+  await systemEditors.first().fill("discard this prompt draft");
+  await systemEditors.first().press("Escape");
+  expect((await savedWorkspace(page)).sessions[0].messages[0].content).toBe("system prompt edited directly");
+
+  await systemBanner.getByRole("button", { name: "展开 / 编辑" }).click();
+  await systemEditors.first().fill("system prompt saved by shortcut");
+  await systemEditors.first().press("Control+Enter");
+  await expect.poll(async () => (await savedWorkspace(page)).sessions[0].messages[0].content).toBe("system prompt saved by shortcut");
   await page.locator('.tool-step[data-result-id="msg-01-tool-result"] summary').click();
   await expect(page.locator('.tool-step[data-result-id="msg-01-tool-result"]')).toContainText("existing tool result");
 });
@@ -98,6 +125,64 @@ test("MSG-02 编辑消息可保存、Esc 取消并用 Ctrl/Command+Enter 保存�
   await page.getByRole("button", { name: "重新运行" }).click();
   await expect(page.getByText("MSG-02-CONTEXT-OK")).toBeVisible();
   expect(submitted?.messages.find((message) => message.id === "msg-02-user")?.content).toBe(finalText);
+});
+
+test("MSG-02 用户消息编辑器保持对话宽度并随长文本自动增高", async ({ page }) => {
+  await openSeed(page, [msg("msg-02-layout-system", "system", "system"), msg("msg-02-layout-user", "user", "short prompt")]);
+  const target = row(page, "msg-02-layout-user");
+  const displayBox = await target.locator("article").boundingBox();
+  expect(displayBox).not.toBeNull();
+
+  const editor = await editMessage(target, "编辑 You 消息");
+  const cardBox = await target.locator("article").boundingBox();
+  const rowBox = await target.boundingBox();
+  const editorBox = await editor.boundingBox();
+  expect(cardBox).not.toBeNull();
+  expect(rowBox).not.toBeNull();
+  expect(editorBox).not.toBeNull();
+  expect(cardBox!.width).toBeGreaterThanOrEqual(500);
+  expect(cardBox!.width).toBeGreaterThan(displayBox!.width * 3);
+  expect(Math.abs(cardBox!.width - rowBox!.width)).toBeLessThanOrEqual(2);
+  expect(editorBox!.width).toBeGreaterThanOrEqual(500);
+  const editorStyles = await editor.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { borderWidth: style.borderTopWidth, outline: style.outlineStyle, background: style.backgroundColor };
+  });
+  expect(editorStyles).toEqual({ borderWidth: "0px", outline: "none", background: "rgba(0, 0, 0, 0)" });
+  const card = target.locator("article.chat-message.user");
+  await expect(card).toHaveCSS("border-top-width", "1px");
+  const cardBorderMatchesAccent = await card.evaluate((element) => {
+    const probe = document.createElement("span");
+    probe.style.color = "var(--accent)";
+    document.body.append(probe);
+    const matches = getComputedStyle(probe).color === getComputedStyle(element).borderTopColor;
+    probe.remove();
+    return matches;
+  });
+  expect(cardBorderMatchesAccent).toBe(true);
+  expect(await target.locator(".message-editor-actions").evaluate((actions) => actions.closest("article.chat-message.user") !== null)).toBe(true);
+  expect(editorBox!.height).toBeGreaterThanOrEqual(56);
+  expect(editorBox!.height).toBeLessThanOrEqual(70);
+  await expect(editor).toHaveCSS("resize", "none");
+  await expect(target.locator(".message-editor-actions kbd")).toHaveCount(0);
+  await expect(target.locator(".message-editor-cancel")).toHaveText("取消");
+  await expect(target.locator(".message-editor-save")).toHaveText("保存");
+
+  const initialHeight = editorBox!.height;
+  await editor.fill(Array.from({ length: 12 }, (_, index) => `第 ${index + 1} 行输入内容`).join("\n"));
+  const grownBox = await editor.boundingBox();
+  expect(grownBox).not.toBeNull();
+  expect(grownBox!.height).toBeGreaterThan(initialHeight + 80);
+  expect(grownBox!.height).toBeGreaterThan(95);
+
+  await editor.fill(Array.from({ length: 60 }, (_, index) => `长文本第 ${index + 1} 行内容`).join("\n"));
+  const cappedBox = await editor.boundingBox();
+  expect(cappedBox).not.toBeNull();
+  expect(cappedBox!.height).toBeLessThanOrEqual(481);
+  expect(cappedBox!.height).toBeGreaterThanOrEqual(479);
+  await expect.poll(() => editor.evaluate((element) => element.scrollHeight > element.clientHeight)).toBeTruthy();
+  await expect(target.getByRole("button", { name: "取消编辑" })).toBeVisible();
+  await expect(target.getByRole("button", { name: "保存消息" })).toBeVisible();
 });
 
 test("MSG-03 普通消息可改角色且工具调用和结果的角色修改有原因提示", async ({ page }) => {

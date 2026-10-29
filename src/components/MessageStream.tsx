@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { ArrowDown, ArrowUp, BookOpen, Brain, ChevronDown, Clock, Copy, Cpu, Dna, Eye, EyeOff, GitBranch, Image as ImageIcon, MessageSquarePlus, Pencil, Plus, Search, Send, Sparkles, Terminal, Trash2, UserRound, Wrench, X } from "lucide-react";
 import { roles, type Message, type ToolCall } from "../../shared/schema";
@@ -48,21 +48,20 @@ function toolIcon(name: string) {
 
 function SystemPromptBanner({ messages, startIndex, onMessage, onAdd, onDelete, disabled }: { messages: Message[]; startIndex: number; onMessage: Props["onMessage"]; onAdd: Props["onAdd"]; onDelete: Props["onDelete"]; disabled: boolean }) {
   const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const editors = useRef<HTMLTextAreaElement[]>([]);
   const preview = messages.map((message) => message.content.replace(/\s+/g, " ").trim()).filter(Boolean).join(" · ");
   const beginEdit = () => {
-    if (disabled) return;
+    if (disabled || open) return;
     setDrafts(Object.fromEntries(messages.map((message) => [message.id, message.content])));
-    setEditing(true);
+    setOpen(true);
     requestAnimationFrame(() => editors.current[0]?.focus());
   };
-  const cancelEdit = () => { setEditing(false); setDrafts({}); };
+  const cancelEdit = () => { setOpen(false); setDrafts({}); };
   const saveEdit = () => {
     for (const message of messages) if (drafts[message.id] !== undefined && drafts[message.id] !== message.content)
       onMessage(message.id, { content: drafts[message.id] });
-    setEditing(false); setDrafts({});
+    setOpen(false); setDrafts({});
   };
   const onEditorKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancelEdit(); }
@@ -71,14 +70,17 @@ function SystemPromptBanner({ messages, startIndex, onMessage, onAdd, onDelete, 
   return <section className={`system-banner ${open ? "expanded" : ""}`}>
     <div className="system-banner-head">
       <span className="system-sparkle">✦</span>
-      <div className="system-banner-copy"><strong>系统人设 · Gemini 最佳伙伴 &amp; GPT 调度模式</strong><small>{open ? "System / Developer 指令" : preview.slice(0, 145) || "尚未设置系统指令"}</small></div>
-      <button className="text-button" disabled={editing} onClick={() => setOpen((value) => !value)}>{open ? "收起" : "展开 / 编辑"}<ChevronDown size={14} /></button>
+      <div className="system-banner-copy"><strong>系统人设 · Gemini 最佳伙伴 &amp; GPT 调度模式</strong><small>{open ? "System / Developer 指令 · 编辑中" : preview.slice(0, 145) || "尚未设置系统指令"}</small></div>
+      <button className="text-button" disabled={disabled || open} aria-expanded={open} onClick={beginEdit}>{open ? "编辑中" : "展开 / 编辑"}<ChevronDown size={14} /></button>
     </div>
     {open && <div className="system-message-list">{messages.map((message, offset) => <div className="system-message-edit" key={message.id} data-message-id={message.id}>
-      <div className="system-message-meta"><span>{roleIcon(message.role)}{message.role}</span><button className="icon-button" disabled={disabled || editing} title={message.enabled ? "排除上下文" : "包含上下文"} onClick={() => onMessage(message.id, { enabled: !message.enabled })}>{message.enabled ? <Eye size={14} /> : <EyeOff size={14} />}</button><button className="icon-button danger" title="删除人设消息" disabled={disabled || editing} onClick={() => onDelete(message.id)}><Trash2 size={14} /></button></div>
-      <textarea ref={(element) => { if (element) editors.current[offset] = element; }} aria-label={`${message.role} 人设内容`} disabled={disabled} value={editing ? drafts[message.id] ?? message.content : message.content} readOnly={!editing} onChange={(event) => setDrafts((current) => ({ ...current, [message.id]: event.target.value }))} onKeyDown={editing ? onEditorKeyDown : undefined} />
+      <div className="system-message-meta"><span>{roleIcon(message.role)}{message.role}</span><button className="icon-button" disabled={disabled} title={message.enabled ? "排除上下文" : "包含上下文"} onClick={() => onMessage(message.id, { enabled: !message.enabled })}>{message.enabled ? <Eye size={14} /> : <EyeOff size={14} />}</button><button className="icon-button danger" title="删除人设消息" disabled={disabled} onClick={() => onDelete(message.id)}><Trash2 size={14} /></button></div>
+      <textarea ref={(element) => { if (element) editors.current[offset] = element; }} aria-label={`${message.role} 人设内容`} disabled={disabled} value={drafts[message.id] ?? message.content} onChange={(event) => setDrafts((current) => ({ ...current, [message.id]: event.target.value }))} onKeyDown={onEditorKeyDown} />
     </div>)}
-      <div className="system-banner-actions">{editing ? <><button className="text-button" disabled={disabled} onClick={saveEdit}>保存 <kbd>⌘/Ctrl+Enter</kbd></button><button className="text-button" disabled={disabled} onClick={cancelEdit}>取消 <kbd>Esc</kbd></button></> : <button className="text-button" disabled={disabled} onClick={beginEdit}><Pencil size={13} />编辑指令</button>}<button className="text-button" disabled={disabled || editing} onClick={() => onAdd(startIndex + messages.length - 1, "system")}><Plus size={13} />添加 System</button><button className="text-button" disabled={disabled || editing} onClick={() => onAdd(startIndex + messages.length - 1, "developer")}><Plus size={13} />添加 Developer</button></div>
+      <div className="system-banner-actions">
+        <div className="system-banner-tools"><button className="text-button" disabled={disabled} onClick={() => onAdd(startIndex + messages.length - 1, "system")}><Plus size={13} />添加 System</button><button className="text-button" disabled={disabled} onClick={() => onAdd(startIndex + messages.length - 1, "developer")}><Plus size={13} />添加 Developer</button></div>
+        <div className="system-banner-edit-actions"><button className="text-button system-prompt-cancel" disabled={disabled} title="Esc 取消" onClick={cancelEdit}>取消</button><button className="text-button system-prompt-save" disabled={disabled} title="⌘/Ctrl + Enter 保存" onClick={saveEdit}>保存</button></div>
+      </div>
     </div>}
   </section>;
 }
@@ -90,6 +92,17 @@ function MessageCard({ message, index, total, busy, streaming, onMessage, onCopy
   const [hovered, setHovered] = useState(false);
   const [draftContent, setDraftContent] = useState(message.content);
   const editor = useRef<HTMLTextAreaElement>(null);
+  const resizeEditor = () => {
+    const element = editor.current;
+    if (!element) return;
+    element.style.height = "auto";
+    const styles = getComputedStyle(element);
+    const borderHeight = (Number.parseFloat(styles.borderTopWidth) || 0) + (Number.parseFloat(styles.borderBottomWidth) || 0);
+    const desiredHeight = element.scrollHeight + borderHeight;
+    element.style.height = `${Math.min(desiredHeight, 480)}px`;
+    element.style.overflowY = desiredHeight > 480 ? "auto" : "hidden";
+  };
+  useLayoutEffect(() => { if (editing) resizeEditor(); }, [editing, draftContent]);
   const isUser = message.role === "user";
   const isAssistant = message.role === "assistant";
   const startEdit = () => { if (busy) return; setDraftContent(message.content); setEditing(true); requestAnimationFrame(() => editor.current?.focus()); };
@@ -128,18 +141,18 @@ function MessageCard({ message, index, total, busy, streaming, onMessage, onCopy
     ? { position: "relative", display: "flex", width: "100%", justifyContent: "flex-end", margin: "13px 0 22px", paddingTop: 15 }
     : { position: "relative", display: "flex", width: "100%", justifyContent: "flex-start", margin: "14px 0 25px" };
   const cardStyle: React.CSSProperties = isUser
-    ? { position: "relative", width: "fit-content", minHeight: 0, maxWidth: "min(88%, 760px)", padding: "7px 16px", overflow: "visible", border: `1px solid ${isSearchHit ? "color-mix(in srgb, var(--warning) 50%, var(--border))" : "var(--border)"}`, borderRadius: "19px 19px 5px 19px", color: "var(--text)", background: "color-mix(in srgb, var(--surface-hover) 84%, var(--accent-soft))", boxShadow: "0 2px 8px rgba(28,30,35,.035)" }
+    ? { position: "relative", width: editing ? "100%" : "fit-content", minWidth: editing ? 0 : undefined, minHeight: 0, maxWidth: editing ? "100%" : "min(88%, 760px)", flex: editing ? "0 1 100%" : undefined, padding: editing ? "14px 16px 12px" : "7px 16px", overflow: "visible", border: editing ? "1px solid var(--accent)" : `1px solid ${isSearchHit ? "color-mix(in srgb, var(--warning) 50%, var(--border))" : "var(--border)"}`, borderRadius: editing ? 14 : "19px 19px 5px 19px", color: "var(--text)", background: editing ? "var(--surface)" : "color-mix(in srgb, var(--surface-hover) 84%, var(--accent-soft))", boxShadow: editing ? "0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent), var(--shadow-sm)" : "0 2px 8px rgba(28,30,35,.035)" }
     : isAssistant
       ? { position: "relative", width: "100%", overflow: "visible", border: 0, borderRadius: 0, color: "var(--text)", background: "transparent", boxShadow: "none" }
       : {};
-  return <div className={`message-row ${isUser ? "message-row--user-bubble" : ""} ${isAssistant ? "message-row--assistant-editorial" : ""} ${isSearchHit ? "search-hit" : ""}`} data-message-id={message.id} style={rowStyle} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} onFocusCapture={() => setHovered(true)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setHovered(false); }}>
-    {isUser && toolbar}
+  return <div className={`message-row ${isUser ? "message-row--user-bubble" : ""} ${isUser && editing ? "is-editing" : ""} ${isAssistant ? "message-row--assistant-editorial" : ""} ${isSearchHit ? "search-hit" : ""}`} data-message-id={message.id} style={rowStyle} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} onFocusCapture={() => setHovered(true)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setHovered(false); }}>
+    {isUser && !editing && toolbar}
     <article className={`chat-message ${message.role} ${message.enabled ? "" : "excluded"}`} style={cardStyle}>
       {isUser ? null : <header className="message-head" style={{ display: "flex", minHeight: isAssistant ? 27 : 32, alignItems: "center", gap: 8, padding: isAssistant ? "2px 0 0" : "5px 10px 0", border: 0, background: "transparent" }}>
         {isAssistant ? <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "var(--text-subtle)", fontSize: 10, fontWeight: 600 }}><Sparkles size={13} style={{ color: "var(--accent)" }} />Gemini</span> : <span className={`message-role ${message.role}`}>{roleIcon(message.role)}{roleName(message.role)}</span>}
         {toolbar}
       </header>}
-      {(editing || !!message.content.trim() || streaming) && <div className="message-content" style={{ padding: isUser ? 0 : "5px 0 10px", maxHeight: "none", overflow: "visible" }}>{editing ? <textarea ref={editor} aria-label={`编辑 ${roleName(message.role)} 消息`} disabled={busy} value={draftContent} onChange={(event) => setDraftContent(event.target.value)} onKeyDown={onEditorKeyDown} /> : message.content.trim() ? <Markdown content={message.content} highlight={searchTerm} trailing={streaming ? <span className="streaming-cursor" aria-hidden="true" /> : undefined} /> : streaming ? <span className="streaming-cursor" aria-hidden="true" /> : null}</div>}
+      {(editing || !!message.content.trim() || streaming) && <div className="message-content" style={{ padding: isUser ? 0 : "5px 0 10px", maxHeight: "none", overflow: "visible" }}>{editing ? <textarea ref={editor} aria-label={`编辑 ${roleName(message.role)} 消息`} disabled={busy} value={draftContent} onChange={(event) => setDraftContent(event.target.value)} onKeyDown={onEditorKeyDown} /> : message.content.trim() ? <Markdown content={message.content} highlight={searchTerm} trailing={streaming ? <span className="streaming-cursor" aria-hidden="true" /> : undefined} /> : streaming ? <span className="streaming-cursor" aria-hidden="true" /> : null}{isUser && editing && <div className="message-editor-actions"><button type="button" className="text-button message-editor-cancel" disabled={busy} aria-label="取消编辑" title="Esc 取消" onClick={cancelEdit}>取消</button><button type="button" className="text-button message-editor-save" disabled={busy} aria-label="保存消息" title="⌘/Ctrl + Enter 保存" onClick={saveEdit}>保存</button></div>}</div>}
       {!!message.images?.length && <div className="image-gallery message-images" style={{ padding: isUser ? "0 14px 12px" : "0 0 12px" }}>{message.images.map((image) => <button key={image.file} title={image.name} onClick={() => onImage(image.file, image.name)}><img src={imageUrl(image.file)} alt={image.name} loading="lazy" /></button>)}</div>}
       {message.role === "assistant" && message.providerState?.thinking.some((item) => item.thinking) && <details className="thinking-accordion" style={{ display: "inline-block", width: "fit-content", maxWidth: "100%", margin: "0 0 8px", border: 0, borderRadius: 0, background: "transparent" }}><summary style={{ display: "flex", width: "max-content", maxWidth: "100%", alignItems: "center", gap: 7, padding: "4px 9px", color: "var(--text-subtle)", fontSize: 9 }}><Brain size={13} />思考过程 <small>{message.providerState.thinking.reduce((n, item) => n + item.thinking.length, 0).toLocaleString()} 字符</small></summary><pre>{message.providerState.thinking.map((item) => item.thinking).join("\n")}</pre></details>}
       {children}

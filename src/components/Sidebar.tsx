@@ -122,8 +122,8 @@ export function Sidebar({ sessions, folders, rootSessionIds, active, collapsed, 
       </button>
     </div>
     <div className="sidebar-create-row">
-      <button className="new-conversation" disabled={disabled} onClick={onCreate} title="新建对话" aria-label="新建对话">
-        <Plus size={17} />{!collapsed && <><span>新建对话</span><kbd>⌘N</kbd></>}
+      <button className="new-conversation" disabled={disabled} onClick={onCreate} title="新建对话 (⌘N)" aria-label="新建对话">
+        <Plus size={17} />{!collapsed && <span>新建对话</span>}
       </button>
       <button className="icon-button new-folder-button" disabled={disabled} onClick={() => { setSearch(""); onCreateFolder("新建文件夹"); }} title="新建文件夹" aria-label="新建文件夹"><FolderPlus size={17} /></button>
     </div>
