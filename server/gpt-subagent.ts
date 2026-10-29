@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { TSchema } from "typebox";
 import { GptSessionManager, type ProgressEvent, type SessionInfo } from "../extensions/pi-gpt-subagent/sessions";
 import { nativeTransportFactory, sessionStorageDir } from "../extensions/pi-gpt-subagent/native";
 import { createSessionTools, type ConversationHistory } from "../extensions/pi-gpt-subagent/tools";
@@ -130,7 +131,7 @@ export async function cleanupIdleGptSessions(cwdInput: string | undefined, owner
   return { closed, failures, sessions: manager.list(owner).map((session) => summarize(manager, session)) };
 }
 
-export function createGptSessionTools(cwd: string, getHistory?: ConversationHistory, ownerSessionId?: string): AgentTool<any>[] {
+export function createGptSessionTools(cwd: string, getHistory?: ConversationHistory, ownerSessionId?: string): AgentTool<TSchema, unknown>[] {
   return createSessionTools(async () => ({
     manager: managerFor(cwd),
     resolveModel: async (requested?: string) => {
@@ -143,7 +144,8 @@ export function createGptSessionTools(cwd: string, getHistory?: ConversationHist
         throw new Error(`Pi 中找不到 GPT 模型：${id || "模型目录为空"}`);
       return id;
     },
-  }), getHistory, ownerSessionId);
+  }), getHistory, ownerSessionId).filter((tool) =>
+    ["subagent_dispatch", "subagent_query", "subagent_control"].includes(tool.name));
 }
 
 export async function shutdownGptSessions() {

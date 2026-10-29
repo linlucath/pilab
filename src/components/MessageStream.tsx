@@ -5,6 +5,7 @@ import { roles, type Message, type ToolCall } from "../../shared/schema";
 import type { GptSessionSummary } from "../../shared/gpt-sessions";
 import { Markdown } from "./Markdown";
 import { parseToolArguments, toolTitle } from "../utils/session";
+import { subagentToolMetadata } from "../../extensions/pi-gpt-subagent/tool-ui";
 import { wireToolCallId } from "../../shared/tool-history";
 
 type Props = {
@@ -32,12 +33,16 @@ const activeWorkerStatuses = new Set(["starting", "running", "waiting_input"]);
 const imageUrl = (file: string) => `/api/images/file?file=${encodeURIComponent(file)}`;
 function roleName(role: Message["role"]) { return ({ system: "System", developer: "Developer", user: "You", assistant: "Gemini", tool: "Tool result" })[role]; }
 function systemWakeNotice(content: string) {
-  const match = /^后台 GPT 工兵已交卷：(.+?)。请使用 gpt_session_read/.exec(content.trim());
+  const match = /^后台 GPT 工兵已交卷：(.+?)。请使用 (?:subagent_query|gpt_session_read)/.exec(content.trim());
   return match ? `📬 系统通知：工兵${match[1]}已交卷` : undefined;
 }
 function roleIcon(role: Message["role"]) { return role === "system" ? <Cpu size={14} /> : role === "assistant" ? <Sparkles size={14} /> : role === "tool" ? <Terminal size={14} /> : <UserRound size={14} />; }
 function toolIcon(name: string) {
   if (name === "session_fork") return <Dna size={13} />;
+  const metadata = subagentToolMetadata(name);
+  if (metadata?.icon === "dispatch") return <Sparkles size={13} />;
+  if (metadata?.icon === "query") return <BookOpen size={13} />;
+  if (metadata?.icon === "control") return <Wrench size={13} />;
   if (name === "gpt_session_create") return <Sparkles size={13} />;
   if (name === "gpt_session_send") return <Send size={13} />;
   if (name === "gpt_session_wait") return <Clock size={13} />;
@@ -161,6 +166,16 @@ function MessageCard({ message, index, total, busy, streaming, onMessage, onCopy
   </div>;
 }
 
+function subagentRequests(args: Record<string, unknown>) {
+  const tasks: Record<string, unknown>[] = [];
+  if (args.task && typeof args.task === "object" && !Array.isArray(args.task)) tasks.push(args.task as Record<string, unknown>);
+  if (Array.isArray(args.tasks)) tasks.push(...args.tasks.filter((task): task is Record<string, unknown> => !!task && typeof task === "object" && !Array.isArray(task)));
+  if (typeof args.message === "string") tasks.push(args);
+  return tasks.flatMap((task) => typeof task.message === "string" && task.message.trim()
+    ? [{ name: typeof task.name === "string" ? task.name : "工兵", message: task.message }]
+    : []);
+}
+
 function readGptReply(content: string) {
   try {
     const value = JSON.parse(content);
@@ -189,8 +204,9 @@ function ToolStep({ assistant, call, callIndex, result, stepNumber, onCall, onRe
   useEffect(() => { if (jumpedId && jumpedId === result?.id) setExpanded(true); }, [jumpedId, result?.id]);
   useEffect(() => { if (result) setManualOpen(false); }, [result?.id]);
   const args = parseToolArguments(call.arguments);
-  const dispatchesToGpt = call.name === "gpt_session_create" || call.name === "gpt_session_send";
-  const readsFromGpt = call.name === "gpt_session_wait" || call.name === "gpt_session_read";
+  const dispatchesToGpt = ["subagent_dispatch", "gpt_session_create", "gpt_session_send", "gpt_session_batch"].includes(call.name);
+  const readsFromGpt = ["subagent_query", "gpt_session_wait", "gpt_session_read", "gpt_session_list", "gpt_session_logs"].includes(call.name);
+  const dispatchRequests = subagentRequests(args);
   const thinking = assistant.providerState?.thinking.map((item) => item.thinking).filter(Boolean).join("\n") || "";
   const status = result ? result.isError ? "失败" : "完成" : "待返回";
   const reply = result?.content ? readGptReply(result.content) : "";
@@ -211,7 +227,7 @@ function ToolStep({ assistant, call, callIndex, result, stepNumber, onCall, onRe
   return <details className={`tool-step tool-step-row ${result?.isError ? "failed" : ""}`} title="工具调用及其结果不能直接更改角色，以免破坏工具配对。" data-tool-name={call.name} data-message-id={assistant.id} data-result-id={result?.id} data-has-report={hasGptReport ? "true" : undefined} data-has-thinking={thinking ? "true" : undefined} open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
     <summary>{typeof stepNumber === "number" && <span className="tool-step-number">{String(stepNumber).padStart(2, "0")}</span>}<span className="tool-step-icon">{toolIcon(call.name)}</span><strong>{toolTitle(call.name, call.arguments)}</strong><span className={`tool-state ${result ? result.isError ? "error" : "complete" : "pending"}`}>{status}</span><ChevronDown size={14} /></summary>
     {expanded && <div className="tool-step-body">
-      {dispatchesToGpt && typeof args.message === "string" && args.message.trim() && <section className="tool-readable-block tool-dispatch-block"><strong>派发给 GPT 的指令{args.name ? ` · ${args.name}` : ""}</strong><Markdown content={args.message} highlight={searchTerm} /></section>}
+      {dispatchesToGpt && dispatchRequests.map((request, index) => <section className="tool-readable-block tool-dispatch-block" key={`${request.name}-${index}`}><strong>派发给 GPT 的指令 · {request.name}</strong><Markdown content={request.message} highlight={searchTerm} /></section>)}
       {readsFromGpt && result?.content && <section className="tool-readable-block tool-reply-block"><strong>GPT 返回的汇报</strong><Markdown content={reply || result.content} highlight={searchTerm} /></section>}
       {!dispatchesToGpt && !readsFromGpt && result?.content && <section className={`tool-readable-block ${result.isError ? "error" : ""}`}><strong>工具结果</strong><Markdown content={result.content} highlight={searchTerm} /></section>}
       {thinking && <details className="tool-step-thinking"><summary><Brain size={13} />Gemini 思考过程</summary><div className="tool-readable-block"><Markdown content={thinking} /></div></details>}
@@ -236,11 +252,8 @@ function ToolStep({ assistant, call, callIndex, result, stepNumber, onCall, onRe
 }
 
 function toolGroupSummary(steps: { call: ToolCall }[]) {
-  const create = steps.find((step) => step.call.name === "gpt_session_create");
-  if (create) {
-    const name = parseToolArguments(create.call.arguments).name;
-    return `调度 GPT${name ? `「${String(name)}」` : ""}${steps.length > 1 ? " 等" : ""}`;
-  }
+  const dispatch = steps.find((step) => ["subagent_dispatch", "gpt_session_create", "gpt_session_send", "gpt_session_batch"].includes(step.call.name));
+  if (dispatch) return `${toolTitle(dispatch.call.name, dispatch.call.arguments)}${steps.length > 1 ? " 等" : ""}`;
   const titles = [...new Set(steps.slice(0, 3).map((step) => toolTitle(step.call.name, step.call.arguments)))];
   return `${titles.join(" · ")}${steps.length > titles.length ? " 等" : ""}`;
 }

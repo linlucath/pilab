@@ -61,7 +61,7 @@ function workerSignature(worker: GptSessionSummary, cwd: string) {
   return JSON.stringify([normalizedWorkerCwd(cwd), worker.id, ...version]);
 }
 function workerNoticeNames(content: string) {
-  const match = /^后台 GPT 工兵已交卷：(.+?)。请使用 gpt_session_read/.exec(content.trim());
+  const match = /^后台 GPT 工兵已交卷：(.+?)。请使用 (?:subagent_query|gpt_session_read)/.exec(content.trim());
   return match ? [...match[1].matchAll(/「([^」]+)」/g)].map((item) => item[1]) : [];
 }
 
@@ -1049,7 +1049,7 @@ export default function App() {
       setNotice("所属会话正在运行；工兵交卷提醒已保留，运行结束后请再次点击审阅。");
       return;
     }
-    const prompt = `后台 GPT 工兵已交卷：${unique.map((name) => `「${name}」`).join("、")}。请使用 gpt_session_read 读取这些工兵的新回复，核对完成情况，给用户一份简洁、准确的中文汇报；如有失败、问题或待决策事项，请明确指出。不要重启或打断仍在运行的工兵。`;
+    const prompt = `后台 GPT 工兵已交卷：${unique.map((name) => `「${name}」`).join("、")}。请使用 subagent_query 对每个工兵执行 action=status，读取新简报并核对完成情况，给用户一份简洁、准确的中文汇报；如有失败、diagnostics、问题或待决策事项，请明确指出。不要重启或打断仍在运行的工兵。`;
     if (!sendMessage(prompt, "user", true, target.id)) {
       setNotice("已保留工兵交卷提醒，但所属会话暂时不能运行；可稍后再次点击审阅。");
       return;

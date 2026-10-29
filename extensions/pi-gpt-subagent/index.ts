@@ -1,4 +1,5 @@
-import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { TSchema } from "typebox";
 import { GptSessionManager, type SessionInfo } from "./sessions.ts";
 import { nativeTransportFactory, sessionStorageDir } from "./native.ts";
 import { answerConversation, conversationSummary, createSessionTools, formatConversationRead, readConversation, type SessionAccess } from "./tools.ts";
@@ -24,7 +25,8 @@ export default function piGptSessions(pi: ExtensionAPI) {
   };
   for (const tool of createImageTools(imageStore, worker ? "publisher" : "viewer")) {
     coordinatorTools.add(tool.name);
-    pi.registerTool({ ...tool, defaultActive: true });
+    // Image schemas and handlers are created as a paired generic; erase the union only at Pi's registration boundary.
+    pi.registerTool({ ...tool as unknown as ToolDefinition<TSchema, unknown, unknown>, defaultActive: true });
   }
   // A worker is a normal Pi session, but does not recursively install its own session manager.
   if (worker) return;
@@ -66,9 +68,9 @@ export default function piGptSessions(pi: ExtensionAPI) {
   }
 
   for (const tool of createSessionTools((ctx?: ExtensionToolContext) => access(ctx))) {
-    coordinatorTools.add(tool.name);
+    if (tool.defaultActive !== false) coordinatorTools.add(tool.name);
     pi.registerTool({
-      ...tool, defaultActive: true,
+      ...tool, defaultActive: tool.defaultActive ?? true,
       execute: async (id, args, signal, onUpdate, ctx) => {
         const result = await tool.execute(id, args, signal, onUpdate, ctx);
         footer();
@@ -80,8 +82,6 @@ export default function piGptSessions(pi: ExtensionAPI) {
     // Apply to restored transcripts and reloads as well as new conversations.
     const active = pi.getActiveTools();
     const selected = active.filter((name) => coordinatorTools.has(name));
-    if (selected.includes("gpt_session_read") && !selected.includes("gpt_session_wait"))
-      selected.push("gpt_session_wait");
     if (selected.length !== active.length || selected.some((name, index) => name !== active[index]))
       pi.setActiveTools(selected);
   }

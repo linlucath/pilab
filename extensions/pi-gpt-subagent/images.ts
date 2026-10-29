@@ -3,9 +3,11 @@ import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/p
 import { createRequire } from "node:module";
 import path from "node:path";
 import { getPackageDir, resizeImage } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
+import type { Static, TSchema } from "typebox";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import type { SessionTool } from "./tools.ts";
+import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 
 export interface ImageReference {
   file: string; id?: string; size?: number; name: string; collection?: string; kind: "image" | "overview";
@@ -202,39 +204,56 @@ export function latestImageContext<T extends { role: string; content?: unknown; 
     ? { ...message, content: message.content.filter((block) => block.type !== "image") } : message);
 }
 
-export function createImageTools(getStore: (ctx?: Parameters<SessionTool["execute"]>[4]) => LocalImageStore, role: "viewer" | "publisher"): SessionTool[] {
+interface ImageTool<TParameters extends TSchema> {
+  name: string;
+  label: string;
+  description: string;
+  promptSnippet?: string;
+  parameters: TParameters;
+  execute(id: string, args: Static<TParameters>, signal?: AbortSignal, update?: AgentToolUpdateCallback<unknown>, ctx?: ExtensionToolContext): Promise<AgentToolResult<unknown>>;
+}
+
+export function createImageTools(getStore: (ctx?: ExtensionToolContext) => LocalImageStore, role: "viewer" | "publisher") {
   const group = Type.String({ minLength: 1, maxLength: 100, description: "A memorable local image collection name." });
-  if (role === "publisher") return [{
+  if (role === "publisher") {
+    const parameters = Type.Object({ collection: group, images: Type.Array(Type.Object({
+      name: group, path: Type.String({ minLength: 1, maxLength: 4000 }),
+      source: Type.Optional(Type.String({ maxLength: 2000 })), note: Type.Optional(Type.String({ maxLength: 160 })),
+    }, { additionalProperties: false }), { minItems: 1, maxItems: 12 }) }, { additionalProperties: false });
+    const tool: ImageTool<typeof parameters> = {
     name: "present_images", label: "提交图片素材",
     description: "Copy existing local images into the project's durable image library. Give the collection and each image short, unique names. Include source URLs when known. Returns names only; no images or logs are sent to the coordinator. After publishing, report only the collection name and count, then wait for visual feedback.",
     promptSnippet: "Submit named local images for the coordinator to review on demand",
-    parameters: Type.Object({ collection: group, images: Type.Array(Type.Object({
-      name: group, path: Type.String({ minLength: 1, maxLength: 4000 }),
-      source: Type.Optional(Type.String({ maxLength: 2000 })), note: Type.Optional(Type.String({ maxLength: 160 })),
-    }, { additionalProperties: false }), { minItems: 1, maxItems: 12 }) }, { additionalProperties: false }),
-    execute: async (_id, args, signal, _update, ctx) => {
+    parameters,
+    execute: async (_id, args, signal, _update, ctx): Promise<AgentToolResult<unknown>> => {
       if (signal?.aborted) throw new Error("图片提交已取消。");
       const result = await getStore(ctx).present(args.collection, args.images, ctx?.cwd || process.cwd());
-      return { content: [{ type: "text", text: `${result.collection} · 已保存 ${result.images.length} 张：${result.images.join("、")}` }], details: result };
+      return { content: [{ type: "text" as const, text: `${result.collection} · 已保存 ${result.images.length} 张：${result.images.join("、")}` }], details: result };
     },
-  }];
-  return [{
+    };
+    return [tool];
+  }
+  const viewParameters = Type.Object({ collection: group, names: Type.Optional(Type.Array(group, { minItems: 1, maxItems: 6 })), original: Type.Optional(Type.Boolean()) }, { additionalProperties: false });
+  const viewTool: ImageTool<typeof viewParameters> = {
     name: "view_images", label: "看图片",
     description: "View a named local collection for visual judgment. Default: ONE numbered overview, up to 6 thumbnails. For detail, select 1–2 names and set original=true. Only the latest view stays attached to model requests; earlier views remain on disk. Request images only when visual judgment is needed. Delegate sourcing/rendering to GPT and ask it to use present_images. Do not repeatedly view unchanged images.",
     promptSnippet: "View a small image overview or selected details only when needed for visual judgment",
-    parameters: Type.Object({ collection: group, names: Type.Optional(Type.Array(group, { minItems: 1, maxItems: 6 })), original: Type.Optional(Type.Boolean()) }, { additionalProperties: false }),
-    execute: async (_id, args, signal, _update, ctx) => {
+    parameters: viewParameters,
+    execute: async (_id, args, signal, _update, ctx): Promise<AgentToolResult<unknown>> => {
       if (signal?.aborted) throw new Error("看图已取消。");
       if (ctx?.model && !ctx.model.input.includes("image")) throw new Error("当前模型不支持图片，请切换到支持图片的模型。");
       return getStore(ctx).view(args.collection, args.names, args.original ?? false);
     },
-  }, {
+  };
+  const listParameters = Type.Object({ collection: Type.Optional(group) }, { additionalProperties: false });
+  const listTool: ImageTool<typeof listParameters> = {
     name: "list_images", label: "图片素材",
     description: "List local image collection names and counts, or image names in one collection. Does not attach any images. Use only when you need to find saved material; do not enumerate the library each turn.",
-    parameters: Type.Object({ collection: Type.Optional(group) }, { additionalProperties: false }),
-    execute: async (_id, args, _signal, _update, ctx) => {
+    parameters: listParameters,
+    execute: async (_id, args, _signal, _update, ctx): Promise<AgentToolResult<unknown>> => {
       const result = await getStore(ctx).list(args.collection);
-      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+      return { content: [{ type: "text" as const, text: JSON.stringify(result) }], details: result };
     },
-  }];
+  };
+  return [viewTool, listTool];
 }

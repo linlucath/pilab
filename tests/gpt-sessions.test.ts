@@ -127,13 +127,14 @@ test("native GPT conversations run concurrently, accept steering, interrupt real
     const tools = createSessionTools(async () => ({ manager, resolveModel: () => model }), undefined, "parent-fixture");
     const create = tools.find((entry) => entry.name === "gpt_session_create")!;
     const first = await create.execute("create-alpha", { name: "alpha", rolePreset: "scout", message: "ALPHA" }, parent.signal);
-    const alpha = manager.list().find((session) => session.name === first.details.name)!;
+    const firstDetails = first.details as Record<string, unknown>;
+    const alpha = manager.list().find((session) => session.name === firstDetails.name)!;
     assert.equal(alpha.rolePreset, "scout");
     assert.equal(alpha.role, "探路学者");
-    assert.equal(first.details.rolePreset, "scout");
+    assert.equal(firstDetails.rolePreset, "scout");
     parent.abort(); // Ending the coordinator's call must not cancel an independent worker.
     const beta = await manager.create({ name: "beta", model, message: "BETA" });
-    assert.equal(alpha.status, "starting");
+    assert.equal(alpha.status, "running");
     assert.equal(beta.status, "starting");
     await until(() => held.has("ALPHA") && held.has("BETA") && !!manager.read(beta.id).session.partialText,
       () => manager.list());
@@ -218,8 +219,8 @@ test("installed Pi extension keeps child completion as UI-only notice until the 
     if (users.at(-1) === "USER_STILL_TALKING") return finish(res, "coordinator is still available");
     if (users.at(-1) === "USER_MANUALLY_REVIEWING") return finish(res, "coordinator manually chose to review");
     if (body.messages.some((message: any) => message.role === "tool")) return finish(res, "coordinator free while child works");
-    assert.ok(body.tools.some((entry: any) => entry.function.name === "gpt_session_create"));
-    tool(res, "gpt_session_create", { name: "parallel child", message: "CHILD_AUTO", model });
+    assert.ok(body.tools.some((entry: any) => entry.function.name === "subagent_dispatch"));
+    tool(res, "subagent_dispatch", { task: { name: "parallel child", message: "CHILD_AUTO", model }, mode: "async" });
   });
   await cp(path.resolve("extensions/pi-gpt-subagent"), path.join(f.agentDir, "extensions/pi-gpt-subagent"), { recursive: true });
   const events: any[] = [];
@@ -237,9 +238,11 @@ test("installed Pi extension keeps child completion as UI-only notice until the 
     assert.equal((await parent.request("prompt", { message: "/gpt" })).disposition, "handled");
     await parent.request("prompt", { message: "COORDINATOR" });
     await until(() => assistantSaid("coordinator free while child works") && !!releaseChild, () => ({ errors, events: events.slice(-5) }));
-    const creation = events.find((event) => event.type === "tool_execution_end" && event.toolName === "gpt_session_create");
-    const created = JSON.parse(text(creation.result.content));
-    assert.equal(created.status, "starting");
+    const creation = events.find((event) => event.type === "tool_execution_end" && event.toolName === "subagent_dispatch");
+    const created = creation.result.details as { started: { name: string; handle: string; status: string }[] };
+    assert.equal(created.started[0].name, "parallel child");
+    assert.ok(created.started[0].handle.startsWith("gpt-"));
+    assert.equal(created.started[0].status, "running");
     await parent.request("prompt", { message: "USER_STILL_TALKING", streamingBehavior: "steer" });
     await until(() => assistantSaid("coordinator is still available"), () => events.slice(-5));
     const requestsBeforeCompletion = f.requests.length;
@@ -251,7 +254,7 @@ test("installed Pi extension keeps child completion as UI-only notice until the 
     await until(() => assistantSaid("coordinator manually chose to review"), () => ({ errors, events: events.slice(-5) }));
     const state = await parent.request("get_state");
     assert.equal(state.model.provider, "openai-codex");
-    await parent.request("prompt", { message: `/gpt stop ${created.name}` });
+    await parent.request("prompt", { message: `/gpt stop ${created.started[0].name}` });
     const messages = await parent.request("get_messages");
     assert.match(JSON.stringify(messages), /gpt-session-control/);
     assert.equal(errors.length, 0);

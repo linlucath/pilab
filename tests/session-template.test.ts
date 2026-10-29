@@ -22,5 +22,7 @@ test("tool titles rely on semantic icons instead of duplicate leading emoji", ()
   assert.equal(toolTitle("gpt_session_create", '{"name":"ppt_prep"}'), "创建并派发 GPT「ppt_prep」");
   assert.equal(toolTitle("gpt_session_wait", '{"names":["ppt_prep"]}'), "等待 GPT 完成 · ppt_prep");
   assert.equal(toolTitle("gpt_session_read", '{"name":"ppt_prep"}'), "读取 GPT「ppt_prep」 状态");
+  assert.equal(toolTitle("subagent_dispatch", '{"task":{"name":"ppt_prep","message":"prepare"}}'), "派发工兵「ppt_prep」任务");
+  assert.equal(toolTitle("subagent_query", '{"action":"status","name":"ppt_prep"}'), "读取工兵「ppt_prep」状态");
   assert.equal(toolTitle("bash", "{}"), "调用工具 bash");
 });
