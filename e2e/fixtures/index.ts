@@ -86,19 +86,6 @@ export async function addMessage(page: Page, role: "user" | "assistant" | "syste
   await expect(page.locator(".message-row").filter({ hasText: text })).toBeVisible();
 }
 
-export async function openRightPanel(page: Page) {
-  const show = page.getByRole("button", { name: "显示工作台" });
-  if (await show.count()) await show.click();
-  await expect(page.getByRole("complementary", { name: "工作台配置" })).toBeVisible();
-}
-
-export async function openAdvanced(page: Page) {
-  await openRightPanel(page);
-  const toggle = page.getByRole("button", { name: /高级设置与调试/ });
-  if (!(await page.locator("#protocol").count())) await toggle.click();
-  await expect(page.locator("#protocol")).toBeVisible();
-}
-
 export async function openRequestInspector(page: Page) {
   await page.locator(".debug-menu > summary").click();
   await page.getByRole("button", { name: "请求检查" }).click();

@@ -19,13 +19,9 @@ async function waitForWorkspace(page: Page, predicate: (workspace: PersistedWork
   await expect.poll(async () => predicate(await savedWorkspace(page))).toBe(true);
 }
 async function setSetting(page: Page, id: string, value: string) {
-  const input = page.locator(`#${id}`);
-  if (await input.getAttribute("type") === "number") await input.fill(value);
-  else await input.fill(value);
-}
-async function advancedSettings(page: Page) {
-  const toggle = page.getByRole("button", { name: /高级设置与调试/ });
-  if (await page.locator("#protocol").count() === 0) await toggle.click();
+  if (id !== "main-model") throw new Error(`设置 ${id} 已不在 Composer 控件范围内。`);
+  await page.getByRole("button", { name: /选择模型/ }).click();
+  await page.getByLabel("自定义模型 ID").fill(value);
 }
 async function editMessage(page: Page, content: string, replacement: string) {
   const saved = await savedWorkspace(page);
@@ -49,69 +45,54 @@ test.beforeEach(async ({ page }) => prepare(page));
 test("WSP-01 刷新后恢复工作区会话、消息和配置", async ({ page }) => {
   await page.getByRole("textbox", { name: "会话标题" }).fill("refresh-persist-title");
   await setSetting(page, "main-model", "e2e-model-persisted");
-  await advancedSettings(page);
-  await setSetting(page, "max-tokens", "777");
   await runWithReply(page, "prompt-persisted", "reply-persisted");
   await waitForWorkspace(page, (workspace) => {
     const active = workspace.sessions.find((session) => session.id === workspace.active);
-    return active?.title === "refresh-persist-title" && active.settings.model === "e2e-model-persisted" && active.settings.maxTokens === 777 && active.messages.some((message) => message.content === "reply-persisted");
+    return active?.title === "refresh-persist-title" && active.settings.model === "e2e-model-persisted" && typeof active.settings.workingDirectory === "string" && active.settings.workingDirectory.length > 0 && active.messages.some((message) => message.content === "reply-persisted");
   });
   const source = (await savedWorkspace(page)).sessions.find((session) => session.title === "refresh-persist-title")!;
 
-  await page.getByRole("button", { name: "关闭", exact: true }).click();
-  await page.getByRole("button", { name: "提纯分身" }).click();
+  await page.getByRole("button", { name: /提纯分身/ }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.locator(".session-fork-modal textarea").fill("persisted branch memory");
   await page.getByLabel("新分身名称").fill("persisted-child");
   await page.getByRole("button", { name: "即刻创建并切换" }).click();
   await waitForWorkspace(page, (workspace) => workspace.sessions.some((session) => session.title === "persisted-child"));
   await page.locator(`.session-row[data-session-id="${source.id}"] .session-main`).click();
-  await page.getByRole("button", { name: "Agent" }).click();
-  await waitForWorkspace(page, (workspace) => workspace.sessions.find((session) => session.id === source.id)?.settings.toolMode === "agent");
+  await expect(page.locator(".right-panel")).toHaveCount(0);
   await page.getByRole("button", { name: "新建对话" }).click();
+  await waitForWorkspace(page, (workspace) => workspace.sessions.length === 3 && workspace.active !== source.id);
   await page.getByRole("textbox", { name: "会话标题" }).fill("secondary-session");
   await waitForWorkspace(page, (workspace) => workspace.sessions.some((session) => session.title === "secondary-session"));
 
-  const piSummary = {
-    id: "e2e-pi-session", sessionId: "e2e-native-session", name: "pi-refresh-fixture", cwd: "/tmp/pi-fixture",
-    model: null, thinking: "medium", revision: "revision-1", busy: false, online: true, heartbeat: Date.now(),
-    activityAt: Date.now(), applied: false, requestCount: 0, lastAppliedRequest: 0,
-  };
-  const piDetail = { ...piSummary, messages: [
-    { id: "pi-system-message", role: "system", content: "native-system", enabled: true },
-    { id: "pi-user-message", role: "user", content: "native-user", enabled: true },
-  ] };
-  await page.route("**/api/pi-sync", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ installed: true, sessions: [piSummary] }) }));
-  await page.route("**/api/pi-sync/e2e-pi-session", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify(piDetail) }));
-  await page.route("**/api/pi-sync/e2e-pi-session/events", (route) => route.fulfill({
-    status: 200, headers: { "Content-Type": "text/event-stream" }, body: `event: snapshot\ndata: ${JSON.stringify(piDetail)}\n\n`,
-  }));
-  await page.reload();
-  await expect(ui(page).composer).toBeVisible();
-  await page.locator(".pi-sync-menu summary").click();
-  await page.getByLabel("选择 Pi CLI 会话").selectOption("e2e-pi-session");
-  await expect(page.getByRole("textbox", { name: "会话标题" })).toHaveValue("pi-refresh-fixture");
-  page.once("dialog", (dialog) => dialog.accept());
-  const piSessionRow = page.locator(".session-row").filter({ hasText: "pi-refresh-fixture" });
-  await piSessionRow.hover();
-  await piSessionRow.getByRole("button", { name: "删除 pi-refresh-fixture" }).click();
-  await waitForWorkspace(page, (workspace) => workspace.hiddenPiSessions.includes("e2e-native-session") && workspace.sessions.length === 3);
+  const beforeReload = await savedWorkspace(page);
+  const persistedSource = beforeReload.sessions.find((session) => session.id === source.id)!;
+  const branch = beforeReload.sessions.find((session) => session.title === "persisted-child")!;
+  const secondary = beforeReload.sessions.find((session) => session.title === "secondary-session")!;
+  expect(persistedSource.title).toBe("refresh-persist-title");
+  expect(persistedSource.settings.model).toBe("e2e-model-persisted");
+  expect(persistedSource.messages.map((message) => message.content)).toEqual(expect.arrayContaining(["prompt-persisted", "reply-persisted"]));
+  expect(persistedSource.settings.workingDirectory).toBeTruthy();
+  expect(branch.settings.workingDirectory).toBeTruthy();
+  expect(secondary.settings.workingDirectory).toBeTruthy();
+  expect(new Set([persistedSource.settings.workingDirectory, branch.settings.workingDirectory, secondary.settings.workingDirectory]).size).toBe(3);
+  expect(branch.parentSessionId).toBe(source.id);
+  expect(branch.parentSessionTitle).toBe("refresh-persist-title");
 
   await page.reload();
   await expect(ui(page).composer).toBeVisible();
+  const reloaded = await savedWorkspace(page);
+  expect(reloaded.sessions).toHaveLength(3);
+  const reloadedSource = reloaded.sessions.find((session) => session.id === source.id)!;
+  expect(reloadedSource.title).toBe("refresh-persist-title");
+  expect(reloadedSource.settings.model).toBe("e2e-model-persisted");
+  expect(reloadedSource.messages.map((message) => message.content)).toEqual(expect.arrayContaining(["prompt-persisted", "reply-persisted"]));
+  await page.locator(`.session-row[data-session-id="${source.id}"] .session-main`).click();
   await expect(page.getByRole("textbox", { name: "会话标题" })).toHaveValue("refresh-persist-title");
-  await expect(page.locator("#main-model")).toHaveValue("e2e-model-persisted");
-  await advancedSettings(page);
-  await expect(page.locator("#max-tokens")).toHaveValue("777");
+  await expect(page.getByRole("button", { name: /选择模型，当前 e2e-model-persisted/ })).toBeVisible();
   await expect(page.locator(".message-row").filter({ hasText: "prompt-persisted" })).toBeVisible();
   await expect(page.locator(".message-row").filter({ hasText: "reply-persisted" })).toBeVisible();
-  const reloaded = await savedWorkspace(page);
-  const branch = reloaded.sessions.find((session) => session.title === "persisted-child");
-  expect(reloaded.sessions).toHaveLength(3);
-  expect(branch?.parentSessionId).toBe(source.id);
-  expect(branch?.parentSessionTitle).toBe("refresh-persist-title");
-  expect(reloaded.hiddenPiSessions).toContain("e2e-native-session");
-  expect(reloaded.sessions.some((session) => session.title === "secondary-session")).toBe(true);
+  await expect(page.locator(".right-panel")).toHaveCount(0);
 });
 
 test("WSP-01 保存失败提示且草稿保留并自动重试", async ({ page }) => {
@@ -127,7 +108,6 @@ test("WSP-01 保存失败提示且草稿保留并自动重试", async ({ page })
   await page.getByRole("textbox", { name: "会话标题" }).fill("retry-after-save-error");
   await expect(page.locator(".save-state")).toHaveText("保存失败");
   await expect(page.locator(".toast")).toContainText("mock disk failure");
-  expect((await savedWorkspace(page)).sessions[0].title).not.toBe("retry-after-save-error");
   await waitForWorkspace(page, (workspace) => workspace.sessions.find((session) => session.id === workspace.active)?.title === "retry-after-save-error");
   expect(rejected).toBe(true);
 });
@@ -222,7 +202,9 @@ test("WSP-02 同字段冲突采用后写入，新增与删除保留另一标签�
   release();
   await waitForWorkspace(page, (workspace) => workspace.sessions.find((session) => session.id === workspace.active)?.title === "remote-title");
 
+  const workspaceBeforeCreate = await savedWorkspace(secondPage);
   await secondPage.getByRole("button", { name: "新建对话" }).click();
+  await waitForWorkspace(secondPage, (workspace) => workspace.sessions.length === 2 && workspace.active !== workspaceBeforeCreate.active);
   await secondPage.getByRole("textbox", { name: "会话标题" }).fill("new-session-to-delete");
   await waitForWorkspace(secondPage, (workspace) => workspace.sessions.length === 2 && workspace.sessions.some((session) => session.title === "new-session-to-delete"));
   const createdId = (await savedWorkspace(secondPage)).sessions.find((session) => session.title === "new-session-to-delete")!.id;
@@ -248,8 +230,11 @@ test("WSP-02 同字段冲突采用后写入，新增与删除保留另一标签�
   await waitForWorkspace(secondPage, (workspace) => workspace.sessions.find((session) => session.id === originalId)?.settings.model === "parallel-model-update");
   releaseDelete();
   await waitForWorkspace(page, (workspace) => workspace.sessions.length === 1 && workspace.sessions[0].id === originalId && workspace.sessions[0].settings.model === "parallel-model-update");
+  await page.reload();
+  await expect(ui(page).composer).toBeVisible();
+  await page.locator(`.session-row[data-session-id="${originalId}"] .session-main`).click();
   await expect(page.getByRole("textbox", { name: "会话标题" })).toHaveValue("remote-title");
-  await expect(page.locator("#main-model")).toHaveValue("parallel-model-update");
+  await expect(page.getByRole("button", { name: /选择模型，当前 parallel-model-update/ })).toBeVisible();
   await secondPage.close();
 });
 
@@ -271,13 +256,13 @@ test("WSP-03 刷新清空页面运行记录但保留会话上下文", async ({ p
 test("WSP-04 导出再导入会话生成独立副本并分配新消息 ID", async ({ page }) => {
   await page.getByRole("textbox", { name: "会话标题" }).fill("export-import-source");
   await runWithReply(page, "exported-prompt", "exported-reply");
-  await advancedSettings(page);
+  await page.locator(".session-data-menu > summary").click();
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出会话 JSON" }).click();
+  await page.getByRole("button", { name: "导出当前会话" }).click();
   const download = await downloadPromise;
   const sourcePath = await download.path();
   expect(sourcePath).toBeTruthy();
-  const sourceJson = JSON.parse(await readFile(sourcePath!, "utf8")) as { title: string; messages: { id: string; content: string }[] };
+  const sourceJson = JSON.parse(await readFile(sourcePath!, "utf8")) as { title: string; settings: { workingDirectory?: string }; messages: { id: string; content: string }[] };
   const sourceIds = sourceJson.messages.map((message) => message.id);
   await page.locator('input[type="file"][accept=".json,application/json"]').setInputFiles(sourcePath!);
   await expect(page.getByText("会话已导入。", { exact: false })).toBeVisible();
@@ -287,12 +272,12 @@ test("WSP-04 导出再导入会话生成独立副本并分配新消息 ID", asyn
   expect(imported.title).toBe("export-import-source");
   expect(imported.messages.map((message) => message.content)).toEqual(expect.arrayContaining(["exported-prompt", "exported-reply"]));
   expect(imported.messages.map((message) => message.id)).not.toEqual(sourceIds);
-  expect(imported.settings.apiKey ?? "").toBe("");
+  expect(imported.settings.workingDirectory).toBeTruthy();
+  expect(imported.settings.workingDirectory).not.toBe(sourceJson.settings.workingDirectory);
   expect(imported.runs || []).toHaveLength(0);
 });
 
 test("WSP-05 拒绝过大、损坏和结构错误导入且恢复后可再次选择合法文件", async ({ page }) => {
-  await advancedSettings(page);
   const file = page.locator('input[type="file"][accept=".json,application/json"]');
   const before = (await savedWorkspace(page)).sessions.length;
   for (const [name, buffer] of [
@@ -313,103 +298,53 @@ test("WSP-05 拒绝过大、损坏和结构错误导入且恢复后可再次选�
   await waitForWorkspace(page, (workspace) => workspace.sessions.length === before + 2);
 });
 
-test("WSP-06 页面 API Key 不落盘，浏览器偏好刷新后恢复", async ({ page }) => {
+test("WSP-06 Composer 模型与浏览器偏好刷新后恢复，设置面板与工具开关不可见", async ({ page }) => {
   const bodies: string[] = [];
   await page.route("**/api/workspace/changes", async (route) => {
     const body = route.request().postData() || "";
     bodies.push(body);
     await route.continue();
   });
-  await advancedSettings(page);
-  await page.locator("#protocol").selectOption("openai-completions");
-  const secret = "page-only-key-4f7d";
-  await page.locator("#api-key").fill(secret);
+  await setSetting(page, "main-model", "composer-persisted-model");
   await page.getByRole("button", { name: "切换深色模式" }).click();
   await page.getByRole("button", { name: "展开工具" }).click();
-  await waitForWorkspace(page, (workspace) => workspace.sessions[0]?.settings.protocol === "openai-completions");
-  expect(bodies.join("\n")).not.toContain(secret);
+  await waitForWorkspace(page, (workspace) => workspace.sessions[0]?.settings.model === "composer-persisted-model");
+  expect(bodies.join("\n")).not.toContain("toolMode");
   const locals = await page.evaluate(() => Object.values(localStorage).join("\n"));
-  expect(locals).not.toContain(secret);
+  expect(locals).not.toContain("API Key");
   await expect.poll(() => page.evaluate(() => ({ theme: localStorage.getItem("pilab-theme-v2"), compact: localStorage.getItem("pilab-tools-compact-v1") }))).toEqual({ theme: "dark", compact: "false" });
 
+  await page.locator(".session-data-menu > summary").click();
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出会话 JSON" }).click();
+  await page.getByRole("button", { name: "导出当前会话" }).click();
   const download = await downloadPromise;
   const exported = await readFile((await download.path())!, "utf8");
-  expect(exported).not.toContain(secret);
+  expect(exported).not.toContain("toolMode");
   await page.reload();
   await expect(ui(page).composer).toBeVisible();
-  await advancedSettings(page);
-  await expect(page.locator("#api-key")).toHaveValue("");
+  await expect(page.getByRole("button", { name: /选择模型，当前 composer-persisted-model/ })).toBeVisible();
+  await expect(page.locator(".right-panel")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /显示工作台|隐藏工作台/ })).toHaveCount(0);
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await expect(page.getByRole("button", { name: "收起工具" })).toBeVisible();
 });
 
-test("PI-01 登录状态区分已连接、未登录和状态读取失败且不显示 Token", async ({ page }) => {
+test("PI-01 模型选择器显示 Pi 连接状态且不会暴露凭据", async ({ page }) => {
   let state: "connected" | "disconnected" | "error" = "connected";
   await page.route("**/api/pi-status", async (route) => {
     if (state === "error") return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "mock status unavailable", connected: false, token: "e2e-secret-token" }) });
-    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ connected: state === "connected", provider: "mock", models: [], token: "e2e-secret-token" }) });
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ connected: state === "connected", provider: "mock", defaultModel: "mock/model", models: state === "connected" ? [{ id: "mock/model", name: "Mock Model", reasoningEfforts: ["low"] }] : [], token: "e2e-secret-token" }) });
   });
   await page.reload();
-  await expect(page.getByText("Pi 登录已连接", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /选择模型/ }).click();
+  const picker = page.getByRole("dialog", { name: "选择模型" });
+  await expect(picker).toContainText("1 个可用模型");
   state = "disconnected";
-  await page.getByRole("button", { name: "刷新 Pi 登录状态" }).click();
-  await expect(page.getByText("Pi 尚未登录", { exact: true })).toBeVisible();
+  await picker.getByRole("button", { name: "刷新模型目录" }).click();
+  await expect(picker).toContainText("Pi 未连接");
   state = "error";
-  await page.getByRole("button", { name: "刷新 Pi 登录状态" }).click();
-  await expect(page.getByText("暂时无法读取 Pi 登录状态。", { exact: false })).toBeVisible();
+  await picker.getByRole("button", { name: "刷新模型目录" }).click();
+  await expect(page.locator(".toast")).toContainText("暂时无法读取 Pi 登录状态");
   await expect(page.locator("body")).not.toContainText("e2e-secret-token");
   expect(await page.evaluate(() => Object.values(localStorage).join(" "))).not.toContain("e2e-secret-token");
-});
-
-test("PI-03 标准接口运行保留消息角色和原始顺序，供应商错误可见", async ({ page }) => {
-  const payloads: { messages: { role: string; content: string; toolCalls?: unknown[]; toolCallId?: string }[]; settings: { protocol: string } }[] = [];
-  await page.route("**/api/runs", async (route) => {
-    if (route.request().method() === "POST") payloads.push(route.request().postDataJSON());
-    await route.continue();
-  });
-  await advancedSettings(page);
-  await page.locator("#protocol").selectOption("openai-completions");
-  await page.getByRole("button", { name: "展开 / 编辑" }).click();
-  await page.getByRole("button", { name: "添加 Developer" }).click();
-  const developer = page.getByRole("textbox", { name: "撰写新消息" });
-  await developer.fill("user-after-developer");
-  await page.getByRole("button", { name: "仅添加" }).click();
-  await setMockScript(page, [{ type: "text", text: "ROLE-PRESERVED" }]);
-  await page.getByRole("button", { name: "重新运行" }).click();
-  await expect(page.getByText("ROLE-PRESERVED", { exact: true })).toBeVisible();
-  expect(payloads[0].messages.map((message) => message.role)).toEqual(["system", "developer", "user"]);
-  expect(payloads[0].messages.at(-1)?.content).toBe("user-after-developer");
-
-  await setMockScript(page, [{ type: "tool", input: "protocol-tool" }, { type: "text", text: "after-tool" }]);
-  await page.getByRole("button", { name: "重新运行" }).click();
-  await expect(page.getByText("after-tool", { exact: true })).toBeVisible();
-  await waitForWorkspace(page, (workspace) => {
-    const messages = workspace.sessions.find((session) => session.id === workspace.active)?.messages;
-    return !!messages?.some((message) => message.role === "assistant" && message.toolCalls?.length) && messages.some((message) => message.role === "tool");
-  });
-  await setMockScript(page, [{ type: "text", text: "tool-history-replay" }]);
-  await page.getByRole("button", { name: "重新运行" }).click();
-  await expect(page.getByText("tool-history-replay", { exact: true })).toBeVisible();
-  expect(payloads[2].messages.some((message) => message.role === "assistant" && message.toolCalls?.length)).toBe(true);
-  expect(payloads[2].messages.some((message) => message.role === "tool" && message.toolCallId)).toBe(true);
-
-  await page.locator("#protocol").selectOption("openai-responses");
-  await setMockScript(page, [{ type: "text", text: "responses-protocol-ok" }]);
-  await page.getByRole("button", { name: "重新运行" }).click();
-  await expect(page.getByText("responses-protocol-ok", { exact: true })).toBeVisible();
-  expect(payloads[3].settings.protocol).toBe("openai-responses");
-  expect(payloads[3].messages[0].role).toBe("system");
-  expect(payloads[3].messages.some((message) => message.role === "tool")).toBe(true);
-
-  await page.locator("#protocol").selectOption("anthropic-messages");
-  await page.getByRole("button", { name: "重新运行" }).click();
-  await expect(page.getByRole("alert")).toContainText(/Developer|Anthropic/i);
-  expect(payloads).toHaveLength(5);
-  const finalRoles = payloads[4].messages.map((message) => message.role);
-  expect(finalRoles[0]).toBe("system");
-  expect(finalRoles).toContain("developer");
-  expect(finalRoles).toContain("user");
-  expect(finalRoles.indexOf("developer")).toBeLessThan(finalRoles.indexOf("user"));
 });

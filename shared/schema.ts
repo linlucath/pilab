@@ -96,8 +96,6 @@ export const settingsSchema = z.object({
   // Retain the old switch for v1 imports; an explicit effort takes precedence.
   reasoning: z.boolean().default(false),
   reasoningEffort: z.enum(reasoningEfforts).optional(),
-  // Unknown persisted values fall back to the full Agent tool set.
-  toolMode: z.enum(["none", "agent"]).default("agent").catch("agent"),
   workingDirectory: z.string().max(4000).default(""),
   maxTurns: z.number().int().min(1).max(50).default(12),
 });
@@ -150,7 +148,6 @@ export const defaults: Settings = {
   maxTokens: 16384,
   reasoning: false,
   reasoningEffort: "low",
-  toolMode: "agent",
   workingDirectory: "",
   maxTurns: 12,
 };

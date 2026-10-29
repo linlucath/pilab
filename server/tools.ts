@@ -109,12 +109,11 @@ export async function agentTools(
   ownerSessionId?: string,
 ) {
   const cwd = settings.workingDirectory.trim() || process.cwd();
-  if (settings.toolMode === "none") return { cwd, tools: [] as AgentTool<TSchema, unknown>[] };
   if (!path.isAbsolute(cwd) || !(await stat(cwd)).isDirectory())
     throw new Error("工具工作目录必须是存在的绝对路径目录。");
   const history = () => (getHistory?.() ?? []) as Message[];
-  const tools: AgentTool<TSchema, unknown>[] = [
-    ...(settings.toolMode === "agent" ? [createContextCompactTool(history, onEvent)] : []),
+  const tools: AgentTool<any>[] = [
+    createContextCompactTool(history, onEvent),
     createSessionForkTool(history, onEvent),
     ...createGptSessionTools(cwd, getHistory, ownerSessionId),
     ...createImageTools(() => projectImages, "viewer") as unknown as AgentTool<TSchema, unknown>[],

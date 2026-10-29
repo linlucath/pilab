@@ -40,7 +40,7 @@ test("BRN-01 从历史消息分支只保留前缀、继承配置且不继承运�
   await expect(page.locator(".message-row").getByText("BRN01-PREFIX-ONE")).toBeVisible();
   await expect(page.locator(".message-row").getByText("BRN01-BRANCH-HERE")).toBeVisible();
   await expect(page.getByText("BRN01-RUN-ONLY-ON-SOURCE")).toHaveCount(0);
-  await expect(page.getByLabel("主模型")).toHaveValue("branch-fixture-model");
+  await expect(page.getByRole("button", { name: /选择模型，当前 branch-fixture-model/ })).toBeVisible();
 
   await openDebugPanel(page, "运行记录");
   await expect(page.getByText("还没有运行记录")).toBeVisible();
@@ -98,7 +98,7 @@ test("BRN-03 手动提纯校验必填项、默认不带近期对话并按选择�
   await prepareE2eWorkspace(page, [{
     id: "manual-fork-source",
     title: "manual-fork-source",
-    settings: { ...sessionSettings, toolMode: "none" },
+    settings: { ...sessionSettings },
     messages: [
       { id: "fork-system", role: "system", content: "BRN03-SYSTEM-PROMPT", enabled: true },
       { id: "fork-developer", role: "developer", content: "BRN03-DEVELOPER-PROMPT", enabled: true },
@@ -111,7 +111,7 @@ test("BRN-03 手动提纯校验必填项、默认不带近期对话并按选择�
     ],
   }]);
 
-  const openFork = async () => page.getByRole("button", { name: "提纯分身" }).click();
+  const openFork = async () => page.getByRole("button", { name: /提纯分身/ }).click();
   await openFork();
   const modal = page.getByRole("dialog", { name: "提纯会话分身" });
   const title = modal.getByLabel("新分身名称");
@@ -140,7 +140,7 @@ test("BRN-03 手动提纯校验必填项、默认不带近期对话并按选择�
 
   await page.getByRole("button", { name: "查看原会话" }).click();
   await expect(page.getByLabel("会话标题")).toHaveValue("manual-fork-source");
-  await page.getByRole("button", { name: "提纯分身" }).click();
+  await page.getByRole("button", { name: /提纯分身/ }).click();
   const recentModal = page.getByRole("dialog", { name: "提纯会话分身" });
   await recentModal.getByLabel("新分身名称").fill("manual-fork-recent");
   await recentModal.locator("textarea").fill("BRN03-RECENT-MEMORY");
@@ -157,11 +157,11 @@ test("BRN-05 分身与来源往返切换保留正确谱系和记忆且不触发�
   await prepareE2eWorkspace(page, [{
     id: "roundtrip-source",
     title: "roundtrip-source",
-    settings: { toolMode: "none" },
+    settings: {},
     messages: [userMessage("roundtrip-user", "BRN05-SOURCE-MESSAGE")],
   }]);
 
-  await page.getByRole("button", { name: "提纯分身" }).click();
+  await page.getByRole("button", { name: /提纯分身/ }).click();
   const modal = page.getByRole("dialog", { name: "提纯会话分身" });
   await modal.getByLabel("新分身名称").fill("roundtrip-fork");
   await modal.locator("textarea").fill("BRN05-SOURCE-MEMORY");

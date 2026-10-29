@@ -2,11 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { NEW_SESSION_SYSTEM_PROMPT, newSession, toolTitle } from "../src/utils/session";
 
-test("new sessions use the dual-model template and inherit the current workspace without history", () => {
+test("new sessions use the dual-model template and a supplied dedicated workspace without history", () => {
   const session = newSession("/tmp/project");
   assert.equal(session.settings.protocol, "pi-subscription");
   assert.equal(session.settings.model, "antigravity/gemini-3.8-flash");
-  assert.equal(session.settings.toolMode, "agent");
+  assert.equal("toolMode" in session.settings, false);
   assert.equal(session.settings.reasoning, true);
   assert.equal(session.settings.reasoningEffort, "high");
   assert.equal(session.settings.maxTurns, 20);

@@ -9,7 +9,7 @@
   --accent: #4f46e5; --accent-deep: #18181b; --accent-soft: #eeedff; --accent-hover: #4338ca;
   --success: #16845b; --success-soft: #eaf6ef; --warning: #ad6b12; --warning-soft: #fff6e4; --danger: #d04444; --danger-soft: #fff0ef;
   --code-bg: #17181d; --code-fg: #e9e9ed; --role-user: #625b50; --shadow-sm: 0 1px 2px rgba(28, 27, 22, .045); --shadow-md: 0 8px 24px rgba(28, 27, 22, .075);
-  --sidebar-width: 248px; --right-width: 326px; --radius-sm: 7px; --radius-md: 11px; --radius-lg: 16px; --font-mono: "IBM Plex Mono", SFMono-Regular, Consolas, monospace;
+  --sidebar-width: 248px; --radius-sm: 7px; --radius-md: 11px; --radius-lg: 16px; --font-mono: "IBM Plex Mono", SFMono-Regular, Consolas, monospace;
   background: var(--app-bg); color: var(--text);
 }
 :root[data-theme="dark"] {

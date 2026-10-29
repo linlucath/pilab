@@ -50,7 +50,7 @@ test("Gemini-compatible completion serializes image references as image_url with
   const message: Message = { id: "image-only", role: "user", content: "", enabled: true, images: [image, image, image] };
   try {
     await generate({
-      settings: { ...defaults, baseUrl: `http://127.0.0.1:${address.port}/v1`, model: "gemini-test", reasoningEffort: "off", toolMode: "none" },
+      settings: { ...defaults, baseUrl: `http://127.0.0.1:${address.port}/v1`, model: "gemini-test", reasoningEffort: "off", workingDirectory: process.cwd() },
       messages: [message],
     }, (event) => events.push(event));
   } finally {

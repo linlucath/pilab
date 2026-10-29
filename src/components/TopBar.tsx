@@ -1,31 +1,28 @@
-import { useEffect, useRef, useState } from "react";
-import { Archive, BookOpen, Bug, Check, ChevronDown, Moon, PanelLeftClose, PanelLeftOpen, PanelRight, PanelRightClose, Sparkles, Sun, Wrench } from "lucide-react";
+import { useRef } from "react";
+import { Archive, BookOpen, Bug, Check, ChevronDown, Download, Moon, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Sparkles, Sun, Upload, Wrench } from "lucide-react";
 import type { PiLiveSession } from "../../shared/pi-sync";
 import type { Session } from "../workspace-store";
-import { folderName } from "../utils/session";
 
 type DebugPanel = "request" | "history" | "diagnostics";
 type Props = {
   session: Session; saveState: "saved" | "saving" | "error"; onDebugView: (view: DebugPanel) => void;
   sidebarCollapsed: boolean; onToggleSidebar: () => void; theme: "light" | "dark"; onTheme: () => void;
-  rightOpen: boolean; onRight: () => void; compactTools: boolean; onCompactTools: () => void;
+  compactTools: boolean; onCompactTools: () => void;
   piSessions: PiLiveSession[]; followPi: boolean; onFollowPi: (value: boolean) => void;
   syncError: string; onSelectPi: (id: string) => void; onApplyPi: () => void; onDiscardPi: () => void; onCancelPending: () => void;
-  onTitle: (value: string) => void; onWorkingDirectory: (value: string) => void;
+  onTitle: (value: string) => void; onExport: () => void; onImport: (file?: File) => void;
   onFork: () => void; forkDisabled?: boolean;
   directoryOpen?: boolean; onDirectoryToggle?: () => void;
   archiveableToolGroups?: number; onArchiveOldTools?: () => void;
 };
 
 export function TopBar(props: Props) {
-  const [editingCwd, setEditingCwd] = useState(false);
   const debugMenu = useRef<HTMLDetailsElement>(null);
-  const [cwd, setCwd] = useState(props.session.settings.workingDirectory);
-  useEffect(() => setCwd(props.session.settings.workingDirectory), [props.session.id, props.session.settings.workingDirectory]);
+  const sessionDataMenu = useRef<HTMLDetailsElement>(null);
+  const importInput = useRef<HTMLInputElement>(null);
   const currentPi = props.piSessions.find((entry) => entry.id === props.session.piSync?.id);
   const onlineCount = props.piSessions.filter((entry) => entry.online).length;
   const saveLabel = props.saveState === "saving" ? "保存中" : props.saveState === "error" ? "保存失败" : "已保存";
-  const workingDirectory = props.session.settings.workingDirectory;
   const openDebug = (view: DebugPanel) => {
     props.onDebugView(view);
     debugMenu.current?.removeAttribute("open");
@@ -34,9 +31,6 @@ export function TopBar(props: Props) {
     <div className="topbar-leading">
       <button className="icon-button sidebar-top-toggle sidebar-mobile-toggle" onClick={props.onToggleSidebar} aria-label={props.sidebarCollapsed ? "展开会话栏 / 展开侧栏" : "收起会话栏 / 收起侧栏"} title={props.sidebarCollapsed ? "展开会话栏" : "收起会话栏"}>{props.sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button>
       <div className="title-line"><Sparkles size={16} /><input aria-label="会话标题" value={props.session.title} maxLength={200} onChange={(event) => props.onTitle(event.target.value)} /></div>
-      <div className="cwd-control">
-        {editingCwd ? <input autoFocus aria-label="工作目录" value={cwd} onChange={(event) => setCwd(event.target.value)} onBlur={() => { props.onWorkingDirectory(cwd); setEditingCwd(false); }} onKeyDown={(event) => { if (event.key === "Enter") { props.onWorkingDirectory(cwd); setEditingCwd(false); } if (event.key === "Escape") { setCwd(workingDirectory); setEditingCwd(false); } }} /> : <button title={workingDirectory || "服务端默认目录"} aria-label={`编辑工作目录：${workingDirectory || "服务端默认目录"}`} onClick={() => setEditingCwd(true)}>📁 <span>{folderName(workingDirectory)}</span></button>}
-      </div>
       <span className={`save-state ${props.saveState}`}><span />{saveLabel}</span>
     </div>
     <div className="topbar-trailing">
@@ -68,8 +62,12 @@ export function TopBar(props: Props) {
           <button onClick={() => openDebug("diagnostics")}>诊断日志</button>
         </div>
       </details>
+      <details className="session-data-menu" ref={sessionDataMenu}>
+        <summary className="icon-button" aria-label="会话导入导出" title="会话导入导出"><MoreHorizontal size={17} /></summary>
+        <div className="session-data-popover"><button onClick={() => { sessionDataMenu.current?.removeAttribute("open"); props.onExport(); }}><Download size={14} />导出当前会话</button><button onClick={() => { sessionDataMenu.current?.removeAttribute("open"); importInput.current?.click(); }}><Upload size={14} />导入会话 JSON</button></div>
+        <input ref={importInput} type="file" accept=".json,application/json" hidden onChange={(event) => { props.onImport(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+      </details>
       <button className="icon-button theme-button" aria-label={props.theme === "light" ? "切换深色模式" : "切换浅色模式"} title={props.theme === "light" ? "切换深色模式" : "切换浅色模式"} onClick={props.onTheme}>{props.theme === "light" ? <Moon size={17} /> : <Sun size={17} />}</button>
-      <button className={`icon-button right-toggle ${props.rightOpen ? "active" : ""}`} aria-label={props.rightOpen ? "隐藏工作台" : "显示工作台"} title={props.rightOpen ? "隐藏工作台" : "显示工作台"} onClick={props.onRight}>{props.rightOpen ? <PanelRightClose size={17} /> : <PanelRight size={17} />}</button>
     </div>
   </header>;
 }

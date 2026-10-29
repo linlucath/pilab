@@ -134,12 +134,10 @@ export function exactPayload(payload: unknown, settings: Settings, active: Messa
 
 async function e2eWorkingDirectory(settings: Settings) {
   const cwd = settings.workingDirectory.trim() || process.env.PI_LAB_E2E_CWD || process.cwd();
-  if (settings.toolMode !== "none") {
-    try {
-      if (!path.isAbsolute(cwd) || !(await stat(cwd)).isDirectory()) throw new Error();
-    } catch {
-      throw new Error("工具工作目录必须是存在的绝对路径目录。");
-    }
+  try {
+    if (!path.isAbsolute(cwd) || !(await stat(cwd)).isDirectory()) throw new Error();
+  } catch {
+    throw new Error("工具工作目录必须是存在的绝对路径目录。");
   }
   return cwd;
 }
@@ -256,7 +254,7 @@ export async function generate(
   const { cwd, tools } = e2e
     ? {
         cwd: await e2eWorkingDirectory(settings),
-        tools: settings.toolMode === "none" ? [] : e2eMockTools(),
+        tools: e2eMockTools(),
       }
     : await agentTools(settings, history, onEvent, ownerSessionId);
   emit({ type: "runtime", cwd, tools: tools.map((t) => t.name) });

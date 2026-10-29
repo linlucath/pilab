@@ -21,13 +21,13 @@ async function expectOneLineTopbar(page: import("@playwright/test").Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 }
 
-test("ISSUE-06 窄屏工作台抽屉可关闭，390/768/1024 布局保持单行且侧栏不留空白", async ({ page }) => {
+test("ISSUE-06 设置面板在所有断点均已移除，390/768/1024 布局保持单行且侧栏不留空白", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await loadFresh(page);
 
   const sidebar = page.locator(".sidebar");
-  const panel = page.getByRole("complementary", { name: "工作台配置" });
-  await expect(panel).toBeHidden();
+  const removedPanel = page.locator(".right-panel, .right-panel-backdrop");
+  await expect(removedPanel).toHaveCount(0);
   expect(await sidebar.evaluate((element) => element.getBoundingClientRect().width)).toBe(0);
   await expectOneLineTopbar(page);
   await page.getByRole("button", { name: "展开会话栏" }).click();
@@ -35,33 +35,15 @@ test("ISSUE-06 窄屏工作台抽屉可关闭，390/768/1024 布局保持单行�
   await page.getByRole("button", { name: "收起会话栏" }).click();
   await expect.poll(() => sidebar.evaluate((element) => element.getBoundingClientRect().width)).toBe(0);
 
-  await page.getByRole("button", { name: "显示工作台" }).click();
-  await expect(panel).toBeVisible();
-  await expect(page.getByRole("button", { name: "关闭工作台", exact: true })).toBeVisible();
-  const backdrop = page.locator(".right-panel-backdrop");
-  await expect(backdrop).toBeVisible();
-  await backdrop.click({ position: { x: 20, y: 50 } });
-  await expect(panel).toBeHidden();
-
-  await page.getByRole("button", { name: "显示工作台" }).click();
-  await page.keyboard.press("Escape");
-  await expect(panel).toBeHidden();
-
   await page.setViewportSize({ width: 768, height: 900 });
-  await expect(panel).toBeHidden();
+  await expect(removedPanel).toHaveCount(0);
   await expect.poll(() => sidebar.evaluate((element) => element.getBoundingClientRect().width)).toBe(68);
   await expectOneLineTopbar(page);
-  await page.getByRole("button", { name: "显示工作台" }).click();
-  await expect(backdrop).toBeVisible();
-  await expect(panel).toBeVisible();
-  await page.getByRole("button", { name: "关闭工作台", exact: true }).click();
-  await expect(panel).toBeHidden();
 
   await page.setViewportSize({ width: 1024, height: 900 });
-  await expect(panel).toBeVisible();
+  await expect(removedPanel).toHaveCount(0);
   await expect.poll(() => sidebar.evaluate((element) => element.getBoundingClientRect().width)).toBeGreaterThan(100);
   await expectOneLineTopbar(page);
-  await expect(backdrop).toBeHidden();
 });
 
 test("ISSUE-07 流式状态只在底部运行栏显示", async ({ page }) => {
@@ -85,34 +67,13 @@ test("ISSUE-08 流式助手正文末尾显示光标，生成完成后移除", as
   await expect(cursor).toHaveCount(0);
 });
 
-test("ISSUE-09 运行中分段控件禁用但文字对比度仍可读", async ({ page }) => {
+test("ISSUE-09 运行中模型控件收起且工具模式开关不可见", async ({ page }) => {
   await loadFresh(page);
-  await setMockScript(page, [{ type: "slow", text: "CONTRAST-CHECK " + "生成中。".repeat(60), chunkSize: 2, delayMs: 70 }]);
-  await sendMessage(page, "检查禁用控件");
+  await setMockScript(page, [{ type: "slow", text: "RUNNING-CONTROLS " + "生成中。".repeat(60), chunkSize: 2, delayMs: 70 }]);
+  await sendMessage(page, "检查运行中设置入口");
   await expect(page.locator(".composer-running")).toBeVisible();
-
-  const segments = [page.locator(".effort-segment"), page.locator(".mode-segment")];
-  const getContrast = async (button: import("@playwright/test").Locator) => button.evaluate((element) => {
-    const parse = (value: string) => value.match(/[\d.]+/g)?.slice(0, 3).map(Number) || [0, 0, 0];
-    const luminance = (color: number[]) => color.map((channel) => channel / 255).map((channel) => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4).reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index], 0);
-    const style = getComputedStyle(element);
-    const ownBackground = style.backgroundColor;
-    const background = ownBackground === "rgba(0, 0, 0, 0)" ? getComputedStyle(element.parentElement!).backgroundColor : ownBackground;
-    const values = [luminance(parse(style.color)), luminance(parse(background))].sort((a, b) => b - a);
-    return { ratio: (values[0] + 0.05) / (values[1] + 0.05), opacity: style.opacity };
-  });
-
-  for (const theme of ["light", "dark"] as const) {
-    if (theme === "dark") await page.getByRole("button", { name: "切换深色模式" }).click();
-    for (const segment of segments) {
-      const buttons = segment.locator("button");
-      await expect(buttons.first()).toBeDisabled();
-      for (let index = 0; index < await buttons.count(); index++) {
-        const result = await getContrast(buttons.nth(index));
-        expect(result.opacity).toBe("1");
-        expect(result.ratio).toBeGreaterThanOrEqual(4.5);
-      }
-    }
-  }
+  await expect(page.locator(".composer-model-controls")).toHaveCount(0);
+  await expect(page.getByLabel("工具模式")).toHaveCount(0);
+  await expect(page.locator(".right-panel")).toHaveCount(0);
   await ui(page).stop.click();
 });

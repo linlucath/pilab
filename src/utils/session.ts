@@ -7,12 +7,11 @@ export const NEW_SESSION_SYSTEM_PROMPT = `你是 Gemini, 最好的伙伴!\nGPT  
 
 export const uid = () => crypto.randomUUID();
 
-export function newSession(workingDirectory = ""): Session {
+export function newSession(workingDirectory = "", id = uid()): Session {
   const settings: Settings = {
     ...defaults,
     protocol: "pi-subscription",
     model: "antigravity/gemini-3.8-flash",
-    toolMode: "agent",
     reasoning: true,
     reasoningEffort: "high",
     maxTurns: 20,
@@ -22,7 +21,7 @@ export function newSession(workingDirectory = ""): Session {
   const system: Message = {
     id: uid(), role: "system", enabled: true, content: NEW_SESSION_SYSTEM_PROMPT,
   };
-  return { id: uid(), title: "新建对话", messages: [system], settings, runs: [] };
+  return { id, title: "新建对话", messages: [system], settings, runs: [] };
 }
 
 /** Legacy localStorage is only a fallback when the project workspace file is absent. */
