@@ -383,6 +383,11 @@ app.post("/api/run", async (req, res) => {
     }
     res.write(`${line}\n`);
   };
+  const heartbeat = setInterval(() => {
+    if (!res.destroyed && !res.writableEnded) {
+      emit({ type: "heartbeat" });
+    }
+  }, 10_000);
   try {
     await generate(parsed.data, emit, abort.signal);
   } catch (error) {
@@ -390,6 +395,7 @@ app.post("/api/run", async (req, res) => {
     logRunError(reason);
     emit({ type: "error", message: reason });
   } finally {
+    clearInterval(heartbeat);
     req.off("close", onClientClose);
     res.off("close", onClientClose);
     res.end();

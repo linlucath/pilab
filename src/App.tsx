@@ -672,6 +672,18 @@ export default function App() {
       const index = trace.findIndex(empty); if (index >= 0) trace.splice(index, 1); textById.delete(id); text = [...textById.values()].filter(Boolean).join("\n\n");
       setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === sessionId ? { ...item, messages: item.messages.filter((message) => !empty(message)) } : item) })); updateRun({ trace: [...trace], output: text });
     };
+    const settlePendingToolCalls = (content: string) => {
+      const resolved = new Set(trace
+        .filter((message) => message.role === "tool")
+        .map((message) => message.toolCallId?.split("|")[0])
+        .filter((id): id is string => !!id));
+      for (const message of [...trace]) for (const call of message.toolCalls || []) {
+        const id = call.id.split("|")[0];
+        if (!id || resolved.has(id)) continue;
+        resolved.add(id);
+        upsert({ id: uid(), role: "tool", enabled: true, content, toolCallId: call.id, toolName: call.name, isError: true });
+      }
+    };
     try {
       const response = await fetch("/api/run", { method: "POST", headers: { "Content-Type": "application/json", "X-PiLab-Run-Id": runId, "X-PiLab-Session-Id": sessionId }, body: pretty({ messages: runMessages, settings }), signal: abort.signal });
       if (!response.ok) { const data = await response.json(); throw new Error(data.error || `HTTP ${response.status}`); }
@@ -679,6 +691,7 @@ export default function App() {
       streamStarted = true;
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
       const consumeEvent = (event: any) => {
+        if (event.type === "heartbeat") return;
         if (event.type === "context_compacted") applyContextCompacted(event as Record<string, unknown>);
         if (event.type === "session_forked") {
           const fork = (event as { fork?: { id?: unknown; title?: unknown; forkSummary?: unknown; keepRecentTurns?: unknown; messages?: unknown } }).fork;
@@ -718,6 +731,7 @@ export default function App() {
       }
       if (buffer.trim()) consumeEvent(JSON.parse(buffer));
       if (!terminalReceived) {
+        settlePendingToolCalls("网络流意外中断 (Connection closed)。未收到该工具的完整结果，操作可能已经部分完成，请检查实际状态后再继续。");
         const message = "⚠️ 回复流意外中断（未收到完成信号），已记录至诊断日志";
         reportClientDiagnostic("stream_unexpected_eof", undefined, { runId, sessionId, inputMessageCount: activeMessages.length, receivedChars: text.length, startedAt: new Date(started).toISOString() });
         updateRun({ status: "error", error: message, output: text });
@@ -726,13 +740,15 @@ export default function App() {
     } catch (error) {
       removeEmpty(currentMessageId);
       if (abort.signal.aborted) {
-        const resolved = new Set(trace.filter((message) => message.role === "tool").map((message) => message.toolCallId));
-        for (const message of [...trace]) for (const call of message.toolCalls || []) if (!resolved.has(call.id)) upsert({ id: uid(), role: "tool", enabled: true, content: "执行已停止，未收到该工具的完整结果。操作可能已经部分完成，请检查实际文件状态后再继续。", toolCallId: call.id, toolName: call.name, isError: true });
+        settlePendingToolCalls("执行已停止，未收到该工具的完整结果。操作可能已经部分完成，请检查实际文件状态后再继续。");
         updateRun({ status: "stopped", output: text });
       } else {
         const detail = error instanceof Error ? error.message : String(error);
         const networkFailure = /^(Failed to fetch|Load failed|NetworkError.*|The operation was aborted.*)$/i.test(detail);
-        const message = streamStarted && !errorEventReceived
+        const streamInterrupted = streamStarted && !errorEventReceived;
+        if (streamInterrupted)
+          settlePendingToolCalls("网络流意外中断 (Connection closed)。未收到该工具的完整结果，操作可能已经部分完成，请检查实际状态后再继续。");
+        const message = streamInterrupted
           ? `⚠️ 回复流连接意外中断，已保留已生成内容：${detail}`
           : networkFailure ? `网页连接本地服务失败：${detail}` : detail;
         reportClientDiagnostic(errorEventReceived ? "run_stream_error_event" : streamStarted ? "run_stream_read_error" : "run_request_error", error, { runId, sessionId, inputMessageCount: activeMessages.length, receivedChars: text.length, startedAt: new Date(started).toISOString() });
