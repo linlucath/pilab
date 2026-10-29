@@ -35,7 +35,6 @@ export function ComposerBar({ busy, blocked, toolName, messageCount, contextToke
   const [attachmentError, setAttachmentError] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const input = useRef<HTMLTextAreaElement>(null);
-  const fileInput = useRef<HTMLInputElement>(null);
   const isComposingRef = useRef(false);
   const dragDepth = useRef(0);
   const stagedRef = useRef<StagedImage[]>([]);
@@ -189,11 +188,9 @@ export function ComposerBar({ busy, blocked, toolName, messageCount, contextToke
             if (nextRole !== "user" && stagedRef.current.length) { setAttachmentError("请先发送或移除图片，再切换到非 User 角色。"); return; }
             setRole(nextRole);
           }}>{composerRoles.map((value) => <option key={value} value={value}>{value === "user" ? "User" : value === "assistant" ? "Assistant" : "System"}</option>)}</select><ChevronDown size={13} /></label>
-          <input ref={fileInput} className="composer-file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple onChange={(event) => { addFiles(Array.from(event.currentTarget.files || [])); event.currentTarget.value = ""; }} aria-label="选择图片文件" />
-          <button type="button" className="composer-attach-button" disabled={role !== "user" || stagedImages.length >= MAX_MESSAGE_IMAGES} onClick={() => fileInput.current?.click()} title={role === "user" ? "添加图片，也可粘贴或拖放" : "图片仅支持 User 消息"}><ImagePlus size={14} /><span>添加图片</span></button>
           <span className="context-count" title={usageTitle} style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><span>{usageLabel}</span>{savedPercent > 0 && <span style={{ color: "var(--success)", fontSize: 8 }}>🧹 已省 {savedPercent}%</span>}</span>
         </div>
-        <div className="composer-footer-right"><ComposerModelControls settings={settings} models={models} defaultModel={defaultModel} piConnected={piConnected} busy={busy} blocked={blocked} onSetting={onSetting} onNotice={onNotice} onRefreshModels={onRefreshModels} /><span className="composer-shortcuts" title="Shift+Enter 换行">⏎ 发送</span><div className="composer-actions">{canSend ? <><button className="add-only-button" disabled={busy} onClick={() => submit(false)}><Plus size={14} />仅添加</button><button className="send-button" disabled={busy || blocked} onClick={() => submit(true)}><ArrowUp size={15} />发送</button></> : <button className="send-button run-current" disabled={busy || blocked} onClick={onRun} title="重新运行当前上下文" style={{ minWidth: "unset", width: "auto", padding: "0 10px", fontSize: 9, fontWeight: 500, color: "var(--text-muted)", borderColor: "var(--border)", background: "var(--surface-soft)" }}><RotateCw size={13} />重新运行</button>}</div></div>
+        <div className="composer-footer-right"><ComposerModelControls settings={settings} models={models} defaultModel={defaultModel} piConnected={piConnected} busy={busy} blocked={blocked} onSetting={onSetting} onNotice={onNotice} onRefreshModels={onRefreshModels} /><div className="composer-actions">{canSend ? <><button className="add-only-button" disabled={busy} onClick={() => submit(false)}><Plus size={14} />仅添加</button><button className="send-button" disabled={busy || blocked} onClick={() => submit(true)}><ArrowUp size={15} />发送</button></> : <button className="send-button run-current" disabled={busy || blocked} onClick={onRun} title="重新运行当前上下文" style={{ minWidth: "unset", width: "auto", padding: "0 10px", fontSize: 9, fontWeight: 500, color: "var(--text-muted)", borderColor: "var(--border)", background: "var(--surface-soft)" }}><RotateCw size={13} />重新运行</button>}</div></div>
       </div>
     </div>}
     {blocked && <small className="composer-hint">Pi 同步会话请先在顶部应用或放弃本地修改。</small>}

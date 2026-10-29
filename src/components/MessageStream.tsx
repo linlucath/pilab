@@ -16,7 +16,7 @@ type Props = {
   lineage?: { parentSessionId: string; parentSessionTitle?: string; forkSummary?: string };
   forkNotice?: { forkId: string; title: string };
   onSwitchFork?: (id: string) => void;
-  onJumpToSession?: (id: string) => void; onFork: () => void;
+  onJumpToSession?: (id: string) => void;
   onMessage: (id: string, patch: Partial<Message>) => void; onCopy: (text: string) => void;
   onCall: (message: Message, index: number, patch: Partial<ToolCall>) => void;
   onAdd: (after?: number, role?: Message["role"]) => void;

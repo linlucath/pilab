@@ -1,12 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CircleHelp, X } from "lucide-react";
-import {
-  defaults, fileSchema, getReasoningEffort, messageSchema, reasoningEfforts,
-  type Message, type ReasoningEffort, type Settings, type ToolCall,
-} from "../shared/schema";
-import type { PiLiveDetail, PiLiveSession } from "../shared/pi-sync";
+import { messageSchema, type Message, type ReasoningEffort, type Settings, type ToolCall } from "../shared/schema";
 import type { GptSessionSummary } from "../shared/gpt-sessions";
-import { piSessionIdentity } from "../shared/workspace";
 import { addToolResult as createToolResult, completeToolBranchEnd, deleteMessageWithToolPairs, deleteToolCallWithResult, patchMessageWithToolPairs, patchToolCallWithResult, toolHistoryError } from "../shared/tool-history";
 import { useProjectWorkspace, type Run, type Session, type Workspace } from "./workspace-store";
 import { newSession, uid, loadLegacyWorkspace } from "./utils/session";
@@ -17,13 +12,8 @@ import { TopBar } from "./components/TopBar";
 import { MessageStream } from "./components/MessageStream";
 import { ComposerBar } from "./components/ComposerBar";
 import { ThreadTabs } from "./components/ThreadTabs";
-import { RequestInspector } from "./components/RequestInspector";
-import { RunHistory } from "./components/RunHistory";
-import { SessionForkModal } from "./components/SessionForkModal";
-import { DiagnosticsView } from "./components/DiagnosticsView";
 import { installGlobalErrorLogging, reportClientDiagnostic } from "./utils/logger";
 
-type DebugPanel = "request" | "history" | "diagnostics";
 type PiConnection = {
   connected: boolean; provider: string; defaultModel?: string;
   models: { id: string; name: string; reasoningEfforts: ReasoningEffort[]; reasoningEffortMap?: Partial<Record<ReasoningEffort, string | null>> }[];
@@ -108,39 +98,29 @@ export default function App() {
   const [compactTools, setCompactTools] = useState(() => {
     try { return localStorage.getItem("pilab-tools-compact-v1") !== "false"; } catch { return true; }
   });
-  const [debugPanel, setDebugPanel] = useState<DebugPanel | null>(null);
-  const [directoryOpen, setDirectoryOpen] = useState(false);
-  const [archiveableToolGroupCount, setArchiveableToolGroupCount] = useState(0);
-  const [archiveToolRequest, setArchiveToolRequest] = useState(0);
   const [runErrors, setRunErrors] = useState<Record<string, string>>({});
   const [scrollRequest, setScrollRequest] = useState(0);
   const [streamViews, setStreamViews] = useState<Record<string, SessionStreamView>>({});
   const [activeRuns, setActiveRuns] = useState<Map<string, string>>(() => new Map());
   const [startingSessions, setStartingSessions] = useState<Set<string>>(() => new Set());
   const [piConnection, setPiConnection] = useState<PiConnection | null>(null);
-  const [piSessions, setPiSessions] = useState<PiLiveSession[]>([]);
   const [gptSessionSnapshot, setGptSessionSnapshot] = useState<{ ownerSessionId: string; cwd: string; sessions: GptSessionSummary[] }>({ ownerSessionId: "", cwd: "", sessions: [] });
   const [selectedWorkerId, setSelectedWorkerId] = useState("");
   const [gptSessionsError, setGptSessionsError] = useState("");
   const [composerText, setComposerText] = useState("");
   const [workerWakeNotices, setWorkerWakeNotices] = useState<WorkerWakeNotice[]>([]);
   const workerSnapshotsRef = useRef(new Map<string, Map<string, GptSessionSummary>>());
-  const [forkModalOpen, setForkModalOpen] = useState(false);
   const [forkNotice, setForkNotice] = useState<ForkNotice | null>(null);
-  const forkSwitchSourceRef = useRef<string | null>(null);
-  const [syncError, setSyncError] = useState("");
-  const [selectedRun, setSelectedRun] = useState<string>();
   const activeRunsRef = useRef(activeRuns);
   const startingSessionsRef = useRef(startingSessions);
   const runControlsRef = useRef(new Map<string, RunControl>());
   const completedRunIdsRef = useRef(new Set<string>());
   const busyForSessionRef = useRef<(sessionId: string) => boolean>(() => false);
-  const piStreamOnline = useRef(false);
   const sessionRouteInitialized = useRef(false);
   const sessionWorkspaceRequests = useRef(new Map<string, Promise<string>>());
   const runStartLocks = useRef(new Set<string>());
 
-  const { workspace, setWorkspace, workspaceRef, ready, error: storageError, status: storageStatus } =
+  const { workspace, setWorkspace, workspaceRef, ready, error: storageError } =
     useProjectWorkspace(loadLegacyWorkspace, () => newSession(), setNotice);
   const session = workspace.sessions.find((item) => item.id === workspace.active) || workspace.sessions[0] || newSession();
   const requestSessionWorkspace = useCallback(async (sessionId: string) => {
@@ -154,7 +134,6 @@ export default function App() {
   const ensureSessionWorkspace = useCallback(async (sessionId: string) => {
     const current = workspaceRef.current.sessions.find((item) => item.id === sessionId);
     if (current?.settings.workingDirectory.trim()) return current.settings.workingDirectory;
-    if (current?.piSync) return current.settings.workingDirectory;
     const pending = sessionWorkspaceRequests.current.get(sessionId);
     if (pending) return pending;
     const request = requestSessionWorkspace(sessionId).then((workingDirectory) => {
@@ -195,7 +174,6 @@ export default function App() {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, [ready, setWorkspace, workspaceRef]);
-  const activeRun = session.runs.find((run) => run.id === selectedRun) || session.runs[0];
   const busy = activeRuns.has(session.id) || startingSessions.has(session.id) || runControlsRef.current.has(session.id);
   const streamView = streamViews[session.id] || emptyStreamView;
   const streamingId = streamView.streamingId;
@@ -220,7 +198,6 @@ export default function App() {
     if (message) return { ...current, [sessionId]: message };
     const next = { ...current }; delete next[sessionId]; return next;
   });
-  const enabledMessages = session.messages.filter((message) => message.enabled);
   const [metricsSnapshot, setMetricsSnapshot] = useState(() => ({ sessionId: session.id, messages: session.messages }));
   const metricMessages = metricsSnapshot.sessionId === session.id ? metricsSnapshot.messages : session.messages;
   const contextMetrics = useMemo(() => contextTokenMetrics(metricMessages), [metricMessages]);
@@ -229,7 +206,6 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [session.id, session.messages]);
   const effectiveCwd = session.settings.workingDirectory.trim();
-  const reportArchiveableToolGroups = useCallback((count: number) => setArchiveableToolGroupCount(count), []);
   const reportGptSessions = useCallback((ownerSessionId: string, sessions: GptSessionSummary[]) => {
     const cwdKey = normalizedWorkerCwd(effectiveCwd);
     setGptSessionSnapshot((current) => current.ownerSessionId === ownerSessionId && current.cwd === effectiveCwd &&
@@ -331,7 +307,7 @@ export default function App() {
   }, [ready, effectiveCwd, fetchGptSessions]);
   useEffect(() => {
     if (!ready) return;
-    const needsWorkspace = workspace.sessions.filter((item) => !item.piSync && !item.settings.workingDirectory.trim());
+    const needsWorkspace = workspace.sessions.filter((item) => !item.settings.workingDirectory.trim());
     if (!needsWorkspace.length) return;
     void Promise.all(needsWorkspace.map((item) => ensureSessionWorkspace(item.id)))
       .catch((error) => setNotice(`创建会话工作区失败：${error instanceof Error ? error.message : String(error)}`));
@@ -346,9 +322,6 @@ export default function App() {
       control.resume?.();
       control.resume = undefined;
     }
-    setSelectedRun(undefined);
-    setDebugPanel(null);
-    setDirectoryOpen(false);
     return () => {
       const previous = runControlsRef.current.get(session.id);
       if (!previous) return;
@@ -387,12 +360,6 @@ export default function App() {
     const runId = activeRuns.get(session.id);
     if (runId) void run(undefined, session.id, runId);
   }, [activeRuns, ready, session.id, startingSessions]);
-  useEffect(() => {
-    if (!debugPanel) return;
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setDebugPanel(null); };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [debugPanel]);
   useEffect(() => {
     const compactQuery = window.matchMedia("(max-width: 860px)");
     let compact = compactQuery.matches;
@@ -538,7 +505,7 @@ export default function App() {
         : newSession(workingDirectory, id);
       delete next.piSync;
       setWorkspace((current) => ({ ...current, sessions: [...current.sessions, next], rootSessionIds: [next.id, ...current.rootSessionIds], active: next.id, followPi: false }));
-      setSelectedRun(undefined); setScrollRequest((value) => value + 1);
+      setScrollRequest((value) => value + 1);
       return true;
     } catch (error) { setNotice(`无法创建新会话：${error instanceof Error ? error.message : String(error)}`); return false; }
   };
@@ -570,8 +537,7 @@ export default function App() {
         sessions.push(replacement);
         rootSessionIds = [replacement.id, ...rootSessionIds];
       }
-      return { ...current, sessions, folders, rootSessionIds, active: current.active === id ? sessions[0]?.id || current.active : current.active, followPi: false,
-        hiddenPiSessions: target.piSync ? [...new Set([...current.hiddenPiSessions, piSessionIdentity(target.piSync)])] : current.hiddenPiSessions };
+      return { ...current, sessions, folders, rootSessionIds, active: current.active === id ? sessions[0]?.id || current.active : current.active, followPi: false };
     });
   };
   const branchAt = (message: Message, index: number) => {
@@ -602,8 +568,7 @@ export default function App() {
     };
     setWorkspace((current) => ({ ...current, sessions: [...current.sessions, next], rootSessionIds: [next.id, ...current.rootSessionIds], ...(switchActive ? { active: next.id, followPi: false } : {}) }));
     setForkNotice({ sourceId: source.id, forkId: next.id, title: next.title });
-    setForkModalOpen(false);
-    if (switchActive) { setSelectedRun(undefined); setScrollRequest((value) => value + 1); }
+    if (switchActive) setScrollRequest((value) => value + 1);
     setNotice(switchActive ? `已创建提纯分身「${next.title}」并切换过去。` : `已生成提纯分身「${next.title}」，原会话保持不变。`);
     return next.id;
   }
@@ -649,114 +614,6 @@ export default function App() {
     catch { setNotice("暂时无法读取 Pi 登录状态。"); }
   }
   useEffect(() => { if (ready) void refreshPiStatus(); }, [ready]);
-  function receivePiSession(source: PiLiveDetail, activate = false, discard = false) {
-    setWorkspace((current) => {
-      if (current.hiddenPiSessions.includes(source.sessionId)) return current;
-      const local = current.sessions.find((item) => item.piSync && piSessionIdentity(item.piSync) === source.sessionId);
-      const accepted = !!(local?.piSync?.pending && source.ack?.id === local.piSync.pending && source.ack.status === "applied");
-      const rejected = !!(local?.piSync?.pending && source.ack?.id === local.piSync.pending && source.ack.status === "rejected");
-      let next = local;
-      if (!local) {
-        const fresh = newSession(source.cwd);
-        const effort = reasoningEfforts.includes(source.thinking as ReasoningEffort) ? source.thinking as ReasoningEffort : "medium";
-        next = { ...fresh, title: source.name, messages: source.messages, settings: { ...fresh.settings,
-          protocol: source.model ? "pi-subscription" : defaults.protocol,
-          model: source.model ? source.model.provider === "openai-codex" ? source.model.id : `${source.model.provider}/${source.model.id}` : fresh.settings.model,
-          workingDirectory: source.cwd, reasoningEffort: effort, reasoning: effort !== "off" },
-          piSync: { id: source.id, sessionId: source.sessionId, revision: source.revision, dirty: false } };
-      } else if (discard || accepted || (!local.piSync?.dirty && !local.piSync?.pending)) {
-        if (source.revision !== local.piSync?.revision || local.piSync.id !== source.id || discard || accepted)
-          next = { ...local, messages: source.messages, piSync: { id: source.id, sessionId: source.sessionId, revision: source.revision, dirty: false } };
-      } else if (rejected) {
-        next = { ...local, piSync: { ...local.piSync!, pending: undefined } };
-      }
-      if (!next) return current;
-      const sessions = local ? current.sessions.map((item) => item.id === local.id ? next! : item) : [...current.sessions, next];
-      return { ...current, sessions, ...(!local ? { rootSessionIds: [next.id, ...current.rootSessionIds] } : {}), active: activate ? next.id : current.active };
-    });
-  }
-  async function readPiSession(id: string, activate = false, discard = false) {
-    const response = await fetch(`/api/pi-sync/${encodeURIComponent(id)}`, { cache: "no-store" });
-    const source = await response.json() as PiLiveDetail & { error?: string };
-    if (!response.ok) throw new Error(source.error || "读取 Pi 会话失败");
-    receivePiSession(source, activate, discard); return source;
-  }
-  async function selectPiSession(id: string) {
-    setWorkspace((current) => ({ ...current, followPi: false }));
-    const identity = piSessions.find((item) => item.id === id)?.sessionId;
-    const existing = workspace.sessions.find((item) => item.piSync && piSessionIdentity(item.piSync) === identity);
-    if (existing) setWorkspace((current) => ({ ...current, active: existing.id }));
-    try { await readPiSession(id, !existing); setSyncError(""); }
-    catch (error) { setSyncError((error as Error).message); }
-  }
-  async function applyToPi() {
-    if (!session.piSync || busy || session.piSync.pending) return;
-    try {
-      const response = await fetch(`/api/pi-sync/${encodeURIComponent(session.piSync.id)}/apply`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ revision: session.piSync.revision, messages: session.messages }) });
-      const data = await response.json(); if (!response.ok) throw new Error(data.error || "同步失败");
-      setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === session.id && item.piSync ? { ...item, piSync: { ...item.piSync, pending: data.id } } : item) }));
-      setNotice("修改已提交，等待 Pi 确认。");
-    } catch (error) { setNotice((error as Error).message); }
-  }
-  async function cancelPiApply() {
-    if (!session.piSync?.pending) return;
-    try {
-      const response = await fetch(`/api/pi-sync/${encodeURIComponent(session.piSync.id)}/cancel`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ commandId: session.piSync.pending }) });
-      const data = await response.json(); if (!response.ok) throw new Error(data.error || "解除等待失败");
-      setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === session.id && item.piSync ? { ...item, piSync: { ...item.piSync, pending: undefined } } : item) }));
-    } catch (error) { setNotice((error as Error).message); }
-  }
-  useEffect(() => {
-    if (!ready) return;
-    let cancelled = false; let running = false;
-    const poll = async () => {
-      if (running) return; running = true;
-      try {
-        const response = await fetch("/api/pi-sync", { cache: "no-store" }); const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "Pi 同步服务不可用");
-        if (cancelled) return;
-        const sessions = data.sessions as PiLiveSession[]; setPiSessions(sessions); setSyncError("");
-        const current = workspaceRef.current.sessions.find((item) => item.id === workspaceRef.current.active);
-        const latest = sessions.filter((item) => !workspaceRef.current.hiddenPiSessions.includes(item.sessionId)).sort((a, b) => b.activityAt - a.activityAt)[0];
-        const target = workspaceRef.current.followPi && !busy && !current?.piSync?.dirty && !current?.piSync?.pending ? latest?.id || current?.piSync?.id : current?.piSync?.id;
-        if (target && (target !== current?.piSync?.id || !piStreamOnline.current)) await readPiSession(target, !!(workspaceRef.current.followPi && latest?.id === target && !busy));
-      } catch (error) { if (!cancelled) setSyncError((error as Error).message); }
-      finally { running = false; }
-    };
-    void poll(); const timer = setInterval(() => void poll(), 1800);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [ready, busy, workspace.followPi]);
-  useEffect(() => {
-    const id = session.piSync?.id;
-    if (!ready || !id) return;
-    let cancelled = false;
-    const events = new EventSource(`/api/pi-sync/${encodeURIComponent(id)}/events`);
-    events.addEventListener("snapshot", (event) => { if (cancelled) return; try { const source = JSON.parse((event as MessageEvent).data) as PiLiveDetail; if (source.id === id) { piStreamOnline.current = true; receivePiSession(source); } } catch { piStreamOnline.current = false; } });
-    events.addEventListener("sync_error", () => { piStreamOnline.current = false; }); events.onerror = () => { piStreamOnline.current = false; };
-    return () => { cancelled = true; piStreamOnline.current = false; events.close(); };
-  }, [session.piSync?.id, ready]);
-
-  function exportSession() {
-    const { apiKey: _secret, ...settings } = session.settings;
-    const blob = new Blob([pretty({ version: 1, title: session.title, settings, messages: session.messages,
-      ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
-      ...(session.parentSessionTitle ? { parentSessionTitle: session.parentSessionTitle } : {}),
-      ...(session.forkSummary ? { forkSummary: session.forkSummary } : {}) })], { type: "application/json" });
-    const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `${session.title || "pi-lab"}.json`; link.click(); URL.revokeObjectURL(link.href);
-    setNotice("已导出会话 JSON（不含 API Key）。");
-  }
-  async function importSession(file?: File) {
-    if (!file) return;
-    try {
-      if (file.size > 5_000_000) throw new Error("JSON 文件不能超过 5 MB");
-      const parsed = fileSchema.parse(JSON.parse(await file.text()));
-      const imported: Session = { id: uid(), title: parsed.title, settings: { ...parsed.settings, apiKey: "" }, messages: parsed.messages.map((message) => ({ ...message, id: uid() })), runs: [],
-        ...(parsed.parentSessionId ? { parentSessionId: parsed.parentSessionId } : {}),
-        ...(parsed.parentSessionTitle ? { parentSessionTitle: parsed.parentSessionTitle } : {}),
-        ...(parsed.forkSummary ? { forkSummary: parsed.forkSummary } : {}) };
-      if (await createSession(imported)) setNotice("会话已导入。");
-    } catch (error) { setNotice(`导入失败：${error instanceof Error ? error.message : "JSON 格式无效"}`); }
-  }
   async function copyText(value: string) { try { await navigator.clipboard.writeText(value); setNotice("已复制到剪贴板。"); } catch { setNotice("无法访问剪贴板。"); } }
 
   async function run(messagesToRun?: Message[], targetSessionId?: string, resumeRunId?: string) {
@@ -768,7 +625,6 @@ export default function App() {
     if (!activeSession) return;
     if (!resumeRunId) runStartLocks.current.add(sessionId);
     const releaseStartLock = () => runStartLocks.current.delete(sessionId);
-    if (activeSession.piSync) { releaseStartLock(); setNotice("请先在 Pi CLI 同步菜单中应用或放弃本地修改。"); return; }
     if (!activeSession.settings.workingDirectory.trim()) {
       try {
         await ensureSessionWorkspace(sessionId);
@@ -795,7 +651,6 @@ export default function App() {
     releaseStartLock();
     setSessionRunError(sessionId);
     setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === sessionId ? { ...item, runs: [record, ...item.runs].slice(0, 30) } : item) }));
-    if (workspaceRef.current.active === sessionId) { setSelectedRun(runId); setDebugPanel(null); }
     updateStreamView(sessionId, () => emptyStreamView);
     let remoteRunId = "";
     let runControl: RunControl | null = null;
@@ -884,14 +739,10 @@ export default function App() {
         if (event.type === "session_forked") {
           const fork = (event as { fork?: { id?: unknown; title?: unknown; forkSummary?: unknown; keepRecentTurns?: unknown; messages?: unknown } }).fork;
           const parsedMessages = messageSchema.array().max(500).safeParse(fork?.messages);
-          if (fork && typeof fork.id === "string" && typeof fork.title === "string" && typeof fork.forkSummary === "string" && parsedMessages.success) {
-            const requestedSwitch = forkSwitchSourceRef.current === sessionId;
-            const switchAfterCreate = requestedSwitch && workspaceRef.current.active === sessionId;
-            if (requestedSwitch) forkSwitchSourceRef.current = null;
-            createForkSession(fork.title, fork.forkSummary,
+          if (fork && typeof fork.id === "string" && typeof fork.title === "string" && typeof fork.forkSummary === "string" && parsedMessages.success)
+            void createForkSession(fork.title, fork.forkSummary,
               typeof fork.keepRecentTurns === "number" ? fork.keepRecentTurns : 0,
-              switchAfterCreate, sessionId, true, fork.id, parsedMessages.data);
-          }
+              false, sessionId, true, fork.id, parsedMessages.data);
         }
         if (event.type === "runtime") updateRun({ cwd: event.cwd as string | undefined });
         if (event.type === "request") { requests.push(event.payload); updateRun({ request: event.payload, requests: [...requests], turns: event.turn }); }
@@ -929,7 +780,6 @@ export default function App() {
           }
           if (runControl) { runControlsRef.current.delete(sessionId); setActiveRunForSession(sessionId, undefined); }
           updateStreamView(sessionId, () => emptyStreamView);
-          if (forkSwitchSourceRef.current === sessionId) forkSwitchSourceRef.current = null;
         }
       };
       const control = runControl;
@@ -1008,7 +858,6 @@ export default function App() {
         setActiveRunForSession(sessionId, undefined);
       }
       updateStreamView(sessionId, () => emptyStreamView);
-      if (forkSwitchSourceRef.current === sessionId) forkSwitchSourceRef.current = null;
     }
   }
   async function abortRun() {
@@ -1029,15 +878,15 @@ export default function App() {
     if (busyForSessionRef.current(targetSessionId || workspaceRef.current.active) || !ready) return false;
     const activeId = targetSessionId || workspaceRef.current.active;
     const activeSession = workspaceRef.current.sessions.find((item) => item.id === activeId);
-    if (!activeSession || activeSession.piSync) return false;
+    if (!activeSession) return false;
     const message: Message = { id: uid(), role, content, enabled: true, ...(images?.length ? { images } : {}) };
     const nextWorkspace = setWorkspace((current) => {
       const target = current.sessions.find((item) => item.id === activeId);
-      if (!target || target.piSync) return current;
+      if (!target) return current;
       return {
         ...current,
         sessions: current.sessions.map((item) => item.id !== activeId ? item : {
-          ...item, messages: [...item.messages, message], ...(item.piSync ? { piSync: { ...item.piSync, dirty: true } } : {}),
+          ...item, messages: [...item.messages, message],
         }),
       };
     });
@@ -1047,16 +896,6 @@ export default function App() {
     if (shouldRun) void run(nextSession.messages, activeId);
     return true;
   };
-  function requestSmartFork(title: string, keepRecentTurns: number, switchAfterCreate = false) {
-    const prompt = `请从当前完整会话中提炼「记忆结晶」，必须包含：目前已搞懂的核心原理/结论、用户的关键偏好与硬约束、已经试过并证明走不通的死胡同及原因、接下来的明确目标。去掉机械操作流水账和已解决的冗余过程，不要编造。然后必须调用 session_fork 创建新分身，title=${JSON.stringify(title)}，keepRecentTurns=${keepRecentTurns}，distilledMemory 填写提炼结果。原会话绝不修改；不要调用其他工具或派发工兵。`;
-    if (switchAfterCreate) forkSwitchSourceRef.current = session.id;
-    if (!sendMessage(prompt, "user", true)) {
-      if (forkSwitchSourceRef.current === session.id) forkSwitchSourceRef.current = null;
-      setNotice("当前会话无法启动提纯；请先退出 Pi 同步只读状态或等待当前运行结束。"); return;
-    }
-    setForkModalOpen(false);
-    setNotice(switchAfterCreate ? "Gemini 正在提纯；完成后将切换到新分身。" : "Gemini 正在提纯记忆结晶，完成后会在原会话中提供切换卡片。");
-  }
   function rememberReviewedWorkers(sessionId: string, cwd: string, names: string[]) {
     const owner = workspaceRef.current.sessions.find((item) => item.id === sessionId);
     if (!owner) return;
@@ -1084,10 +923,6 @@ export default function App() {
       setWorkerWakeNotices((current) => current.filter((notice) => !matchesNotice(notice)));
       return;
     }
-    if (target.piSync) {
-      setNotice("该工兵属于 Pi 同步只读会话；请先应用或放弃同步修改，再审阅交卷。");
-      return;
-    }
     if (busyForSessionRef.current(target.id)) {
       setNotice("所属会话正在运行；工兵交卷提醒已保留，运行结束后请再次点击审阅。");
       return;
@@ -1109,41 +944,22 @@ export default function App() {
       rememberReviewedWorkers(item.sessionId, item.cwd, item.names);
     setWorkerWakeNotices((current) => current.filter((notice) => notice.sessionId !== sessionId));
   }
-  const inspectorDraft = {
-    protocol: session.settings.protocol, model: session.settings.model, reasoningEffort: getReasoningEffort(session.settings),
-    workingDirectory: effectiveCwd, maxTurns: session.settings.maxTurns,
-    temperature: session.settings.temperature, maxTokens: session.settings.maxTokens,
-    messages: enabledMessages.map(({ id: _id, enabled: _enabled, ...message }) => message),
-  };
-  const setFollowPi = (value: boolean) => setWorkspace((current) => ({ ...current, followPi: value }));
-
   if (!ready) return <div className="app-loading" role="status">{storageError || "正在打开本地工作区…"}{storageError && <button onClick={() => location.reload()}>重试</button>}</div>;
   return <div className={`app-shell ${sidebarCollapsed ? "sidebar-compact" : ""}`}>
     <Sidebar sessions={workspace.sessions} folders={workspace.folders} rootSessionIds={workspace.rootSessionIds} active={session.id} collapsed={sidebarCollapsed} activeRuns={activeRuns} onToggle={() => setSidebarCollapsed((value) => !value)} onCreate={() => createSession()} onCreateFolder={createFolder} onSelect={selectSession} onRename={renameSession} onDuplicate={duplicateSession} onDelete={deleteSession} onRenameFolder={renameFolder} onDeleteFolder={deleteFolder} onToggleFolder={toggleFolder} onMoveSession={moveSession} />
     <main className="app-main">
-      <TopBar session={session} saveState={storageStatus} onDebugView={(panel) => { setDebugPanel(panel); setDirectoryOpen(false); }} directoryOpen={directoryOpen} onDirectoryToggle={() => setDirectoryOpen((open) => !open)} archiveableToolGroups={archiveableToolGroupCount} onArchiveOldTools={() => setArchiveToolRequest((request) => request + 1)} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} theme={theme} onTheme={() => setTheme((value) => value === "light" ? "dark" : "light")} compactTools={compactTools} onCompactTools={() => setCompactTools((value) => !value)} piSessions={piSessions} followPi={workspace.followPi} onFollowPi={setFollowPi} syncError={syncError} onSelectPi={(id) => void selectPiSession(id)} onApplyPi={() => void applyToPi()} onDiscardPi={() => { if (session.piSync) void readPiSession(session.piSync.id, false, true).catch((error) => setSyncError(error.message)); }} onCancelPending={() => void cancelPiApply()} onTitle={(title) => patchSession({ title })} onExport={exportSession} onImport={(file) => void importSession(file)} onFork={() => setForkModalOpen(true)} forkDisabled={busy} />
+      <TopBar session={session} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onTitle={(title) => patchSession({ title })} />
       <div className="workspace-body">
         <section className="conversation-pane">
           <ThreadTabs ownerSessionId={session.id} cwd={effectiveCwd} workers={visibleGptSessions} selectedId={selectedWorkerId} onSelect={setSelectedWorkerId} onWorkerUpdate={updateWorkerSummary} onWorkersUpdate={updateWorkerSummaries} onRefresh={() => void fetchGptSessions()} sessionsError={gptSessionsError} />
           {!selectedWorkerId && <>
-            <MessageStream sessionId={session.id} scrollRequest={scrollRequest} directoryOpen={directoryOpen} onDirectoryOpenChange={setDirectoryOpen} archiveRequest={archiveToolRequest} onArchiveableGroupsChange={reportArchiveableToolGroups} messages={session.messages} busy={busy} compactTools={compactTools} streamingId={streamingId} streamingThinking={streamingThinking} toolActivity={toolActivity} gptWorkers={visibleGptSessions} lineage={session.parentSessionId ? { parentSessionId: session.parentSessionId, parentSessionTitle: session.parentSessionTitle, forkSummary: session.forkSummary } : undefined} forkNotice={forkNotice?.sourceId === session.id ? { forkId: forkNotice.forkId, title: forkNotice.title } : undefined} onSwitchFork={selectSession} onJumpToSession={selectSession} onFork={() => setForkModalOpen(true)} onMessage={updateMessage} onCall={updateCall} onAdd={addMessage} onMove={moveMessage} onDelete={deleteMessage} onDeleteCall={deleteToolCall} onAddToolResult={addManualToolResult} onBranch={branchAt} onCopy={(text) => void copyText(text)} />
+            <MessageStream sessionId={session.id} scrollRequest={scrollRequest} messages={session.messages} busy={busy} compactTools={compactTools} streamingId={streamingId} streamingThinking={streamingThinking} toolActivity={toolActivity} gptWorkers={visibleGptSessions} lineage={session.parentSessionId ? { parentSessionId: session.parentSessionId, parentSessionTitle: session.parentSessionTitle, forkSummary: session.forkSummary } : undefined} forkNotice={forkNotice?.sourceId === session.id ? { forkId: forkNotice.forkId, title: forkNotice.title } : undefined} onSwitchFork={selectSession} onJumpToSession={selectSession} onMessage={updateMessage} onCall={updateCall} onAdd={addMessage} onMove={moveMessage} onDelete={deleteMessage} onDeleteCall={deleteToolCall} onAddToolResult={addManualToolResult} onBranch={branchAt} onCopy={(text) => void copyText(text)} />
             {runErrors[session.id] && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>本次运行失败</strong><span>{runErrors[session.id]}</span></div><button onClick={() => setSessionRunError(session.id)} aria-label="关闭运行错误">关闭<X size={14} /></button></div>}
-            <ComposerBar busy={busy} blocked={!!session.piSync} toolName={toolActivity?.name} messageCount={session.messages.length} contextTokens={contextMetrics.context} savedPercent={contextMetrics.savedPercent} settings={session.settings} models={piConnection?.models || []} defaultModel={piConnection?.defaultModel} piConnected={piConnection?.connected} onSetting={updateSetting} onNotice={setNotice} onRefreshModels={() => void refreshPiStatus()} draft={composerText} onDraftChange={updateComposerText} backgroundWorkers={visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={workerWakeNotice} onDismissWake={() => dismissSessionWorkerWake(session.id)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={sendMessage} onRun={() => void run()} onStop={() => void abortRun()} />
+            <ComposerBar busy={busy} toolName={toolActivity?.name} messageCount={session.messages.length} contextTokens={contextMetrics.context} savedPercent={contextMetrics.savedPercent} settings={session.settings} models={piConnection?.models || []} defaultModel={piConnection?.defaultModel} piConnected={piConnection?.connected} onSetting={updateSetting} onNotice={setNotice} onRefreshModels={() => void refreshPiStatus()} draft={composerText} onDraftChange={updateComposerText} backgroundWorkers={visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={workerWakeNotice} onDismissWake={() => dismissSessionWorkerWake(session.id)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={sendMessage} onRun={() => void run()} onStop={() => void abortRun()} />
           </>}
         </section>
       </div>
     </main>
-    {debugPanel && <div className="debug-overlay" role="presentation" onClick={() => setDebugPanel(null)}>
-      <section className="debug-drawer" role="dialog" aria-modal="true" aria-labelledby="debug-drawer-title" onClick={(event) => event.stopPropagation()}>
-        <header><div><small>SECONDARY TOOLS</small><h2 id="debug-drawer-title">{debugPanel === "request" ? "请求检查" : debugPanel === "history" ? "运行记录" : "诊断日志"}</h2></div><button className="icon-button" aria-label="关闭调试面板" title="关闭" onClick={() => setDebugPanel(null)}><X size={17} /></button></header>
-        <div className="debug-drawer-content">
-          {debugPanel === "request" && <RequestInspector draft={inspectorDraft} activeRun={activeRun} onCopy={(text) => void copyText(text)} />}
-          {debugPanel === "history" && <RunHistory runs={session.runs} activeId={activeRun?.id} onSelect={setSelectedRun} onRestore={(settings, messages) => { if (busyForSessionRef.current(session.id)) return; patchSession({ settings, messages }); setDebugPanel(null); setNotice("已恢复运行前的消息与参数。"); setScrollRequest((value) => value + 1); }} onInspect={(id) => { setSelectedRun(id); setDebugPanel("request"); }} />}
-          {debugPanel === "diagnostics" && <DiagnosticsView />}
-        </div>
-      </section>
-    </div>}
-    {forkModalOpen && <SessionForkModal key={session.id} session={session} canUseSmartFork={!session.piSync && !busy} onClose={() => setForkModalOpen(false)} onCreate={(title, memory, carry) => { void createForkSession(title, memory, carry, true, session.id); }} onSmartFork={requestSmartFork} />}
     {notice && <div className="toast" role="status"><CircleHelp size={16} /><span>{notice}</span><button onClick={() => setNotice("")} aria-label="关闭提示"><X size={14} /></button></div>}
   </div>;
 }
