@@ -1,7 +1,9 @@
 import { Children, cloneElement, isValidElement, useMemo, useState, type ReactElement, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import type { Root } from "mdast";
 import type { Plugin } from "unified";
 import { Check, Copy } from "lucide-react";
@@ -135,7 +137,10 @@ export function Markdown({ content, highlight = "", trailing }: { content: strin
   return <div className="markdown-body">
     <ReactMarkdown
       components={components}
-      remarkPlugins={hasTrailing ? [remarkGfm, remarkBreaks, appendStreamingTail] : [remarkGfm, remarkBreaks]}
+      remarkPlugins={hasTrailing
+        ? [remarkGfm, remarkBreaks, remarkMath, appendStreamingTail]
+        : [remarkGfm, remarkBreaks, remarkMath]}
+      rehypePlugins={[rehypeKatex]}
       urlTransform={(url) => safeLink(url) ?? ""}
     >
       {content}

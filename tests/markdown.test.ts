@@ -17,6 +17,26 @@ test("Markdown renders GFM tables inside the existing horizontally scrollable da
   assert.match(html, /text-align:left/);
 });
 
+test("Markdown renders blockquotes and nested ordered and unordered lists", () => {
+  const html = render("> A quoted passage\n\n- Parent\n  - Nested child\n    - Third level\n\n1. First\n   1. Nested first\n2. Second");
+  assert.match(html, /<blockquote>/);
+  assert.match(html, /A quoted passage/);
+  assert.equal((html.match(/<ul>/g) || []).length, 3);
+  assert.equal((html.match(/<ol>/g) || []).length, 2);
+  assert.match(html, /Parent/);
+  assert.match(html, /Nested child/);
+  assert.match(html, /Third level/);
+  assert.match(html, /Nested first/);
+});
+
+test("Markdown renders inline and display LaTeX with KaTeX", () => {
+  const html = render(`Inline math: $E = mc^2$\n\n$$\n\\frac{a}{b}\n$$`);
+  assert.match(html, /class=\"katex\"/);
+  assert.match(html, /class=\"katex-display\"/);
+  assert.match(html, /<math/);
+  assert.doesNotMatch(html, /\$E = mc/);
+});
+
 test("Markdown requires the GFM delimiter row instead of treating arbitrary pipe text as a table", () => {
   const html = render("| 序号 | 标题 |\n| 1 | 封面 |");
   assert.doesNotMatch(html, /<table>/);
