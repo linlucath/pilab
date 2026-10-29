@@ -397,7 +397,14 @@ export class GptSessionManager {
   }
 
   private requireOwner(entry: ManagedSession, ownerSessionId: string) {
-    if (!ownerSessionId || entry.info.ownerSessionId !== ownerSessionId)
+    if (!ownerSessionId?.trim() || ownerSessionId.length > 200)
+      throw new Error("ownerSessionId 必须是 1 到 200 个字符。");
+    if (entry.info.ownerSessionId === undefined) {
+      entry.info.ownerSessionId = ownerSessionId;
+      this.record(entry, "owner_adopted", "Legacy GPT session was adopted by its first accessing parent session.");
+      return;
+    }
+    if (entry.info.ownerSessionId !== ownerSessionId)
       throw new Error("该 GPT 工兵不属于当前会话，拒绝访问。");
   }
 
@@ -410,12 +417,21 @@ export class GptSessionManager {
   }
 
   list(ownerSessionId?: string): SessionInfo[] {
+    if (ownerSessionId !== undefined) {
+      if (!ownerSessionId.trim() || ownerSessionId.length > 200)
+        throw new Error("ownerSessionId 必须是 1 到 200 个字符。");
+      // Older manifests predate ownership. Claim unowned sessions on first scoped
+      // listing so the dashboard can show them and subsequent requests stay scoped.
+      for (const entry of this.entries.values())
+        if (entry.info.ownerSessionId === undefined) this.requireOwner(entry, ownerSessionId);
+    }
     return [...this.entries.values()]
       .filter((entry) => ownerSessionId === undefined || entry.info.ownerSessionId === ownerSessionId)
       .map((entry) => this.view(entry));
   }
 
   cleanupCandidates(ownerSessionId?: string): SessionInfo[] {
+    if (ownerSessionId !== undefined) this.list(ownerSessionId);
     const eligible = new Set(["idle", "suspended", "interrupted", "error"]);
     return [...this.entries.values()].filter((entry) =>
       (ownerSessionId === undefined || entry.info.ownerSessionId === ownerSessionId) &&

@@ -23,6 +23,25 @@ test("reply budgets include a context-protection note", () => {
   assert.throws(() => clipReply("reply", 200), /预算必须/);
 });
 
+test("GPT tool ownership failures return an error result instead of escaping execute", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "pilab-tool-owner-error-"));
+  const manager = new GptSessionManager({ storageDir: path.join(directory, "sessions"), cwd: directory,
+    createTransport: () => ({
+      async request<T = any>(type: string): Promise<T> {
+        return (type === "get_state" ? { model: { provider: "openai-codex", id: model } } : { disposition: "handled" }) as T;
+      }, async reply() {}, async stop() {},
+    }) });
+  try {
+    const worker = await manager.create({ name: "foreign-worker", model, ownerSessionId: "other-parent" });
+    await until(() => manager.read(worker.id).session.status === "idle");
+    const tools = createSessionTools(async () => ({ manager, resolveModel: () => model }), undefined, "current-parent");
+    const send = tools.find((tool) => tool.name === "gpt_session_send")!;
+    const result = await send.execute("send", { name: worker.name, message: "must stay isolated" });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].type === "text" ? result.content[0].text : "", /不属于当前会话/);
+  } finally { await manager.shutdown(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test("gpt_session_send(wait=true) registers its waiter before a fast prompt can notify the parent", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "pilab-send-wait-race-"));
   let notices = 0;

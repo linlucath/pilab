@@ -426,5 +426,22 @@ export function createSessionTools(
       },
     },
   );
+  // Keep operational, ownership, cancellation and Pi RPC failures inside the Agent
+  // tool protocol. A failed GPT operation becomes an explicit model-visible error
+  // result instead of a rejected execute() promise reaching the outer run loop.
+  for (const tool of tools) {
+    const execute = tool.execute;
+    tool.execute = async (id, args, signal, onUpdate, ctx) => {
+      try { return await execute(id, args, signal, onUpdate, ctx); }
+      catch (error) {
+        let message: string;
+        try { message = (error instanceof Error ? error.message : String(error)).slice(0, 12_000); }
+        catch { message = "未知错误"; }
+        const result = response({ error: message }, `GPT 工兵操作失败：${message}`);
+        result.isError = true;
+        return result;
+      }
+    };
+  }
   return tools;
 }

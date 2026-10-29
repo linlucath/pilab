@@ -9,7 +9,7 @@ import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import { GptSessionManager, type SessionInfo } from "../extensions/pi-gpt-subagent/sessions";
 import { nativeTransportFactory } from "../extensions/pi-gpt-subagent/native";
 import { createSessionTools } from "../extensions/pi-gpt-subagent/tools";
-import { PiRpcProcess } from "../extensions/pi-gpt-subagent/rpc";
+import { PiRpcProcess, type RpcTransport } from "../extensions/pi-gpt-subagent/rpc";
 
 const model = "gpt-session-fixture";
 function text(content: any): string {
@@ -274,6 +274,42 @@ test("session persistence recreates its parent directories before manifest and e
     const persisted = JSON.parse(await readFile(path.join(storageDir, "sessions.json"), "utf8"));
     assert.ok(persisted.sessions.some((entry: SessionInfo) => entry.id === session.id && entry.status === "closed"));
     assert.match(await readFile(path.join(storageDir, `${session.id}.events.jsonl`), "utf8"), /Process stopped/);
+  } finally { await manager.shutdown(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("legacy ownerless workers are adopted by their first parent and retain readable transcript history", { timeout: 10_000 }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "pi-gpt-adopt-"));
+  const manager = new GptSessionManager({ storageDir: path.join(root, "saved"), cwd: root,
+    createTransport: (_spec, onEvent): RpcTransport => ({
+      async request<T = any>(type: string): Promise<T> {
+        if (type === "get_state") return { model: { provider: "openai-codex", id: model }, sessionFile: "legacy-session.jsonl" } as T;
+        if (type === "prompt") {
+          onEvent({ type: "agent_start" });
+          onEvent({ type: "message_end", message: { role: "assistant", content: "Legacy worker reply remains visible." } });
+          onEvent({ type: "agent_end" });
+          return { disposition: "handled" } as T;
+        }
+        return {} as T;
+      },
+      async reply() {}, async stop() {},
+    }) });
+  try {
+    const worker = await manager.create({ name: "legacy-worker", model });
+    await until(() => manager.read(worker.id).session.status === "idle");
+    const scoped = manager.list("adopting-parent");
+    assert.equal(scoped.length, 1);
+    assert.equal(scoped[0].ownerSessionId, "adopting-parent");
+    await manager.send(worker.id, "continue the old conversation", "steer", undefined, "adopting-parent");
+    const transcript = await manager.readTranscript(worker.id, { limit: 100 });
+    assert.ok(transcript.events.some((event) => event.type === "assistant" && event.text === "Legacy worker reply remains visible."));
+    const saved = JSON.parse(await readFile(path.join(root, "saved", "sessions.json"), "utf8"));
+    assert.equal(saved.sessions.find((session: SessionInfo) => session.id === worker.id).ownerSessionId, "adopting-parent");
+
+    const transcriptOnly = await manager.create({ name: "legacy-transcript-only", model });
+    await until(() => manager.read(transcriptOnly.id).session.status === "idle");
+    assert.equal(manager.assertOwner(transcriptOnly.id, "transcript-parent").ownerSessionId, "transcript-parent");
+    const directTranscript = await manager.readTranscript(transcriptOnly.id, { limit: 100 });
+    assert.ok(directTranscript.events.some((event) => event.type === "ready"));
   } finally { await manager.shutdown(); await rm(root, { recursive: true, force: true }); }
 });
 

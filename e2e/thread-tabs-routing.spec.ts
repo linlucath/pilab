@@ -32,6 +32,31 @@ test("LAY-09 URL session routes remain independent across tabs and refresh", asy
   }
 });
 
+test("GPT worker transcript tabs page through the complete reply history", async ({ page }) => {
+  const ownerSessionId = "transcript-owner";
+  await seedWorkspace(page, [{ id: ownerSessionId, title: "Transcript owner", messages: [firstMessage] }], ownerSessionId);
+  const worker = { id: "worker-history", name: "history-worker", status: "idle", model: "codex-mock", updatedAt: 1,
+    ownerSessionId, hasUnreadReply: false, hasActiveWaiter: false, pendingQuestionCount: 0, recentTools: [], lastReplyPreview: "Latest reply" };
+  const history = Array.from({ length: 101 }, (_, index) => ({ sequence: index + 1, at: index + 1, type: "assistant", text: `Historical reply ${index + 1}` }));
+  await page.route(/\/api\/gpt-sessions\?/, (route) => route.fulfill({
+    contentType: "application/json", body: JSON.stringify({ sessions: [worker] }),
+  }));
+  await page.route("**/api/gpt-sessions/*/transcript?*", async (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    if (query.has("before")) {
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ events: [history[0]], hasMore: false }) });
+      return;
+    }
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ events: history.slice(1), hasMore: true }) });
+  });
+  await page.goto(`/?session=${ownerSessionId}`);
+  await page.locator(".thread-tab-select").filter({ hasText: "history-worker" }).click();
+  await expect(page.locator(".worker-thread-view")).toContainText("Historical reply 101");
+  await expect(page.getByText("Historical reply 1", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "读取更早记录" }).click();
+  await expect(page.getByText("Historical reply 1", { exact: true })).toBeVisible();
+});
+
 test("GPT worker tabs expose owned transcripts and send guidance without the old workbench drawer", async ({ page }) => {
   const ownerSessionId = "thread-owner";
   await seedWorkspace(page, [{ id: ownerSessionId, title: "Owner", messages: [firstMessage] }], ownerSessionId);

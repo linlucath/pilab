@@ -46,6 +46,7 @@ function WorkerTranscript({ worker, ownerSessionId, cwd, onWorkerUpdate, onClose
   useEffect(() => {
     let cancelled = false;
     let polling = false;
+    let initialized = false;
     const controller = new AbortController();
     const applyPage = (page: { events?: TranscriptEvent[]; hasMore?: boolean; session?: GptSessionSummary }, mode: "replace" | "append" | "prepend") => {
       if (cancelled) return;
@@ -66,10 +67,11 @@ function WorkerTranscript({ worker, ownerSessionId, cwd, onWorkerUpdate, onClose
         if (!response.ok) throw new Error(data.error || "读取工兵记录失败。");
         applyPage(data, "replace"); setError("");
       } catch (cause) { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "读取工兵记录失败。"); }
+      finally { initialized = true; }
     };
     void loadInitial();
     const poll = async () => {
-      if (polling || cancelled) return;
+      if (!initialized || polling || cancelled) return;
       polling = true;
       try {
         const latest = latestSequenceRef.current;

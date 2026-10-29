@@ -80,7 +80,9 @@ export class RunManager {
     this.activeBySession.set(sessionId, runId);
     this.publish(task, { type: "run_started", runId, sessionId, cwd: task.cwd, startedAt: task.startedAt });
     // Do not await: once accepted, the run has no dependency on its HTTP request/response.
-    void this.execute(task, runInput);
+    // execute() has its own generation/append handling; this final boundary protects
+    // against failures in that handling/finalization from becoming an unhandled rejection.
+    void this.execute(task, runInput).catch((error) => this.failUnexpected(task, error));
     return { runId, sessionId };
   }
 
@@ -163,6 +165,29 @@ export class RunManager {
     if (this.activeBySession.get(task.sessionId) === task.runId)
       this.activeBySession.delete(task.sessionId);
     for (const res of [...task.listeners]) this.endListener(task, res);
+  }
+
+  private failUnexpected(task: RunTask, error: unknown) {
+    let message: string;
+    try { message = (error instanceof Error ? error.message : String(error)).slice(0, 12_000); }
+    catch { message = "后台运行遇到未知错误。"; }
+    task.status = task.abortController.signal.aborted ? "aborted" : "failed";
+    try { this.publish(task, { type: "error", message }); } catch { /* Preserve the process even if reporting itself fails. */ }
+    try {
+      this.publish(task, { type: "run_status", runId: task.runId, sessionId: task.sessionId, status: task.status });
+    } catch { /* The task is still released below. */ }
+    if (this.activeBySession.get(task.sessionId) === task.runId)
+      this.activeBySession.delete(task.sessionId);
+    for (const res of [...task.listeners]) {
+      try { this.endListener(task, res); }
+      catch {
+        task.listeners.delete(res);
+        const onClose = task.listenerCloseHandlers.get(res);
+        task.listenerCloseHandlers.delete(res);
+        try { if (onClose) res.off("close", onClose); } catch { /* Ignore broken observers. */ }
+        try { if (!res.writableEnded && !res.destroyed) res.end(); } catch { /* Ignore broken observers. */ }
+      }
+    }
   }
 
   private publish(task: RunTask, event: RunEvent) {
