@@ -59,6 +59,52 @@ test("GPT worker transcript loads the complete reply history by default", async 
   await expect(page.getByRole("button", { name: "读取更早记录" })).toHaveCount(0);
 });
 
+test("GPT worker transcript replaces progress snapshots and removes adjacent duplicate assistant text", async ({ page }) => {
+  const ownerSessionId = "worker-progress-owner";
+  await seedWorkspace(page, [{ id: ownerSessionId, title: "Worker progress", messages: [firstMessage] }], ownerSessionId);
+  const worker = { id: "worker-progress", name: "progress-worker", status: "running", model: "codex-mock", updatedAt: 1,
+    ownerSessionId, hasUnreadReply: false, hasActiveWaiter: false, pendingQuestionCount: 0, recentTools: [], lastReplyPreview: "" };
+  const events = [
+    { sequence: 1, at: 1, type: "assistant", text: "DUPLICATE_ASSISTANT_MARKER" },
+    { sequence: 2, at: 2, type: "assistant", text: "DUPLICATE_ASSISTANT_MARKER" },
+    { sequence: 3, at: 3, type: "running", text: "GPT started working." },
+    { sequence: 4, at: 4, type: "assistant_progress", text: "STALE_PROGRESS_SNAPSHOT" },
+    { sequence: 5, at: 5, type: "assistant_progress", text: "LATEST_PROGRESS_SNAPSHOT" },
+  ];
+  let polls = 0;
+  await page.route(/\/api\/gpt-sessions\?/, (route) => route.fulfill({
+    contentType: "application/json", body: JSON.stringify({ sessions: [worker] }),
+  }));
+  await page.route("**/api/gpt-sessions/*/transcript?*", async (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    if (query.has("after")) {
+      polls++;
+      const next = polls === 1
+        ? [{ sequence: 6, at: 6, type: "assistant_progress", text: "LATEST_PROGRESS_SNAPSHOT continued" }]
+        : polls === 2 ? [{ sequence: 7, at: 7, type: "assistant", text: "FINAL_WORKER_REPLY" }] : [];
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ events: next, session: worker }) });
+      return;
+    }
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ events, session: worker }) });
+  });
+
+  await page.goto(`/?session=${ownerSessionId}`);
+  await page.locator(".thread-tab-select").filter({ hasText: "progress-worker" }).click();
+  const transcript = page.locator(".worker-transcript-scroll");
+  const assistant = transcript.locator(".worker-transcript-event.assistant:not(.streaming)");
+  const progress = transcript.locator(".worker-transcript-event.assistant_progress.streaming");
+  await expect(assistant).toHaveCount(1);
+  await expect(page.getByText("DUPLICATE_ASSISTANT_MARKER", { exact: true })).toHaveCount(1);
+  await expect(progress).toHaveCount(1);
+  await expect(progress).toContainText("LATEST_PROGRESS_SNAPSHOT");
+  await expect(transcript).not.toContainText("STALE_PROGRESS_SNAPSHOT");
+  await expect(progress).toContainText("LATEST_PROGRESS_SNAPSHOT continued", { timeout: 6_000 });
+  await expect(progress).toHaveCount(1);
+  await expect(transcript).not.toContainText("STALE_PROGRESS_SNAPSHOT");
+  await expect(page.getByText("FINAL_WORKER_REPLY", { exact: true })).toBeVisible({ timeout: 6_000 });
+  await expect(transcript.locator(".worker-transcript-event.assistant_progress")).toHaveCount(0);
+});
+
 test("GPT worker tabs expose compact tool logs, persona context, and sticky scrolling", async ({ page }) => {
   const ownerSessionId = "worker-ux-owner";
   await seedWorkspace(page, [{ id: ownerSessionId, title: "Worker UX", messages: [firstMessage] }], ownerSessionId);

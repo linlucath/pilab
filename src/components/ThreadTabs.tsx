@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { ArrowDown, Archive, BookOpen, ChevronDown, CircleAlert, CircleCheck, LoaderCircle, MessageSquare, Pencil, Play, RefreshCw, Search, Send, ShieldAlert, Sparkles, Wrench, X } from "lucide-react";
 import type { GptSessionSummary } from "../../shared/gpt-sessions";
 import { gptWorkerSystemPrompt } from "../../extensions/pi-gpt-subagent/persona";
+import { Markdown } from "./Markdown";
 
 type TranscriptEvent = {
   sequence: number; at: number; type: string; text: string;
@@ -28,14 +29,61 @@ type TranscriptItem = { kind: "event"; event: TranscriptEvent } | { kind: "tools
 type ToolStatus = "running" | "completed" | "error";
 type TranscriptPersona = { systemPrompt?: string; dispatchContext?: string };
 
+const transcriptNoise = new Set(["created", "ready", "running", "settled", "owner_adopted"]);
+const progressBarriers = new Set(["message_sent", "user", "running", "tool_start", "tool_progress", "tool_end", "input_required", "input_response", "settled", "interrupted", "error"]);
 function isToolEvent(event: TranscriptEvent) { return ["tool_start", "tool_progress", "tool_end"].includes(event.type); }
-function buildTranscriptItems(events: TranscriptEvent[]): TranscriptItem[] {
+function latestAssistantProgress(events: TranscriptEvent[], active: boolean) {
+  if (!active) return undefined;
+  const latestAssistantSequence = events.reduce((latest, event) => event.type === "assistant" ? Math.max(latest, event.sequence) : latest, 0);
+  const latestProgress = [...events].reverse().find((event) => event.type === "assistant_progress" && event.sequence > latestAssistantSequence && !!event.text.trim());
+  if (!latestProgress) return undefined;
+  const latestBarrierSequence = events.reduce((latest, event) => progressBarriers.has(event.type) ? Math.max(latest, event.sequence) : latest, latestAssistantSequence);
+  return latestProgress.sequence > latestBarrierSequence ? latestProgress : undefined;
+}
+function buildTranscriptItems(events: TranscriptEvent[], active = false): TranscriptItem[] {
   const items: TranscriptItem[] = [];
   const calls = new Map<string, ToolCallTranscript>();
   const activeByName = new Map<string, string>();
+  const dispatchedMessages = events.reduce((counts, event) => {
+    if (event.type === "message_sent" && event.text.trim()) counts.set(event.text.trim(), (counts.get(event.text.trim()) || 0) + 1);
+    return counts;
+  }, new Map<string, number>());
+  const latestProgress = latestAssistantProgress(events, active);
   let currentGroup: Extract<TranscriptItem, { kind: "tools" }> | undefined;
-  for (const event of events) {
-    if (!isToolEvent(event)) { items.push({ kind: "event", event }); currentGroup = undefined; continue; }
+  for (let index = 0; index < events.length;) {
+    const event = events[index];
+    if (event.type === "assistant") {
+      const segments: string[] = [];
+      let next = index;
+      while (next < events.length && events[next].type === "assistant") {
+        const text = events[next].text.trim();
+        if (text && text !== segments.at(-1)) segments.push(text);
+        next++;
+      }
+      if (segments.length) items.push({ kind: "event", event: { ...event, text: segments.join("\n\n") } });
+      currentGroup = undefined;
+      index = next;
+      continue;
+    }
+    if (event.type === "assistant_progress") {
+      if (event.sequence === latestProgress?.sequence) items.push({ kind: "event", event });
+      currentGroup = undefined;
+      index++;
+      continue;
+    }
+    if (transcriptNoise.has(event.type)) { index++; continue; }
+    if (event.type === "user") {
+      const message = event.text.trim();
+      const sentCount = dispatchedMessages.get(message) || 0;
+      if (message && sentCount > 0) {
+        if (sentCount === 1) dispatchedMessages.delete(message);
+        else dispatchedMessages.set(message, sentCount - 1);
+        currentGroup = undefined;
+        index++;
+        continue;
+      }
+    }
+    if (!isToolEvent(event)) { items.push({ kind: "event", event }); currentGroup = undefined; index++; continue; }
     const name = event.toolName || "tool";
     const key = event.toolCallId || (event.type !== "tool_start" ? activeByName.get(name) : undefined) || `${name}:${event.sequence}`;
     let call = calls.get(key);
@@ -51,6 +99,7 @@ function buildTranscriptItems(events: TranscriptEvent[]): TranscriptItem[] {
     call.events.push(event);
     if (!event.toolCallId && event.type === "tool_start") activeByName.set(name, key);
     if (!event.toolCallId && event.type === "tool_end") activeByName.delete(name);
+    index++;
   }
   return items;
 }
@@ -69,8 +118,7 @@ function toolAction(call: ToolCallTranscript) {
     : name === "grep" || name === "search" ? `已搜索 ${detail || target || "内容"}`
     : name === "find" ? `已查找 ${detail || target || "文件"}`
     : name === "ls" ? `已列出 ${target || "目录"}`
-    : name === "present_images" ? "已提交图片素材"
-    : name === "view_images" || name === "list_images" ? `已查看 ${detail || target || "图片素材"}`
+    : name === "view_image" ? `已读取图片 ${target || ""}`
     : `已执行 ${call.name}${target ? ` · ${target}` : detail ? ` · ${detail}` : ""}`;
   return value.length > 120 ? `${value.slice(0, 117)}…` : value;
 }
@@ -127,6 +175,19 @@ function WorkerToolGroup({ item }: { item: Extract<TranscriptItem, { kind: "tool
     <summary><Wrench size={13} /><span className="worker-tool-group-preview">{preview}{more}</span><small>{item.calls.length} 步骤</small>{failed > 0 && <span className="worker-tool-status error"><CircleAlert size={12} />{failed} 失败</span>}{completed === item.calls.length && !failed && <span className="worker-tool-status completed"><CircleCheck size={12} />完成</span>}<ChevronDown size={13} className="worker-tool-chevron" /></summary>
     <div className="worker-tool-list">{item.calls.map((call) => <WorkerToolCall key={call.key} call={call} />)}</div>
   </details>;
+}
+
+function WorkerTranscriptEvent({ event }: { event: TranscriptEvent }) {
+  const isText = ["assistant", "assistant_progress", "user", "message_sent"].includes(event.type);
+  const streaming = event.type === "assistant_progress";
+  if (isText) return <article className={`worker-transcript-event ${event.type}${streaming ? " streaming" : ""}`}>
+    {streaming && <small className="worker-transcript-live">正在回复</small>}
+    <Markdown content={event.text} />
+  </article>;
+  return <article className={`worker-transcript-event ${event.type}`}>
+    <header><strong>状态</strong><small>{new Date(event.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</small></header>
+    <p>{event.text || statusLabel(event.type)}</p>
+  </article>;
 }
 
 function WorkerTranscript({ worker, ownerSessionId, cwd, onWorkerUpdate, onClose }: {
@@ -246,12 +307,9 @@ function WorkerTranscript({ worker, ownerSessionId, cwd, onWorkerUpdate, onClose
     <div className="worker-transcript-container">
       <div className="worker-transcript-scroll" ref={scrollRef} aria-live="polite" onScroll={(event) => updateScroll(event.currentTarget)}>
         {!events.length && <div className="thread-transcript-empty"><MessageSquare size={20} /><span>工兵尚无可显示记录</span></div>}
-        {buildTranscriptItems(events).map((item) => item.kind === "tools"
+        {buildTranscriptItems(events, activeStatuses.has(worker.status)).map((item) => item.kind === "tools"
           ? <WorkerToolGroup key={item.key} item={item} />
-          : <article className={`worker-transcript-event ${item.event.type}`} key={item.event.sequence}>
-              <header><strong>{item.event.type === "user" || item.event.type === "message_sent" ? "指导" : item.event.type === "assistant" || item.event.type === "assistant_progress" ? "GPT" : "状态"}</strong><small>{new Date(item.event.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</small></header>
-              <p>{item.event.text || statusLabel(item.event.type)}</p>
-            </article>)}
+          : <WorkerTranscriptEvent key={item.event.sequence} event={item.event} />)}
       </div>
       {!nearBottom && <button className="worker-scroll-to-bottom" aria-label="跳到底部工兵记录" title="跳到底部" onClick={scrollToBottom}><ArrowDown size={16} /></button>}
     </div>

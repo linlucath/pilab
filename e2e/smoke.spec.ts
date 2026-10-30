@@ -44,10 +44,10 @@ test("SMOKE-05 脚本化工具调用仅执行安全 mock 工具", async ({ page 
   await sendMessage(page, "运行模拟工具");
   const group = page.locator(".tool-group > details");
   await expect(group).toBeVisible();
-  await group.locator(":scope > summary").click();
+  if (!(await group.evaluate((element) => (element as HTMLDetailsElement).open))) await group.locator(":scope > summary").click();
   const tool = ui(page).tool();
   await expect(tool).toBeVisible();
-  await tool.locator("summary").click();
+  await expect(tool.locator(":scope > .tool-step-body")).toBeVisible();
   await expect(page.getByText("TOOL-CALL-COMPLETE")).toBeVisible();
   await expect(page.getByText("Mock tool result: smoke-tool")).toBeVisible();
 });
