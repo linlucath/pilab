@@ -21,6 +21,13 @@ interface PresentedImage { name: string; path: string; source?: string; note?: s
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 export const imageFilePattern = /^(files|previews)\/[a-f0-9]{64}\.(png|jpg|webp|gif|bmp)$/;
 const maxFileBytes = 20 * 1024 * 1024;
+const readerExtensions: Record<string, ImageReference["mimeType"]> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+};
 function title(value: string) {
   const name = value.trim();
   if (!name || name.length > 100 || /[\r\n]/.test(name)) throw new Error("图片和素材组需要 1–100 字的名字。");
@@ -74,6 +81,30 @@ export class LocalImageStore {
     const file = `${kind === "overview" ? "previews" : "files"}/${id}.${extension}`;
     await atomic(this.filePath(file), bytes);
     return { file, id, size: bytes.byteLength, name, kind, mimeType, width, height, ...(collection ? { collection } : {}) };
+  }
+  async readImage(file: string, workingDirectory: string) {
+    const expectedMime = readerExtensions[path.extname(file).toLowerCase()];
+    if (!expectedMime) throw new Error("仅支持 PNG、JPG、JPEG、WebP 和 GIF 图片。");
+    const absolutePath = path.resolve(workingDirectory, file);
+    let info;
+    try {
+      info = await stat(absolutePath);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") throw new Error(`找不到图片文件：${file}`);
+      throw error;
+    }
+    if (!info.isFile()) throw new Error(`图片路径不是文件：${file}`);
+    if (info.size > maxFileBytes) throw new Error("图片文件不能超过 20 MB。");
+    const bytes = await readFile(absolutePath);
+    if (!bytes.length || bytes.length > maxFileBytes) throw new Error("图片文件为空或超过 20 MB。");
+    const detectedMime = mime(bytes).mimeType;
+    if (detectedMime !== expectedMime) throw new Error(`图片扩展名与文件内容不匹配：${file}`);
+    const reference = await this.saveImage(bytes, path.basename(absolutePath));
+    return {
+      reference,
+      content: { type: "image" as const, data: bytes.toString("base64"), mimeType: detectedMime },
+    };
   }
   async present(collection: string, images: PresentedImage[], cwd: string) {
     collection = title(collection);
@@ -217,6 +248,38 @@ interface ImageTool<TParameters extends TSchema> {
   promptSnippet?: string;
   parameters: TParameters;
   execute(id: string, args: Static<TParameters>, signal?: AbortSignal, update?: AgentToolUpdateCallback<unknown>, ctx?: ExtensionToolContext): Promise<AgentToolResult<unknown>>;
+}
+
+export function createViewImageTool(
+  getStore: (ctx?: ExtensionToolContext) => LocalImageStore,
+  getWorkingDirectory: (ctx?: ExtensionToolContext) => string = (ctx) => ctx?.cwd || process.cwd(),
+) {
+  const parameters = Type.Object({
+    path: Type.String({
+      minLength: 1,
+      maxLength: 4000,
+      description: "本地图片文件的相对或绝对路径（支持 png, jpg, jpeg, webp, gif）",
+    }),
+  }, { additionalProperties: false });
+  const tool: ImageTool<typeof parameters> = {
+    name: "view_image",
+    label: "查看图片",
+    description: "Read one local PNG, JPG, JPEG, WebP, or GIF file from an absolute path or a path relative to the workspace. The image is loaded into the current visual context; only the latest viewed image is kept in future model context.",
+    parameters,
+    execute: async (_id, args, signal, _update, ctx): Promise<AgentToolResult<unknown>> => {
+      if (signal?.aborted) throw new Error("看图已取消。");
+      if (ctx?.model && !ctx.model.input.includes("image")) throw new Error("当前模型不支持图片，请切换到支持图片的模型。");
+      const { reference, content } = await getStore(ctx).readImage(args.path, getWorkingDirectory(ctx));
+      return {
+        content: [
+          { type: "text" as const, text: `已成功读取图片「${args.path}」，图片已加载至上下文。` },
+          content,
+        ],
+        details: { piLabImages: [reference] },
+      };
+    },
+  };
+  return tool;
 }
 
 export function createImageTools(getStore: (ctx?: ExtensionToolContext) => LocalImageStore, role: "viewer" | "publisher") {

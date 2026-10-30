@@ -110,17 +110,15 @@ test("Agent exposes GPT and image tools, feeds tool results back, and replays ed
     );
     assert.equal(sent.length, 2);
     assert.deepEqual(sent[0].tools.map((t: any) => t.function.name).sort(), [
-      "list_images",
       "subagent_control",
       "subagent_dispatch",
       "subagent_query",
-      "view_images",
+      "view_image",
     ]);
     const descriptions = Object.fromEntries(sent[0].tools.map((tool: any) => [tool.function.name, tool.function.description]));
-    for (const name of ["subagent_dispatch", "subagent_query", "subagent_control", "view_images", "list_images"])
+    for (const name of ["subagent_dispatch", "subagent_query", "subagent_control", "view_image"])
       assert.doesNotMatch(descriptions[name], /Feynman|费曼|Do not|Never|Use only when|only when needed|Delegate .*GPT/i, `${name} description should describe API behavior neutrally`);
-    assert.match(descriptions.list_images, /collection names and counts/);
-    assert.match(descriptions.view_images, /original=true/);
+    assert.match(descriptions.view_image, /absolute path or a path relative to the workspace/);
     assert.equal(sent[0].messages[0].content, "Original system text.");
     assert.equal(sent[1].messages[2].tool_calls[0].function.name, "subagent_query");
     assert.equal(sent[1].messages[3].role, "tool");
@@ -193,11 +191,10 @@ test("Agent tools are always enabled and expose the full tool set", async () => 
     );
     const names = sent[0].tools.map((tool: any) => tool.function.name).sort();
     assert.deepEqual(names, [
-      "list_images",
       "subagent_control",
       "subagent_dispatch",
       "subagent_query",
-      "view_images",
+      "view_image",
     ]);
     assert.equal(events.some((event) => event.type === "error"), false, JSON.stringify(events));
     assert.equal(sent.length, 2);

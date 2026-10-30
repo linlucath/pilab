@@ -210,8 +210,10 @@ test("RUN-06 达到 Agent 轮数上限保留已完成工具结果", async ({ pag
   await ui(page).composer.fill("RUN06-TURN-LIMIT-TASK");
   await ui(page).send.click();
   await expect(ui(page).stop).toHaveCount(0);
-  await page.locator(".tool-group").first().locator(":scope > details > summary").click();
-  await ui(page).tool().locator("summary").click();
+  const toolGroup = page.locator(".tool-group").first();
+  const groupDetails = toolGroup.locator(":scope > details");
+  if (!(await groupDetails.evaluate((element) => (element as HTMLDetailsElement).open))) await groupDetails.locator(":scope > summary").click();
+  await expect(ui(page).tool().locator(":scope > .tool-step-body")).toBeVisible();
   await expect(page.getByText("Mock tool result: RUN06-TOOL-RESULT", { exact: true })).toBeVisible();
   await expect(page.locator(".toast")).toContainText("已达到 Agent 最大轮数");
   await openHistory(page);

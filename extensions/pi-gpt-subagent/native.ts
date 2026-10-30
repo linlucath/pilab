@@ -25,8 +25,8 @@ export function nativeTransportFactory(imageRoot = process.env.PI_LAB_IMAGE_ROOT
       "--thinking", "max",
       "--name", session.name,
       // Pi restores a resumed session's recorded loadout. Explicitly add the
-      // publisher too, including when the session predates the image tools.
-      "--tools", "+read,+bash,+edit,+write,+grep,+find,+ls,+present_images",
+      // image reader too, including when the session predates the tool.
+      "--tools", "+read,+bash,+edit,+write,+grep,+find,+ls,+view_image",
       "--append-system-prompt", gptWorkerSystemPrompt(session.rolePreset),
     );
     if (session.sessionFile) fs.mkdirSync(path.dirname(session.sessionFile), { recursive: true });

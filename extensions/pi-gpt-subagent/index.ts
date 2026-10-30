@@ -4,7 +4,7 @@ import type { TSchema } from "typebox";
 import { GptSessionManager, type SessionInfo } from "./sessions.ts";
 import { nativeTransportFactory, sessionStorageDir } from "./native.ts";
 import { answerConversation, conversationSummary, createSessionTools, formatConversationRead, readConversation, type SessionAccess } from "./tools.ts";
-import { createImageTools, latestImageContext, LocalImageStore, retainToolImages } from "./images.ts";
+import { createViewImageTool, latestImageContext, LocalImageStore, retainToolImages } from "./images.ts";
 
 function resolveModel(ctx: ExtensionContext, requested?: string) {
   const id = requested || process.env.PI_LAB_GPT_SUBAGENT_MODEL?.trim() || "gpt-6-luna";
@@ -28,15 +28,13 @@ export default function piGptSessions(pi: ExtensionAPI) {
     if (!stores.has(key)) stores.set(key, new LocalImageStore(root, owner));
     return stores.get(key)!;
   };
-  for (const tool of createImageTools(imageStore, worker ? "publisher" : "viewer")) {
-    coordinatorTools.add(tool.name);
-    // Image schemas and handlers are created as a paired generic; erase the union only at Pi's registration boundary.
-    pi.registerTool({ ...tool as unknown as ToolDefinition<TSchema, unknown, unknown>, defaultActive: true });
-  }
-  // A worker is a normal Pi session, but does not recursively install its own session manager.
-  if (worker) return;
+  const imageTool = createViewImageTool(imageStore);
+  coordinatorTools.add(imageTool.name);
+  pi.registerTool({ ...imageTool as unknown as ToolDefinition<TSchema, unknown, unknown>, defaultActive: true });
   pi.on("context", (event) => ({ messages: latestImageContext(event.messages) }));
   pi.on("tool_result", (event, ctx) => retainToolImages(imageStore(ctx), event, event.toolName));
+  // A worker is a normal Pi session, but does not recursively install its own session manager.
+  if (worker) return;
   let manager: GptSessionManager | undefined;
   let owner = "";
   let context: ExtensionContext | undefined;

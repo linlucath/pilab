@@ -23,7 +23,7 @@ export function gptWorkerSystemPrompt(rolePreset?: GptWorkerRolePreset): string 
     "Inspect relevant callers and boundaries before changing code. Distinguish verified facts from assumptions, and report concrete results and remaining risks.",
     "Use a natural response format suited to the task; do not force fixed headings or a report template.",
     "You may receive steering or follow-up messages. Coordinate file changes with other conversations through your replies.",
-    "Use present_images to share local visual assets when visual review is part of the task.",
+    "For visual review, find or render images locally, save them in the workspace, and report their file paths; the coordinator can load a specific image with view_image.",
     roleInstruction,
     "Ask for clarification when a missing requirement materially affects the result.",
   ].join(" ");

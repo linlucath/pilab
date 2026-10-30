@@ -91,6 +91,7 @@ export function toolTitle(name: string, source: string) {
     case "gpt_session_wait": return `等待 GPT 完成${Array.isArray(args.names) ? ` · ${args.names.filter((item): item is string => typeof item === "string").join("、")}` : ""}`;
     case "gpt_session_read": return `读取 GPT${named} 状态`;
     case "gpt_session_list": return "查看所有 GPT 会话";
+    case "view_image": return `查看图片「${typeof args.path === "string" && args.path ? args.path : ""}」`;
     case "view_images": return `查看图片集合「${typeof args.collection === "string" && args.collection ? args.collection : "素材库"}」`;
     case "list_images": return "列出图片素材库";
     default: return `调用工具 ${name}`;

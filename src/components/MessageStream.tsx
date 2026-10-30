@@ -60,11 +60,11 @@ function toolIcon(name: string) {
   if (name === "gpt_session_send") return <Send size={13} />;
   if (name === "gpt_session_wait") return <Clock size={13} />;
   if (name === "gpt_session_read") return <BookOpen size={13} />;
-  if (name === "view_images" || name === "list_images") return <ImageIcon size={13} />;
+  if (name === "view_image" || name === "view_images" || name === "list_images") return <ImageIcon size={13} />;
   return <Wrench size={13} />;
 }
 
-function SystemPromptBanner({ messages, startIndex, onMessage, onAdd, onDelete, disabled, assistantName }: { messages: Message[]; startIndex: number; onMessage: Props["onMessage"]; onAdd: Props["onAdd"]; onDelete: Props["onDelete"]; disabled: boolean; assistantName: string }) {
+function SystemPromptBanner({ messages, startIndex, onMessage, onAdd, onDelete, disabled }: { messages: Message[]; startIndex: number; onMessage: Props["onMessage"]; onAdd: Props["onAdd"]; onDelete: Props["onDelete"]; disabled: boolean }) {
   const [open, setOpen] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const editors = useRef<HTMLTextAreaElement[]>([]);
@@ -88,7 +88,7 @@ function SystemPromptBanner({ messages, startIndex, onMessage, onAdd, onDelete, 
   return <section className={`system-banner ${open ? "expanded" : ""}`}>
     <div className="system-banner-head">
       <span className="system-sparkle">✦</span>
-      <div className="system-banner-copy"><strong>系统人设 · {assistantName} 系统指令</strong><small>{open ? "System / Developer 指令 · 编辑中" : preview.slice(0, 145) || "尚未设置系统指令"}</small></div>
+      <div className="system-banner-copy"><strong>系统人设 · 智能协作模式</strong><small>{open ? "System / Developer 指令 · 编辑中" : preview.slice(0, 145) || "尚未设置系统指令"}</small></div>
       <button className="text-button" disabled={disabled || open} aria-expanded={open} onClick={beginEdit}>{open ? "编辑中" : "展开 / 编辑"}<ChevronDown size={14} /></button>
     </div>
     {open && <div className="system-message-list">{messages.map((message, offset) => <div className="system-message-edit" key={message.id} data-message-id={message.id}>
@@ -193,6 +193,36 @@ function subagentRequests(args: Record<string, unknown>) {
     : []);
 }
 
+const dispatchToolNames = new Set(["subagent_dispatch", "gpt_session_create", "gpt_session_send", "gpt_session_batch"]);
+function conciseTaskLabel(message: string) {
+  const normalized = message.replace(/```[\s\S]*?```/g, "代码").replace(/\s+/g, " ").trim();
+  if (!normalized) return "处理后台任务";
+  const sentences = normalized.split(/(?<=[。！？.!?])/).map((part) => part.trim()).filter(Boolean);
+  const sentence = sentences.find((part) => !/^(?:you are\b|你是(?:一名|一个)|system prompt|系统提示)/i.test(part)) || "";
+  if (!sentence) return "处理后台任务";
+  const label = sentence.replace(/^(?:请(?:你)?|任务(?:是|[:：])|目标(?:是|[:：]))\s*/, "").trim()
+    .replace(/(?:\.\.\/)?[\w.-]+(?:\/[\w.-]+)+\.(?:tsx?|jsx?|css|md|json)\b/gi, "相关文件");
+  return label ? `${label.slice(0, 58)}${label.length > 58 ? "…" : ""}` : "处理后台任务";
+}
+
+function toolActionTitle(call: ToolCall) {
+  const args = parseToolArguments(call.arguments);
+  if (dispatchToolNames.has(call.name)) {
+    const labels = subagentRequests(args).map((request) => conciseTaskLabel(request.message));
+    return labels.length ? [...new Set(labels)].slice(0, 2).join(" · ") : "处理后台任务";
+  }
+  if (call.name === "subagent_query" || call.name.startsWith("gpt_session_read") || call.name === "gpt_session_list" || call.name === "gpt_session_logs") return "查看后台任务";
+  if (call.name === "subagent_control" || call.name.startsWith("gpt_session_interrupt")) {
+    return args.action === "abort" ? "中止后台任务" : args.action === "respond" ? "回复后台任务" : "管理后台任务";
+  }
+  const actions: Record<string, string> = {
+    read: "查阅文件", read_file: "查阅文件", write: "更新文件", write_file: "更新文件", edit: "更新文件", edit_file: "更新文件",
+    bash: "执行命令", grep: "搜索内容", find: "查找文件", ls: "查看目录", context_compact: "整理对话记录",
+    session_fork: "创建独立会话", view_image: "查看图片",
+  };
+  return actions[call.name] || toolTitle(call.name, call.arguments);
+}
+
 function readGptReply(content: string) {
   try {
     const value = JSON.parse(content);
@@ -207,12 +237,31 @@ function readGptReply(content: string) {
     const reply = findReply(value);
     if (reply) return reply;
   } catch { /* GPT read/wait output is often formatted text rather than JSON. */ }
-  const section = /(?:最近|最新)回复\s*\n+([\s\S]*?)(?=\n{2,}(?:正在回复|需要回答|最近操作|最近工具活动)(?:\s|$)|$)/.exec(content);
+  const section = /(?:最近简报|(?:最近|最新)回复)\s*\n+([\s\S]*?)(?=\n{2,}(?:正在回复|需要回答|最近操作|最近工具活动)(?:\s|$)|$)/.exec(content);
   return (section?.[1] || content).trim();
 }
 
-const ToolStep = memo(function ToolStep({ assistant, assistantName = "Gemini", call, callIndex, result, stepNumber, onCall, onResult, onImage, onDeleteCall, onAddToolResult, disabled, searchTerm, jumpedId }: { assistant: Message; assistantName?: string; call: ToolCall; callIndex: number; result?: Message; stepNumber?: number; onCall: Props["onCall"]; onResult: Props["onMessage"]; onImage: (file: string, name: string) => void; onDeleteCall: Props["onDeleteCall"]; onAddToolResult: Props["onAddToolResult"]; disabled?: boolean; searchTerm?: string; jumpedId?: string }) {
-  const [expanded, setExpanded] = useState(false);
+function dispatchResultContent(content: string) {
+  const reports = content.split(/\n{2,}---\n{2,}/).flatMap((block) => {
+    const marker = /(?:最近简报|(?:最近|最新)回复)\s*\n+/i.exec(block);
+    if (!marker) return [];
+    const start = marker.index + marker[0].length;
+    const report = block.slice(start).split(/\n{2,}(?:正在回复|需要回答|最近操作|最近工具活动)(?:\s|$)/)[0].trim();
+    return report ? [report] : [];
+  });
+  if (reports.length) return reports.join("\n\n---\n\n");
+  const failures = content.split("\n").flatMap((line) => {
+    const failure = /\s·\s失败：(.+)$/.exec(line);
+    return failure ? [`任务未完成：${failure[1].trim()}`] : [];
+  });
+  if (failures.length) return failures.join("\n");
+  if (/追踪句柄| · (?:正在启动|正在工作|本轮已结束|等待回答|已打断|已暂停|已关闭|运行出错)/.test(content)) return "任务已派发，尚无交付正文。";
+  return content;
+}
+
+const ToolStep = memo(function ToolStep({ assistant, assistantName = "Gemini", call, callIndex, result, onCall, onResult, onImage, onDeleteCall, onAddToolResult, disabled, searchTerm, jumpedId, showTitle = true }: { assistant: Message; assistantName?: string; call: ToolCall; callIndex: number; result?: Message; onCall: Props["onCall"]; onResult: Props["onMessage"]; onImage: (file: string, name: string) => void; onDeleteCall: Props["onDeleteCall"]; onAddToolResult: Props["onAddToolResult"]; disabled?: boolean; searchTerm?: string; jumpedId?: string; showTitle?: boolean }) {
+  const dispatchesToGpt = dispatchToolNames.has(call.name);
+  const [expanded, setExpanded] = useState(dispatchesToGpt);
   const [raw, setRaw] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualContent, setManualContent] = useState("");
@@ -221,11 +270,11 @@ const ToolStep = memo(function ToolStep({ assistant, assistantName = "Gemini", c
   useEffect(() => { if (jumpedId && jumpedId === result?.id) setExpanded(true); }, [jumpedId, result?.id]);
   useEffect(() => { if (result) setManualOpen(false); }, [result?.id]);
   const args = parseToolArguments(call.arguments);
-  const dispatchesToGpt = ["subagent_dispatch", "gpt_session_create", "gpt_session_send", "gpt_session_batch"].includes(call.name);
   const readsFromGpt = ["subagent_query", "gpt_session_wait", "gpt_session_read", "gpt_session_list", "gpt_session_logs"].includes(call.name);
   const dispatchRequests = subagentRequests(args);
   const thinking = assistant.providerState?.thinking.map((item) => item.thinking).filter(Boolean).join("\n") || "";
   const status = result ? result.isError ? "失败" : "完成" : "待返回";
+  const title = toolActionTitle(call);
   const reply = result?.content ? readGptReply(result.content) : "";
   const hasGptReport = readsFromGpt && !!reply && !/暂无新回复|暂时还没有发来回复|还没有发来回复/.test(reply);
   const saveManualResult = () => {
@@ -241,42 +290,47 @@ const ToolStep = memo(function ToolStep({ assistant, assistantName = "Gemini", c
     if (event.key === "Escape") { event.preventDefault(); cancelManualResult(); }
     else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); saveManualResult(); }
   };
-  return <details className={`tool-step tool-step-row ${result?.isError ? "failed" : ""}`} title="工具调用及其结果不能直接更改角色，以免破坏工具配对。" data-tool-name={call.name} data-message-id={assistant.id} data-result-id={result?.id} data-has-report={hasGptReport ? "true" : undefined} data-has-thinking={thinking ? "true" : undefined} open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
-    <summary>{typeof stepNumber === "number" && <span className="tool-step-number">{String(stepNumber).padStart(2, "0")}</span>}<span className="tool-step-icon">{toolIcon(call.name)}</span><strong>{toolTitle(call.name, call.arguments)}</strong><span className={`tool-state ${result ? result.isError ? "error" : "complete" : "pending"}`}>{status}</span><ChevronDown size={14} /></summary>
-    {expanded && <div className="tool-step-body">
-      {dispatchesToGpt && dispatchRequests.map((request, index) => <section className="tool-readable-block tool-dispatch-block" key={`${request.name}-${index}`}><strong>派发给 GPT 的指令 · {request.name}</strong><Markdown content={request.message} highlight={searchTerm} /></section>)}
-      {readsFromGpt && result?.content && <section className="tool-readable-block tool-reply-block"><strong>GPT 返回的汇报</strong><Markdown content={reply || result.content} highlight={searchTerm} /></section>}
-      {!dispatchesToGpt && !readsFromGpt && result?.content && <section className={`tool-readable-block ${result.isError ? "error" : ""}`}><strong>工具结果</strong><Markdown content={result.content} highlight={searchTerm} /></section>}
-      {thinking && <details className="tool-step-thinking"><summary><Brain size={13} />{assistantName} 思考过程</summary><div className="tool-readable-block"><Markdown content={thinking} /></div></details>}
-      {!!result?.images?.length && <div className="image-gallery tool-image-gallery">{result.images.map((image) => <button key={image.file} title={image.name} onClick={() => onImage(image.file, image.name)}><img src={imageUrl(image.file)} alt={image.name} loading="lazy" /></button>)}</div>}
-      {!result && <section className="manual-tool-result">
-        {!manualOpen ? <button type="button" className="manual-tool-result-button" disabled={disabled} onClick={() => { setManualOpen(true); requestAnimationFrame(() => manualEditor.current?.focus()); }}>添加结果</button> : <div className="manual-tool-result-editor">
-          <label htmlFor={`manual-tool-result-${assistant.id}-${call.id}`}>手动添加「{call.name}」的结果 <small>可输入普通文本或 JSON；不会重新执行工具。</small></label>
-          <textarea ref={manualEditor} id={`manual-tool-result-${assistant.id}-${call.id}`} aria-label="工具结果内容" maxLength={200_000} disabled={disabled} value={manualContent} onChange={(event) => setManualContent(event.target.value)} onKeyDown={onManualKeyDown} placeholder="输入工具返回内容…" />
-          <label className="manual-tool-result-error"><input type="checkbox" disabled={disabled} checked={manualIsError} onChange={(event) => setManualIsError(event.target.checked)} />标记为错误 (isError)</label>
-          <div className="manual-tool-result-actions"><button type="button" disabled={disabled} onClick={saveManualResult}>保存 <kbd>⌘/Ctrl+Enter</kbd></button><button type="button" className="cancel" disabled={disabled} onClick={cancelManualResult}>取消 <kbd>Esc</kbd></button></div>
-        </div>}
-      </section>}
-      <div className="tool-step-actions"><button className="raw-toggle" disabled={disabled} onClick={() => setRaw((value) => !value)}>{raw ? "收起原始参数" : "查看/编辑原始参数"}</button><button className="raw-toggle danger" disabled={disabled} onClick={() => onDeleteCall(assistant.id, call.id)}>删除此步骤及配对结果</button></div>
-      {raw && <div className="tool-raw-fields">
-        <label>工具名称<input disabled={disabled} value={call.name} onChange={(event) => onCall(assistant, callIndex, { name: event.target.value })} /></label>
-        <label>Call ID<input disabled={disabled} value={call.id} onChange={(event) => onCall(assistant, callIndex, { id: event.target.value })} /></label>
-        <label className="wide">参数 JSON<textarea disabled={disabled} spellCheck={false} value={call.arguments} onChange={(event) => onCall(assistant, callIndex, { arguments: event.target.value })} /></label>
-        {result && <><label>结果 Call ID<input disabled={disabled} value={result.toolCallId || ""} onChange={(event) => onResult(result.id, { toolCallId: event.target.value })} /></label><label className="check-label"><input disabled={disabled} type="checkbox" checked={!!result.isError} onChange={(event) => onResult(result.id, { isError: event.target.checked })} />错误结果</label><label className="wide">工具结果<textarea disabled={disabled} value={result.content} onChange={(event) => onResult(result.id, { content: event.target.value })} /></label></>}
+  const body = <div className="tool-step-body">
+    {dispatchesToGpt && result?.content && <section className="tool-dispatch-result tool-readable-block" aria-label="执行结果"><Markdown content={dispatchResultContent(result.content)} highlight={searchTerm} /></section>}
+    {readsFromGpt && result?.content && <section className="tool-readable-block tool-reply-block"><Markdown content={reply || result.content} highlight={searchTerm} /></section>}
+    {!dispatchesToGpt && !readsFromGpt && result?.content && <section className={`tool-readable-block ${result.isError ? "error" : ""}`}><strong>工具结果</strong><Markdown content={result.content} highlight={searchTerm} /></section>}
+    {thinking && <details className="tool-step-thinking"><summary><Brain size={13} />{assistantName} 思考过程</summary><div className="tool-readable-block"><Markdown content={thinking} /></div></details>}
+    {!!result?.images?.length && <div className="image-gallery tool-image-gallery">{result.images.map((image) => <button key={image.file} title={image.name} onClick={() => onImage(image.file, image.name)}><img src={imageUrl(image.file)} alt={image.name} loading="lazy" /></button>)}</div>}
+    {!result && <section className="manual-tool-result">
+      {!manualOpen ? <button type="button" className="manual-tool-result-button" disabled={disabled} onClick={() => { setManualOpen(true); requestAnimationFrame(() => manualEditor.current?.focus()); }}>添加结果</button> : <div className="manual-tool-result-editor">
+        <label htmlFor={`manual-tool-result-${assistant.id}-${call.id}`}>手动添加「{call.name}」的结果 <small>可输入普通文本或 JSON；不会重新执行工具。</small></label>
+        <textarea ref={manualEditor} id={`manual-tool-result-${assistant.id}-${call.id}`} aria-label="工具结果内容" maxLength={200_000} disabled={disabled} value={manualContent} onChange={(event) => setManualContent(event.target.value)} onKeyDown={onManualKeyDown} placeholder="输入工具返回内容…" />
+        <label className="manual-tool-result-error"><input type="checkbox" disabled={disabled} checked={manualIsError} onChange={(event) => setManualIsError(event.target.checked)} />标记为错误 (isError)</label>
+        <div className="manual-tool-result-actions"><button type="button" disabled={disabled} onClick={saveManualResult}>保存 <kbd>⌘/Ctrl+Enter</kbd></button><button type="button" className="cancel" disabled={disabled} onClick={cancelManualResult}>取消 <kbd>Esc</kbd></button></div>
       </div>}
+    </section>}
+    <div className="tool-step-actions"><button className="raw-toggle" disabled={disabled} onClick={() => setRaw((value) => !value)}>{raw ? "收起原始参数" : "查看/编辑原始参数"}</button><button className="raw-toggle danger" disabled={disabled} onClick={() => onDeleteCall(assistant.id, call.id)}>删除此步骤及配对结果</button></div>
+    {raw && <div className="tool-raw-fields">
+      <label>工具名称<input disabled={disabled} value={call.name} onChange={(event) => onCall(assistant, callIndex, { name: event.target.value })} /></label>
+      <label>Call ID<input disabled={disabled} value={call.id} onChange={(event) => onCall(assistant, callIndex, { id: event.target.value })} /></label>
+      <label className="wide">参数 JSON<textarea disabled={disabled} spellCheck={false} value={call.arguments} onChange={(event) => onCall(assistant, callIndex, { arguments: event.target.value })} /></label>
+      {result && <><label>结果 Call ID<input disabled={disabled} value={result.toolCallId || ""} onChange={(event) => onResult(result.id, { toolCallId: event.target.value })} /></label><label className="check-label"><input disabled={disabled} type="checkbox" checked={!!result.isError} onChange={(event) => onResult(result.id, { isError: event.target.checked })} />错误结果</label><label className="wide">工具结果<textarea disabled={disabled} value={result.content} onChange={(event) => onResult(result.id, { content: event.target.value })} /></label></>}
     </div>}
+    {dispatchesToGpt && !!dispatchRequests.length && <details className="tool-original-instruction"><summary>› 原始指令</summary><div>{dispatchRequests.map((request, index) => <Markdown key={index} content={request.message} highlight={searchTerm} />)}</div></details>}
+  </div>;
+  const stepClassName = `tool-step tool-step-row ${result?.isError ? "failed" : ""}`;
+  const stepAttributes = { title: "工具调用及其结果不能直接更改角色，以免破坏工具配对。", "data-tool-name": call.name, "data-message-id": assistant.id, "data-result-id": result?.id, "data-has-report": hasGptReport ? "true" : undefined, "data-has-thinking": thinking ? "true" : undefined };
+  if (!showTitle) return <section className={stepClassName} {...stepAttributes}>{body}</section>;
+  return <details className={stepClassName} {...stepAttributes} open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+    <summary><strong>{title}</strong><span className={`tool-state ${result ? result.isError ? "error" : "complete" : "pending"}`}>{status}</span><ChevronDown size={14} /></summary>
+    {expanded && body}
   </details>;
 });
 
 function toolGroupSummary(steps: { call: ToolCall }[]) {
-  const dispatch = steps.find((step) => ["subagent_dispatch", "gpt_session_create", "gpt_session_send", "gpt_session_batch"].includes(step.call.name));
-  if (dispatch) return `${toolTitle(dispatch.call.name, dispatch.call.arguments)}${steps.length > 1 ? " 等" : ""}`;
-  const titles = [...new Set(steps.slice(0, 3).map((step) => toolTitle(step.call.name, step.call.arguments)))];
+  const dispatch = steps.find((step) => dispatchToolNames.has(step.call.name));
+  if (dispatch) return `${toolActionTitle(dispatch.call)}${steps.length > 1 ? " 等" : ""}`;
+  const titles = [...new Set(steps.slice(0, 3).map((step) => toolActionTitle(step.call)))];
   return `${titles.join(" · ")}${steps.length > titles.length ? " 等" : ""}`;
 }
 
 function toolGroupDehydrationSummary(steps: { assistant: Message; call: ToolCall; result?: Message }[], assistantName = "Gemini") {
-  const titles = [...new Set(steps.map((step) => toolTitle(step.call.name, step.call.arguments)))].slice(0, 4);
+  const titles = [...new Set(steps.map((step) => toolActionTitle(step.call)))].slice(0, 4);
   const notes = [...new Set(steps.map((step) => step.assistant.content.replace(/\s+/g, " ").trim()).filter(Boolean))].slice(0, 2).map((note) => note.slice(0, 120));
   const results = steps.filter((step) => step.result).slice(0, 3).map((step) => {
     const output = step.result!.content.replace(/\s+/g, " ").trim();
@@ -314,8 +368,15 @@ const ToolStepGroup = memo(function ToolStepGroup({ steps, assistantName = "Gemi
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [editingSummary, setEditingSummary] = useState(false);
   const [summaryDraft, setSummaryDraft] = useState("");
+  const previousLive = useRef(live);
   useEffect(() => { setManualOpen(null); }, [compact]);
+  useEffect(() => {
+    if (previousLive.current && !live) setManualOpen(true);
+    previousLive.current = live;
+  }, [live]);
   const pendingCount = steps.filter((step) => !step.result).length;
+  const hasError = steps.some((step) => step.result?.isError);
+  const groupStatus = pendingCount ? "待返回" : hasError ? "失败" : "完成";
   const open = live || (manualOpen ?? (!compact || pendingCount > 0));
   const images = steps.flatMap((step) => step.result?.images || []);
   const groupMessages = [...new Map(steps.flatMap((step) => [step.assistant, ...(step.result ? [step.result] : [])]).map((message) => [message.id, message] as const)).values()];
@@ -325,6 +386,7 @@ const ToolStepGroup = memo(function ToolStepGroup({ steps, assistantName = "Gemi
   const archived = groupMessages.length > 0 && groupMessages.every((message) => !message.enabled);
   const partialArchive = groupMessages.some((message) => !message.enabled) && !archived;
   const summaryText = modelSummary || toolGroupDehydrationSummary(steps, assistantName);
+  const groupTitle = toolGroupSummary(steps).replace(/\s+等$/, "");
   useEffect(() => { setSummaryDraft(modelSummary); setEditingSummary(false); }, [modelSummary]);
   useEffect(() => { if (!compacted) setSummaryOpen(false); }, [compacted]);
   const toggleArchive = (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -353,19 +415,18 @@ const ToolStepGroup = memo(function ToolStepGroup({ steps, assistantName = "Gemi
     border: "1px solid var(--border)", borderRadius: 99, color: "var(--text-subtle)", background: "var(--surface)",
     fontSize: 8, whiteSpace: "nowrap", cursor: "pointer", opacity: hovered ? 1 : 0, pointerEvents: hovered ? "auto" : "none", transition: "opacity .14s ease",
   };
-  const quietPill: React.CSSProperties = { display: "inline-flex", minHeight: 23, alignItems: "center", gap: 4, padding: "0 8px", border: "1px solid color-mix(in srgb, var(--success) 25%, var(--border))", borderRadius: 99, color: "var(--success)", background: "color-mix(in srgb, var(--success-soft) 70%, var(--surface))", fontSize: 8, whiteSpace: "nowrap", cursor: "pointer" };
   return <section className={`tool-group tool-group--quiet ${live ? "is-live" : ""} ${archived ? "is-archived" : ""}`} data-step-count={steps.length} data-message-id={steps[0]?.assistant.id} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} onFocusCapture={() => setHovered(true)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setHovered(false); }} style={{ margin: "6px 0 13px", overflow: "visible", border: 0, borderRadius: 0, background: "transparent", boxShadow: "none" }}>
     <details open={open} onToggle={(event) => { const nextOpen = event.currentTarget.open; if (live) { if (!nextOpen) event.currentTarget.open = true; return; } if (nextOpen !== open) setManualOpen(nextOpen); }} style={{ border: 0, background: "transparent" }}>
-      <summary style={{ display: "flex", minHeight: 32, alignItems: "center", gap: 8, padding: "3px 0", border: 0, borderRadius: 0, background: "transparent", color: "var(--text-subtle)", cursor: "pointer", listStyle: "none" }}>
-        <Wrench size={13} style={{ flex: "0 0 auto", color: "var(--text-subtle)" }} />
-        <strong style={{ minWidth: 0, flex: "1 1 auto", overflow: "hidden", color: pendingCount ? "var(--warning)" : "var(--text-subtle)", fontSize: 9, fontWeight: 550, textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pendingCount ? `待补全 ${pendingCount} 个结果` : `已执行 ${steps.length} 个工具步骤（${toolGroupSummary(steps)}）`}</strong>
-        {partialArchive && <span style={{ color: "var(--text-subtle)", fontSize: 8 }}>部分排除</span>}
-        {archived && <span style={{ color: "var(--text-subtle)", fontSize: 8 }}>已归档</span>}
-        {compacted && <><button type="button" className="tool-group-badge compacted" style={quietPill} onClick={revealSummary}>🧹 已精简上下文</button><button type="button" style={{ ...actionStyle, opacity: hovered ? 1 : 0 }} onClick={revealSummary}>查看摘要</button></>}
-        <button type="button" className="tool-group-archive" disabled={disabled || live || steps.some((step) => !step.result)} onClick={toggleArchive} style={{ ...actionStyle, marginLeft: "auto", opacity: hovered ? 1 : 0 }}>{archived ? "恢复" : compacted ? "还原" : "🧹 精简"}</button>
-        <span aria-hidden="true" style={{ flex: "0 0 auto", marginLeft: compacted ? 0 : "auto", color: "var(--text-subtle)", fontSize: 14 }}>{open ? "▾" : "▸"}</span>
+      <summary className="tool-group-summary">
+        <strong>› {toolGroupSummary(steps)}</strong>
+        <span className={`tool-group-state ${pendingCount ? "pending" : hasError ? "error" : "complete"}`} title={pendingCount ? "待返回" : hasError ? "执行失败" : "已完成"}>· {groupStatus}</span>
+        {partialArchive && <span className="tool-group-state">部分排除</span>}
+        {archived && <span className="tool-group-state">已归档</span>}
+        {compacted && <button type="button" style={{ ...actionStyle, opacity: hovered ? 1 : 0 }} onClick={revealSummary}>查看摘要</button>}
+        <button type="button" className="tool-group-archive" disabled={disabled || live || steps.some((step) => !step.result)} onClick={toggleArchive} style={{ ...actionStyle, marginLeft: "auto", opacity: hovered ? 1 : 0 }}>{archived ? "恢复" : compacted ? "还原" : "精简"}</button>
+        <ChevronDown size={14} aria-hidden="true" className="tool-group-chevron" />
       </summary>
-      {open && <div className="tool-timeline-thread" style={{ margin: "2px 0 5px 6px", padding: "2px 0 3px 12px", borderLeft: "1px solid var(--border)", background: "transparent" }}>{steps.map((step, index) => <ToolStep key={`${step.call.id}-${step.assistant.id}`} {...step} stepNumber={index + 1} onCall={onCall} onResult={onMessage} onImage={onImage} onDeleteCall={onDeleteCall} onAddToolResult={onAddToolResult} assistantName={assistantName} disabled={disabled} searchTerm={searchTerm} jumpedId={jumpedId} />)}</div>}
+      {open && <div className="tool-timeline-thread" style={{ margin: "2px 0 5px", padding: "2px 0 3px", border: 0, background: "transparent" }}>{steps.map((step) => <ToolStep key={`${step.call.id}-${step.assistant.id}`} {...step} showTitle={steps.length > 1 && toolActionTitle(step.call) !== groupTitle} onCall={onCall} onResult={onMessage} onImage={onImage} onDeleteCall={onDeleteCall} onAddToolResult={onAddToolResult} assistantName={assistantName} disabled={disabled} searchTerm={searchTerm} jumpedId={jumpedId} />)}</div>}
     </details>
     {summaryOpen && <section className="tool-summary-card" style={{ margin: "3px 0 8px 21px", padding: "10px 12px", border: "1px solid color-mix(in srgb, var(--success) 22%, var(--border))", borderRadius: 10, background: "color-mix(in srgb, var(--success-soft) 40%, var(--surface))", boxShadow: "none" }}>
       <header style={{ display: "flex", minHeight: 24, alignItems: "center", gap: 8, marginBottom: 5 }}><strong style={{ color: "var(--text-muted)", fontSize: 9 }}>工具组摘要</strong><span style={{ color: "var(--text-subtle)", fontSize: 8 }}>保留在模型上下文中</span><div style={{ display: "flex", gap: 5, marginLeft: "auto" }}>{editingSummary ? <><button disabled={disabled} onClick={saveSummary}>保存</button><button disabled={disabled} onClick={() => { setSummaryDraft(summaryText); setEditingSummary(false); }}>取消</button></> : <button disabled={disabled} onClick={() => { setSummaryDraft(summaryText); setEditingSummary(true); }}>编辑</button>}<button disabled={disabled} aria-label="收起摘要" title="收起摘要" onClick={() => setSummaryOpen(false)}>×</button></div></header>
@@ -593,7 +654,7 @@ export function MessageStream(props: Props) {
         <div className="question-directory" role="list" aria-label={searchTerm.trim() ? "搜索结果" : "提问目录"} style={{ minHeight: 0, overflow: "auto" }}>{searchMatches.length ? searchMatches.slice(0, 50).map(({ message, index }) => <button key={message.id} tabIndex={directoryOpen ? 0 : -1} className={`question-result ${jumpedId === message.id ? "active" : ""}`} role="listitem" onClick={() => jumpToMessage(message.id)}><span className={`question-result-role ${message.role}`}>{roleIcon(message.role)}{roleName(message.role, props.assistantName || "Gemini")}</span><span className="question-result-text">{highlightPreview(snippet(message))}</span><small>{String(index + 1).padStart(2, "0")}</small></button>) : <p className="question-directory-empty">没有匹配的消息。</p>}{searchMatches.length > 50 && <small className="question-directory-more">仅显示前 50 条匹配结果 · 共 {searchMatches.length} 条</small>}</div>
       </div>
   </div>];
-  if (initialMessages.length) content.push(<SystemPromptBanner key="system-banner" messages={initialMessages} startIndex={0} onMessage={props.onMessage} onAdd={props.onAdd} onDelete={props.onDelete} disabled={disabled} assistantName={props.assistantName || "Gemini"} />);
+  if (initialMessages.length) content.push(<SystemPromptBanner key="system-banner" messages={initialMessages} startIndex={0} onMessage={props.onMessage} onAdd={props.onAdd} onDelete={props.onDelete} disabled={disabled} />);
   for (let index = initialEnd; index < props.messages.length;) {
     const message = props.messages[index];
     const wakeNotice = message.role === "user" ? systemWakeNotice(message.content) : undefined;

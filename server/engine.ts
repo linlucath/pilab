@@ -350,7 +350,7 @@ export async function generate(
     },
     streamFn,
     transformContext: async (messages) => latestImageContext(prepareAgentContext(messages, history())),
-    beforeToolCall: async ({ toolCall }) => toolCall.name === "view_images" && !model.input.includes("image")
+    beforeToolCall: async ({ toolCall }) => toolCall.name === "view_image" && !model.input.includes("image")
       ? { block: true, reason: "当前模型不支持图片，请切换到支持图片的模型。" } : undefined,
     afterToolCall: ({ result, toolCall }) => retainToolImages(projectImages, result, toolCall.name),
     toolExecution: "sequential",

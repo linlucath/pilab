@@ -5,8 +5,8 @@ const imageFile = `files/${"a".repeat(64)}.png`;
 const missingImageFile = `files/${"b".repeat(64)}.png`;
 const validPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", "base64");
 const images = [
-  { file: imageFile, name: "IMG-REFRESH-IMAGE", collection: "IMG-FIXTURE", kind: "image" as const, mimeType: "image/png" as const, width: 1, height: 1 },
-  { file: missingImageFile, name: "IMG-MISSING-IMAGE", collection: "IMG-FIXTURE", kind: "image" as const, mimeType: "image/png" as const, width: 1, height: 1 },
+  { file: imageFile, name: "IMG-REFRESH-IMAGE", kind: "image" as const, mimeType: "image/png" as const, width: 1, height: 1 },
+  { file: missingImageFile, name: "IMG-MISSING-IMAGE", kind: "image" as const, mimeType: "image/png" as const, width: 1, height: 1 },
 ];
 
 async function mockImageFiles(page: import("@playwright/test").Page) {

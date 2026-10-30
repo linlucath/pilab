@@ -185,7 +185,7 @@ export function ComposerBar({ busy, blocked, workerMode = false, placeholder, to
         event.preventDefault(); event.stopPropagation();
         if (event.repeat) return;
         void submit(true);
-      }} placeholder={placeholder || "给 Gemini 发消息，让我指挥 GPT 干活…"} aria-label={workerMode ? "给工兵发送指导" : "撰写新消息"} disabled={busy || blocked || sending} />
+      }} placeholder={placeholder || "输入消息或任务要求..."} aria-label={workerMode ? "给工兵发送指导" : "撰写新消息"} disabled={busy || blocked || sending} />
       {attachmentError && <small className="composer-image-error" role="alert"><AlertTriangle size={13} />{attachmentError}</small>}
       <div className="composer-card-footer">
         <div className="composer-footer-left">

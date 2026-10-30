@@ -22,9 +22,12 @@ async function openToolGroups(page: Page) {
   }
 }
 async function openToolBody(tool: Locator) {
-  const summary = toolSummary(tool);
+  const summary = tool.locator(":scope > summary");
   const body = tool.locator(".tool-step-body");
-  if (!(await body.count())) await summary.click();
+  const groupDetails = tool.locator("xpath=ancestor::details[1]");
+  if (await groupDetails.count() && !(await groupDetails.evaluate((element) => (element as HTMLDetailsElement).open)))
+    await groupDetails.locator(":scope > summary").click();
+  if (await summary.count() && !(await body.isVisible())) await summary.click();
   await expect(body).toBeVisible();
 }
 async function openRaw(tool: Locator) {
@@ -33,6 +36,101 @@ async function openRaw(tool: Locator) {
 }
 
 test.beforeEach(async ({ page }) => ready(page));
+
+test("TOOL-06 单步骤工具组使用单层折叠并显示克制文案", async ({ page }) => {
+  const defaultPersona = page.locator(".system-banner");
+  await expect(defaultPersona.locator("strong")).toHaveText("系统人设 · 智能协作模式");
+  await expect(defaultPersona).not.toContainText("最佳伙伴");
+  await expect(defaultPersona).not.toContainText("指挥");
+  await expect(defaultPersona).not.toContainText("相当差劲");
+
+  const sessionId = "single-tool-group-session";
+  const callId = "single-tool-group-call";
+  const resultText = "# 检查结果\n\n工具结果正文直接呈现，不插入测试链接。";
+  await seedWorkspace(page, [e2eSession(sessionId, "单步骤工具组", [
+    { id: "single-tool-system", role: "system", content: "You are a test assistant.", enabled: true },
+    { id: "single-tool-user", role: "user", content: "检查工具结果卡片的层级与留白", enabled: true },
+    { id: "single-tool-assistant", role: "assistant", content: "", enabled: true, toolCalls: [
+      { id: callId, name: "subagent_dispatch", arguments: JSON.stringify({ task: { message: "检查工具结果卡片的层级与留白" } }) },
+    ] },
+    { id: "single-tool-result", role: "tool", content: resultText, toolCallId: callId, toolName: "subagent_dispatch", enabled: true },
+    { id: "same-title-user", role: "user", content: "查阅两个文件", enabled: true },
+    { id: "same-title-assistant", role: "assistant", content: "", enabled: true, toolCalls: [
+      { id: "same-title-call-one", name: "read", arguments: "{\"path\":\"src/one.ts\"}" },
+      { id: "same-title-call-two", name: "read", arguments: "{\"path\":\"src/two.ts\"}" },
+    ] },
+    { id: "same-title-result-one", role: "tool", content: "第一份文件内容。", toolCallId: "same-title-call-one", toolName: "read", enabled: true },
+    { id: "same-title-result-two", role: "tool", content: "第二份文件内容。", toolCallId: "same-title-call-two", toolName: "read", enabled: true },
+  ])]);
+  await openWorkspace(page);
+
+  await expect(ui(page).composer).toHaveAttribute("placeholder", "输入消息或任务要求...");
+  await expect(page.locator(".system-banner strong")).toHaveText("系统人设 · 智能协作模式");
+  const group = page.locator('.tool-group[data-message-id="single-tool-assistant"]');
+  const groupDetails = group.locator(":scope > details");
+  await expect(groupDetails).not.toHaveAttribute("open", "");
+  const groupSummary = groupDetails.locator(":scope > summary");
+  await expect(groupSummary).toContainText("检查工具结果卡片的层级与留白");
+  await expect(groupSummary).toContainText("完成");
+  await groupSummary.click();
+
+  const tool = group.locator('.tool-step[data-tool-name="subagent_dispatch"]');
+  await expect(tool.locator(":scope > summary")).toHaveCount(0);
+  await expect(tool.locator(":scope > .tool-step-body")).toBeVisible();
+  const result = tool.locator(".tool-dispatch-result");
+  await expect(result.getByRole("heading", { name: "检查结果" })).toBeVisible();
+  await expect(result).toContainText("不插入测试链接");
+  await expect(result.locator("a")).toHaveCount(0);
+  await expect(groupDetails.locator(":scope > summary > svg")).toHaveCount(1);
+
+  const sameTitleGroup = page.locator('.tool-group[data-message-id="same-title-assistant"]');
+  const sameTitleDetails = sameTitleGroup.locator(":scope > details");
+  await expect(sameTitleDetails.locator(":scope > summary")).toContainText("查阅文件");
+  await sameTitleDetails.locator(":scope > summary").click();
+  const sameTitleSteps = sameTitleGroup.locator(".tool-step");
+  await expect(sameTitleSteps).toHaveCount(2);
+  for (const step of await sameTitleSteps.all()) {
+    await expect(step.locator(":scope > summary")).toHaveCount(0);
+    await expect(step.locator(":scope > .tool-step-body")).toBeVisible();
+    await expect(step.locator(".tool-readable-block a")).toHaveCount(0);
+  }
+});
+
+test("TOOL-01 工兵交付正文优先呈现，原始指令默认收起且展开状态稳定", async ({ page }) => {
+  const sessionId = "subagent-result-first-session";
+  const prompt = "请查阅并更新工具展示组件，隐藏原始 RPC 参数并改善 Markdown 排版。";
+  const delivered = "# 工具展示组件已更新\n\n交付正文完整显示，段落间距舒适。\n\n- 工具标题保持克制\n- 原始指令默认收起";
+  const callId = "subagent-result-first-call";
+  const messages: Message[] = [
+    { id: "subagent-result-system", role: "system", content: "You are a test assistant.", enabled: true },
+    { id: "subagent-result-user", role: "user", content: "请完成工具展示改进。", enabled: true },
+    { id: "subagent-result-assistant", role: "assistant", content: "", enabled: true, toolCalls: [
+      { id: callId, name: "subagent_dispatch", arguments: JSON.stringify({ mode: "sync", task: { name: "quiet-wait-worker", message: prompt } }) },
+    ] },
+    { id: "subagent-result-output", role: "tool", content: delivered, toolCallId: callId, toolName: "subagent_dispatch", enabled: true },
+  ];
+  await seedWorkspace(page, [e2eSession(sessionId, "工兵交付结果", messages)]);
+  await openWorkspace(page);
+
+  const group = page.locator('.tool-group[data-message-id="subagent-result-assistant"]');
+  const groupDetails = group.locator(":scope > details");
+  if (!(await groupDetails.evaluate((element) => (element as HTMLDetailsElement).open))) await groupDetails.locator(":scope > summary").click();
+  const tool = group.locator('.tool-step[data-tool-name="subagent_dispatch"]');
+  await expect(tool.locator(":scope > summary")).toHaveCount(0);
+  await expect(tool.locator(":scope > .tool-step-body")).toBeVisible();
+  const result = tool.locator(".tool-dispatch-result");
+  await expect(result.getByRole("heading", { name: "工具展示组件已更新" })).toBeVisible();
+  await expect(result).toContainText("段落间距舒适");
+  await expect(page.getByText("quiet-wait-worker", { exact: true })).toHaveCount(0);
+
+  const original = tool.locator(".tool-original-instruction");
+  await expect(original.locator(":scope > summary")).toHaveText(/原始指令/);
+  await expect(original).not.toHaveAttribute("open", "");
+  await expect(original.getByText(prompt, { exact: true })).not.toBeVisible();
+  await original.locator(":scope > summary").click();
+  await expect(original.getByText(prompt, { exact: true })).toBeVisible();
+  await expect(tool.locator(".tool-step-body")).toBeVisible();
+});
 
 test("TOOL-01 正文不随工具折叠消失，显示调用状态、配对结果和执行顺序", async ({ page }) => {
   await setMockScript(page, [
@@ -61,7 +159,7 @@ test("TOOL-01 正文不随工具折叠消失，显示调用状态、配对结果
   await expect(page.getByText("TOOL01-FINAL-ANSWER", { exact: true })).toBeVisible();
   await openToolGroups(page);
   await expect(steps).toHaveCount(2);
-  await expect(steps.nth(1).locator(".tool-state")).toHaveText("失败");
+  await expect(page.locator(".tool-group").last().locator(".tool-group-state")).toHaveText("· 失败");
   await openToolBody(steps.nth(1));
   await expect(page.getByText("TOOL01-RESULT-SECOND", { exact: true })).toBeVisible();
   await openToolBody(steps.nth(0));
@@ -95,7 +193,8 @@ test("TOOL-03 手动添加待返回结果可解除校验、编辑并继续运行
   await tools.nth(0).getByRole("button", { name: "添加结果" }).click();
   await firstEditor.fill("MANUAL-RESULT-ONE");
   await firstEditor.press("Control+Enter");
-  await expect(tools.nth(0).locator(".tool-state")).toHaveText("完成");
+  await expect(tools.nth(0)).toContainText("MANUAL-RESULT-ONE");
+  await expect(page.locator(".tool-group .tool-group-state")).toHaveText("· 待返回");
   await expect(ui(page).alerts).toContainText("添加工具结果");
 
   await openToolBody(tools.nth(1));
@@ -104,7 +203,7 @@ test("TOOL-03 手动添加待返回结果可解除校验、编辑并继续运行
   await tools.nth(1).getByRole("checkbox", { name: /标记为错误/ }).check();
   await tools.nth(1).getByRole("button", { name: /保存/ }).click();
   await openToolGroups(page);
-  await expect(tools.nth(1).locator(".tool-state")).toHaveText("失败");
+  await expect(page.locator(".tool-group .tool-group-state")).toHaveText("· 失败");
   await expect(ui(page).alerts).toHaveCount(0);
 
   await openRaw(tools.nth(0));
@@ -131,11 +230,11 @@ test("TOOL-01 运行中的工具显示待返回状态，完成后状态更新", 
   await ui(page).composer.fill("wait for mock tool");
   await ui(page).send.click();
   const tool = ui(page).tool();
-  await expect(tool.locator(".tool-state")).toHaveText("待返回");
+  await expect(page.locator(".tool-group .tool-group-state")).toHaveText("· 待返回");
   await expect(page.getByText("正在执行 e2e_mock_tool", { exact: true })).toBeVisible();
   await expect(ui(page).stop).toHaveCount(0, { timeout: 8_000 });
   await openToolGroups(page);
-  await expect(tool.locator(".tool-state")).toHaveText("完成");
+  await expect(page.locator(".tool-group .tool-group-state")).toHaveText("· 完成");
 });
 
 test("TOOL-02 原始工具名、Call ID、参数、结果及错误标记编辑后配对更新", async ({ page }) => {
@@ -255,10 +354,12 @@ test("TOOL-04 停止执行中的工具会记录执行状态未知的错误结果
   await ui(page).stop.click();
   await expect(ui(page).stop).toHaveCount(0);
   const group = page.locator(".tool-group").first();
-  await group.locator(":scope > details > summary").click();
+  const groupDetails = group.locator(":scope > details");
+  if (!(await groupDetails.evaluate((element) => (element as HTMLDetailsElement).open)))
+    await groupDetails.locator(":scope > summary").click();
   await openToolBody(ui(page).tool().first());
   await expect(page.getByText("Mock tool execution interrupted.", { exact: true })).toBeVisible();
-  await expect(page.locator(".tool-step.failed .tool-state")).toContainText("失败");
+  await expect(page.locator(".tool-group-state.error")).toHaveText("· 失败");
   await openHistory(page);
   await expect(page.locator(".history-card").first()).toContainText("已停止");
   await expect(page.locator(".history-card").first()).toContainText("TOOL04-WORK-IN-PROGRESS");
