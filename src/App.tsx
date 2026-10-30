@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CircleHelp, X } from "lucide-react";
-import { messageSchema, type Message, type ReasoningEffort, type Settings, type ToolCall } from "../shared/schema";
+import { type Message, type ReasoningEffort, type Settings, type ToolCall } from "../shared/schema";
 import type { GptSessionSummary } from "../shared/gpt-sessions";
 import { addToolResult as createToolResult, completeToolBranchEnd, deleteMessageWithToolPairs, deleteToolCallWithResult, patchMessageWithToolPairs, patchToolCallWithResult, toolHistoryError } from "../shared/tool-history";
 import { useProjectWorkspace, type Run, type Session, type Workspace } from "./workspace-store";
 import { newSession, uid, loadLegacyWorkspace } from "./utils/session";
 import { contextTokenMetrics } from "./utils/context-tokens";
-import { buildForkMessages } from "../shared/session-fork";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { MessageStream } from "./components/MessageStream";
@@ -19,10 +18,8 @@ type PiConnection = {
   models: { id: string; name: string; reasoningEfforts: ReasoningEffort[]; reasoningEffortMap?: Partial<Record<ReasoningEffort, string | null>> }[];
 };
 type ToolActivity = { name: string; arguments: unknown; output: string };
-type CompactedMessage = Message & { compactedByModel?: boolean; modelSummary?: string };
 type WorkerWakeNotice = { sessionId: string; cwd: string; names: string[] };
 type WorkerReview = Pick<WorkerWakeNotice, "sessionId" | "cwd" | "names">;
-type ForkNotice = { sourceId: string; forkId: string; title: string };
 type SessionStreamView = { streamingId: string; thinking: string; toolActivity: ToolActivity | null };
 type RunControl = { sessionId: string; runId: string; lastSeq: number; shouldSubscribe: boolean; readerController?: AbortController; resume?: () => void };
 const emptyStreamView: SessionStreamView = { streamingId: "", thinking: "", toolActivity: null };
@@ -54,39 +51,6 @@ function workerNoticeNames(content: string) {
   return match ? [...match[1].matchAll(/「([^」]+)」/g)].map((item) => item[1]) : [];
 }
 
-function stringList(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string" && !!entry) : [];
-}
-function compactionEntries(event: Record<string, unknown>) {
-  const entries: { ids: string[]; summary?: string }[] = [];
-  const summaryValue = [event.modelSummary, event.summary, event.content].find((value) => typeof value === "string" && value.trim());
-  const defaultSummary = typeof summaryValue === "string" ? summaryValue : undefined;
-  for (const key of ["groups", "compactedGroups", "items"]) {
-    const groups = event[key];
-    if (!Array.isArray(groups)) continue;
-    for (const group of groups) {
-      if (!group || typeof group !== "object") continue;
-      const item = group as Record<string, unknown>;
-      const ids = ["messageIds", "ids", "messages", "toolCallIds"].flatMap((field) => stringList(item[field]));
-      const summary = [item.modelSummary, item.summary].find((value) => typeof value === "string" && value.trim());
-      if (ids.length) entries.push({ ids: [...new Set(ids)], summary: typeof summary === "string" ? summary : defaultSummary });
-    }
-  }
-  for (const key of ["messages", "compactedMessages"]) {
-    if (!Array.isArray(event[key])) continue;
-    for (const value of event[key] as unknown[]) {
-      if (!value || typeof value !== "object") continue;
-      const item = value as Record<string, unknown>;
-      const id = typeof item.id === "string" ? item.id : typeof item.messageId === "string" ? item.messageId : "";
-      const summary = [item.modelSummary, item.summary].find((entry) => typeof entry === "string" && entry.trim());
-      if (id) entries.push({ ids: [id], summary: typeof summary === "string" ? summary : defaultSummary });
-    }
-  }
-  const directIds = ["messageIds", "compactedMessageIds", "ids", "toolCallIds"].flatMap((key) => stringList(event[key]));
-  if (directIds.length) entries.push({ ids: [...new Set(directIds)], summary: defaultSummary });
-  return entries;
-}
-
 export default function App() {
   useEffect(() => installGlobalErrorLogging(), []);
   const [notice, setNotice] = useState("");
@@ -110,7 +74,6 @@ export default function App() {
   const [composerText, setComposerText] = useState("");
   const [workerWakeNotices, setWorkerWakeNotices] = useState<WorkerWakeNotice[]>([]);
   const workerSnapshotsRef = useRef(new Map<string, Map<string, GptSessionSummary>>());
-  const [forkNotice, setForkNotice] = useState<ForkNotice | null>(null);
   const activeRunsRef = useRef(activeRuns);
   const startingSessionsRef = useRef(startingSessions);
   const runControlsRef = useRef(new Map<string, RunControl>());
@@ -548,30 +511,6 @@ export default function App() {
     if (end === null) { setNotice("无法在未完成的工具调用处创建分支；请先补齐工具结果。"); return; }
     createSession({ ...currentSession, title: `${currentSession.title} · 分支`, messages: currentSession.messages.slice(0, end + 1) });
   };
-  async function createForkSession(title: string, memory: string, keepRecentTurns = 0, switchActive = true, sourceId?: string, allowWhileRunning = false, forkId?: string, forkMessages?: Message[]) {
-    const sourceSessionId = sourceId || workspaceRef.current.active;
-    if (busyForSessionRef.current(sourceSessionId) && !allowWhileRunning) return undefined;
-    const source = workspaceRef.current.sessions.find((item) => item.id === sourceSessionId);
-    if (!source || !memory.trim()) return undefined;
-    const id = forkId || uid();
-    const existing = workspaceRef.current.sessions.find((item) => item.id === id);
-    if (existing) return id;
-    let workingDirectory: string;
-    try { workingDirectory = await requestSessionWorkspace(id); }
-    catch (error) { setNotice(`创建提纯分身失败：${error instanceof Error ? error.message : String(error)}`); return undefined; }
-    const { piSync: _piSync, ...copy } = source;
-    const next: Session = {
-      ...structuredClone(copy), id, title: title.trim().slice(0, 200) || `${source.title} · 提纯分身`,
-      settings: { ...copy.settings, workingDirectory },
-      messages: forkMessages || buildForkMessages({ messages: source.messages, distilledMemory: memory, keepRecentTurns, id: uid }),
-      runs: [], parentSessionId: source.id, parentSessionTitle: source.title, forkSummary: memory.trim().slice(0, 20_000),
-    };
-    setWorkspace((current) => ({ ...current, sessions: [...current.sessions, next], rootSessionIds: [next.id, ...current.rootSessionIds], ...(switchActive ? { active: next.id, followPi: false } : {}) }));
-    setForkNotice({ sourceId: source.id, forkId: next.id, title: next.title });
-    if (switchActive) setScrollRequest((value) => value + 1);
-    setNotice(switchActive ? `已创建提纯分身「${next.title}」并切换过去。` : `已生成提纯分身「${next.title}」，原会话保持不变。`);
-    return next.id;
-  }
   const selectSession = (id: string) => {
     if (!workspaceRef.current.sessions.some((item) => item.id === id)) return;
     updateSessionUrl(id);
@@ -658,45 +597,6 @@ export default function App() {
     let finalGenerationStatus = "done";
     const textById = new Map<string, string>(); const trace: Message[] = []; const requests: unknown[] = [];
     const updateRun = (values: Partial<Run>) => setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === sessionId ? { ...item, runs: item.runs.map((run) => run.id === runId ? { ...run, ...values, elapsed: Date.now() - started } : run) } : item) }));
-    const applyContextCompacted = (event: Record<string, unknown>) => {
-      const entries = compactionEntries(event);
-      const targets = new Map<string, string | undefined>();
-      const availableMessages = [...activeSession.messages, ...trace];
-      for (const entry of entries) for (const id of entry.ids) {
-        let matchedMessage = false;
-        for (const message of availableMessages) {
-          const compacted = message as CompactedMessage;
-          const direct = message.id === id;
-          const wireId = id.includes("|") ? id.split("|")[0] : id;
-          const call = message.toolCalls?.some((item) => item.id.split("|")[0] === wireId) || (message.role === "tool" && message.toolCallId?.split("|")[0] === wireId);
-          if (!direct && !call) continue;
-          matchedMessage = true;
-          targets.set(message.id, targets.get(message.id) || entry.summary || compacted.modelSummary);
-          if (call) {
-            const callIds = message.role === "tool" ? [message.toolCallId] : message.toolCalls?.filter((item) => item.id.split("|")[0] === wireId).map((item) => item.id) || [];
-            for (const callId of callIds) for (const paired of availableMessages) {
-              if (paired.id === message.id || (paired.role === "tool" && paired.toolCallId?.split("|")[0] === callId?.split("|")[0]) || paired.toolCalls?.some((item) => item.id.split("|")[0] === callId?.split("|")[0]))
-                targets.set(paired.id, targets.get(paired.id) || entry.summary || (paired as CompactedMessage).modelSummary);
-            }
-          }
-        }
-        if (!matchedMessage) continue;
-      }
-      if (!targets.size) return;
-      const annotate = (messages: Message[]) => messages.map((message) => {
-        if (!targets.has(message.id)) return message;
-        const summary = targets.get(message.id);
-        return { ...message, compactedByModel: true, ...(summary ? { modelSummary: summary } : {}) } as Message;
-      });
-      const nextTrace = annotate(trace);
-      trace.splice(0, trace.length, ...nextTrace);
-      setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id !== sessionId ? item : {
-        ...item,
-        messages: annotate(item.messages),
-        runs: item.runs.map((run) => run.id !== runId ? run : { ...run, snapshot: { ...run.snapshot, messages: annotate(run.snapshot.messages) }, trace: run.trace ? annotate(run.trace) : run.trace }),
-      }) }));
-      if (workspaceRef.current.active === sessionId) setNotice(`上下文已压缩：${targets.size} 条历史消息已标记为摘要记录。`);
-    };
     const upsert = (message: Message) => {
       const index = trace.findIndex((item) => item.id === message.id); if (index < 0) trace.push(message); else trace[index] = { ...trace[index], ...message };
       setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id !== sessionId ? item : { ...item, messages: item.messages.some((entry) => entry.id === message.id) ? item.messages.map((entry) => entry.id === message.id ? { ...entry, ...message } : entry) : [...item.messages, message] }) }));
@@ -735,15 +635,6 @@ export default function App() {
       setSessionStarting(sessionId, false);
       const consumeEvent = (event: any) => {
         if (event.type === "heartbeat") return;
-        if (event.type === "context_compacted") applyContextCompacted(event as Record<string, unknown>);
-        if (event.type === "session_forked") {
-          const fork = (event as { fork?: { id?: unknown; title?: unknown; forkSummary?: unknown; keepRecentTurns?: unknown; messages?: unknown } }).fork;
-          const parsedMessages = messageSchema.array().max(500).safeParse(fork?.messages);
-          if (fork && typeof fork.id === "string" && typeof fork.title === "string" && typeof fork.forkSummary === "string" && parsedMessages.success)
-            void createForkSession(fork.title, fork.forkSummary,
-              typeof fork.keepRecentTurns === "number" ? fork.keepRecentTurns : 0,
-              false, sessionId, true, fork.id, parsedMessages.data);
-        }
         if (event.type === "runtime") updateRun({ cwd: event.cwd as string | undefined });
         if (event.type === "request") { requests.push(event.payload); updateRun({ request: event.payload, requests: [...requests], turns: event.turn }); }
         if (event.type === "assistant_start") {
@@ -953,7 +844,7 @@ export default function App() {
         <section className="conversation-pane">
           <ThreadTabs ownerSessionId={session.id} cwd={effectiveCwd} workers={visibleGptSessions} selectedId={selectedWorkerId} onSelect={setSelectedWorkerId} onWorkerUpdate={updateWorkerSummary} onWorkersUpdate={updateWorkerSummaries} onRefresh={() => void fetchGptSessions()} sessionsError={gptSessionsError} />
           {!selectedWorkerId && <>
-            <MessageStream sessionId={session.id} scrollRequest={scrollRequest} messages={session.messages} busy={busy} compactTools={compactTools} streamingId={streamingId} streamingThinking={streamingThinking} toolActivity={toolActivity} gptWorkers={visibleGptSessions} lineage={session.parentSessionId ? { parentSessionId: session.parentSessionId, parentSessionTitle: session.parentSessionTitle, forkSummary: session.forkSummary } : undefined} forkNotice={forkNotice?.sourceId === session.id ? { forkId: forkNotice.forkId, title: forkNotice.title } : undefined} onSwitchFork={selectSession} onJumpToSession={selectSession} onMessage={updateMessage} onCall={updateCall} onAdd={addMessage} onMove={moveMessage} onDelete={deleteMessage} onDeleteCall={deleteToolCall} onAddToolResult={addManualToolResult} onBranch={branchAt} onCopy={(text) => void copyText(text)} />
+            <MessageStream sessionId={session.id} scrollRequest={scrollRequest} messages={session.messages} busy={busy} compactTools={compactTools} streamingId={streamingId} streamingThinking={streamingThinking} toolActivity={toolActivity} gptWorkers={visibleGptSessions} onMessage={updateMessage} onCall={updateCall} onAdd={addMessage} onMove={moveMessage} onDelete={deleteMessage} onDeleteCall={deleteToolCall} onAddToolResult={addManualToolResult} onBranch={branchAt} onCopy={(text) => void copyText(text)} />
             {runErrors[session.id] && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>本次运行失败</strong><span>{runErrors[session.id]}</span></div><button onClick={() => setSessionRunError(session.id)} aria-label="关闭运行错误">关闭<X size={14} /></button></div>}
             <ComposerBar busy={busy} toolName={toolActivity?.name} messageCount={session.messages.length} contextTokens={contextMetrics.context} savedPercent={contextMetrics.savedPercent} settings={session.settings} models={piConnection?.models || []} defaultModel={piConnection?.defaultModel} piConnected={piConnection?.connected} onSetting={updateSetting} onNotice={setNotice} onRefreshModels={() => void refreshPiStatus()} draft={composerText} onDraftChange={updateComposerText} backgroundWorkers={visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={workerWakeNotice} onDismissWake={() => dismissSessionWorkerWake(session.id)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={sendMessage} onRun={() => void run()} onStop={() => void abortRun()} />
           </>}

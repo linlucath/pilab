@@ -273,12 +273,7 @@
 .live-workers-card { border-color: color-mix(in srgb, var(--accent) 28%, var(--border)); }.live-worker-row { display: flex; flex-direction: column; gap: 5px; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--border); }.live-worker-name { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 9px; font-weight: 650; }.live-worker-name small { color: var(--text-subtle); font-size: 8px; font-weight: 400; }.live-worker-tools { display: flex; flex-wrap: wrap; gap: 5px; }.live-worker-tools > small { color: var(--text-subtle); font-size: 8px; }.live-worker-tool { padding: 3px 6px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-muted); background: var(--surface); font: 8px var(--font-mono); }.live-worker-tool.running { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, var(--border)); }.live-worker-tool.error { color: var(--danger); }
 .context-count { max-width: min(44vw, 430px); overflow: hidden; text-overflow: ellipsis; }.running-context-count { min-width: 0; overflow: hidden; color: var(--text-subtle); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 
-/* Distilled conversation forks and background GPT handoff */
-.session-lineage-card { margin: 0 0 21px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border)); border-radius: 10px; background: color-mix(in srgb, var(--accent-soft) 34%, var(--surface)); }
-.session-lineage-card > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--accent); font-size: 10px; font-weight: 650; }
-.session-lineage-card > header button { min-height: 25px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-muted); background: var(--surface); font-size: 8px; }
-.session-lineage-summary { max-height: 180px; margin-top: 7px; padding-top: 7px; overflow: auto; border-top: 1px solid color-mix(in srgb, var(--accent) 17%, var(--border)); }
-.session-lineage-summary .markdown-body { color: var(--text-muted); font-size: 9px; line-height: 1.55; }
+/* Background GPT handoff */
 .background-task-bar { display: flex; width: min(100%, 920px); min-height: 32px; max-height: 32px; flex-wrap: nowrap; align-items: center; gap: 8px; margin: 0 auto 5px; padding: 0 10px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border)); border-radius: 9px; color: var(--text-muted); background: color-mix(in srgb, var(--accent-soft) 22%, var(--surface)); box-shadow: none; font-size: 12.5px; }
 .background-task-bar > strong { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; color: var(--accent); font-size: 12.5px; white-space: nowrap; }
 .background-task-bar > div { display: flex; min-width: 0; flex: 1; flex-wrap: nowrap; gap: 6px; overflow: hidden; }
@@ -292,12 +287,6 @@
 .worker-wake-banner button { min-height: 25px; padding: 0 7px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-muted); background: var(--surface); font-size: 8px; white-space: nowrap; }
 .worker-wake-banner .wake-review-button { color: #fff; border-color: var(--accent); background: var(--accent); font-weight: 650; }
 .worker-wake-banner .wake-review-button:disabled { opacity: .55; cursor: not-allowed; }
-.session-fork-created-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0 18px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border)); border-radius: 12px; background: linear-gradient(110deg, color-mix(in srgb, var(--accent-soft) 53%, var(--surface)), var(--surface)); box-shadow: var(--shadow-sm); }
-.session-fork-created-card > div { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
-.session-fork-created-card strong { color: var(--accent); font-size: 10px; }
-.session-fork-created-card small { color: var(--text-subtle); font-size: 8px; }
-.session-fork-created-card button { min-height: 31px; flex: 0 0 auto; padding: 0 10px; border: 1px solid var(--accent); border-radius: 8px; color: #fff; background: var(--accent); font-size: 9px; font-weight: 650; }
-.session-fork-created-card button:disabled { opacity: .45; cursor: not-allowed; }
 .system-worker-wake-notice { display: flex; width: max-content; max-width: min(100%, 680px); align-items: center; gap: 6px; margin: 4px auto 12px; padding: 4px 5px 4px 10px; overflow: hidden; border: 1px solid var(--border); border-radius: 99px; color: var(--text-subtle); background: var(--surface-soft); font-size: 8px; line-height: 1.45; white-space: nowrap; }
 .system-worker-wake-notice > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .system-worker-wake-notice > button { display: grid; width: 22px; height: 22px; flex: 0 0 auto; place-items: center; padding: 0; border: 0; border-radius: 50%; color: var(--text-subtle); background: transparent; cursor: pointer; }

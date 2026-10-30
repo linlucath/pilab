@@ -6,7 +6,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { generate, validateTranscript, exactPayload } from "../server/engine";
-import { defaults, fileSchema, runStreamEventSchema, settingsSchema, type Message } from "../shared/schema";
+import { defaults, fileSchema, settingsSchema, type Message } from "../shared/schema";
 
 const user: Message = {
   id: "user",
@@ -81,44 +81,6 @@ async function provider(handler: (body: any, res: ServerResponse) => void) {
     },
   };
 }
-test("context_compact streams a UI event and feeds dehydrated summaries back into later model requests", async () => {
-  const cwd = await mkdtemp(path.join(tmpdir(), "pi-lab-context-compact-"));
-  const sent: any[] = [];
-  const mock = await provider((body, res) => {
-    sent.push(body);
-    if (sent.length === 1) reply(res, { id: "call_compact", name: "context_compact", arguments: {
-      toolCallIds: ["call_prior|0"], modelSummary: "Reviewed five sources; the latest release adds export and search support.",
-    } });
-    else reply(res);
-  });
-  const longTask = `Review the full release notes and compare every section. ${"Detailed instructions. ".repeat(160)}`;
-  const messages: Message[] = [user, {
-    id: "prior-call", role: "assistant", content: "", enabled: true,
-    toolCalls: [{ id: "call_prior|0", name: "gpt_session_send", arguments: JSON.stringify({ name: "research", message: longTask, mode: "steer" }) }],
-  }, {
-    id: "prior-result", role: "tool", content: "Raw research output. ".repeat(500), enabled: true,
-    toolCallId: "call_prior", toolName: "gpt_session_send",
-  }];
-  try {
-    const events: Record<string, any>[] = [];
-    await generate({ settings: { ...defaults, baseUrl: mock.baseUrl, workingDirectory: cwd }, messages }, (event) => events.push(event));
-    assert.equal(sent.length, 2);
-    const before = sent[0].messages.find((item: any) => item.role === "assistant" && item.tool_calls?.some((call: any) => call.id === "call_prior"));
-    const after = sent[1].messages.find((item: any) => item.role === "assistant" && item.tool_calls?.some((call: any) => call.id === "call_prior"));
-    const result = sent[1].messages.find((item: any) => item.role === "tool" && item.tool_call_id === "call_prior");
-    assert.match(JSON.parse(before.tool_calls[0].function.arguments).message, /Detailed instructions/);
-    assert.match(JSON.parse(after.tool_calls[0].function.arguments).message, /任务摘要/);
-    assert.ok(JSON.parse(after.tool_calls[0].function.arguments).message.length < longTask.length);
-    assert.match(result.content, /^\[已脱水归档\] Reviewed five sources/);
-    assert.ok(events.some((event) => event.type === "context_compacted" && event.messageIds.includes("prior-call") && event.messageIds.includes("prior-result")));
-    assert.ok(events.some((event) => event.type === "context_compacted" && event.toolCallIds.some((id: string) => id.split("|")[0] === "call_prior")));
-    assert.equal(messages[2].content.startsWith("Raw research output."), true);
-  } finally {
-    await mock.close();
-    await rm(cwd, { recursive: true, force: true });
-  }
-});
-
 test("Agent exposes GPT and image tools, feeds tool results back, and replays edited history", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "pi-lab-tools-"));
   const sent: any[] = [];
@@ -148,9 +110,7 @@ test("Agent exposes GPT and image tools, feeds tool results back, and replays ed
     );
     assert.equal(sent.length, 2);
     assert.deepEqual(sent[0].tools.map((t: any) => t.function.name).sort(), [
-      "context_compact",
       "list_images",
-      "session_fork",
       "subagent_control",
       "subagent_dispatch",
       "subagent_query",
@@ -228,9 +188,7 @@ test("Agent tools are always enabled and expose the full tool set", async () => 
     );
     const names = sent[0].tools.map((tool: any) => tool.function.name).sort();
     assert.deepEqual(names, [
-      "context_compact",
       "list_images",
-      "session_fork",
       "subagent_control",
       "subagent_dispatch",
       "subagent_query",
@@ -239,34 +197,6 @@ test("Agent tools are always enabled and expose the full tool set", async () => 
     assert.equal(events.some((event) => event.type === "error"), false, JSON.stringify(events));
     assert.equal(sent.length, 2);
     assert.equal(events.at(-1)?.type, "done");
-  } finally {
-    mock.close();
-    await rm(cwd, { recursive: true, force: true });
-  }
-});
-test("session_fork broadcasts the complete nested fork payload", async () => {
-  const cwd = await mkdtemp(path.join(tmpdir(), "pi-lab-fork-event-"));
-  const sent: any[] = [];
-  const mock = await provider((body, res) => {
-    sent.push(body);
-    if (sent.length === 1)
-      reply(res, { name: "session_fork", arguments: { title: "Audit branch", distilledMemory: "Keep the validated findings." } });
-    else reply(res);
-  });
-  try {
-    const events: Record<string, any>[] = [];
-    await generate(
-      { settings: { ...defaults, baseUrl: mock.baseUrl, workingDirectory: cwd }, messages: [user] },
-      (event) => events.push(event),
-    );
-    const event = events.find((item) => item.type === "session_forked");
-    assert.ok(event);
-    assert.doesNotThrow(() => runStreamEventSchema.parse(event));
-    assert.equal(event.fork.title, "Audit branch");
-    assert.equal(event.fork.forkSummary, "Keep the validated findings.");
-    assert.equal(event.fork.keepRecentTurns, 0);
-    assert.equal(event.fork.messages.length, 1);
-    assert.match(event.fork.messages[0].content, /Keep the validated findings/);
   } finally {
     mock.close();
     await rm(cwd, { recursive: true, force: true });

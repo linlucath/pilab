@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import path from "node:path";
 import type { TSchema } from "typebox";
 import { GptSessionManager, type SessionInfo } from "./sessions.ts";
 import { nativeTransportFactory, sessionStorageDir } from "./native.ts";
@@ -20,8 +21,12 @@ export default function piGptSessions(pi: ExtensionAPI) {
   const stores = new Map<string, LocalImageStore>();
   const imageStore = (ctx?: ExtensionContext) => {
     const root = process.env.PI_LAB_IMAGE_ROOT || ctx?.cwd || process.cwd();
-    if (!stores.has(root)) stores.set(root, new LocalImageStore(root));
-    return stores.get(root)!;
+    const inheritedOwner = worker ? process.env.PI_LAB_IMAGE_SESSION_ID?.trim() : undefined;
+    const owner = inheritedOwner || ctx?.sessionManager.getSessionId();
+    if (!owner) throw new Error("无法确定当前 Pi 会话，拒绝访问图片素材。");
+    const key = `${path.resolve(root)}\0${owner}`;
+    if (!stores.has(key)) stores.set(key, new LocalImageStore(root, owner));
+    return stores.get(key)!;
   };
   for (const tool of createImageTools(imageStore, worker ? "publisher" : "viewer")) {
     coordinatorTools.add(tool.name);

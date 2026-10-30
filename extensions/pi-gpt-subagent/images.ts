@@ -50,8 +50,14 @@ async function atomic(file: string, data: string | Uint8Array) {
 /** Content-addressed local originals and previews; per-name records avoid cross-process index races. */
 export class LocalImageStore {
   readonly directory: string;
-  constructor(readonly projectRoot: string) { this.directory = path.join(path.resolve(projectRoot), ".pi-lab", "images"); }
-  private collectionDirectory(collection: string) { return path.join(this.directory, "collections", hash(title(collection))); }
+  private readonly collectionScope: string;
+  constructor(readonly projectRoot: string, ownerSessionId: string) {
+    const owner = ownerSessionId.trim();
+    if (!owner || owner.length > 200) throw new Error("图片素材必须绑定到有效的会话 ID。");
+    this.directory = path.join(path.resolve(projectRoot), ".pi-lab", "images");
+    this.collectionScope = hash(owner);
+  }
+  private collectionDirectory(collection: string) { return path.join(this.directory, "collections", this.collectionScope, hash(title(collection))); }
   filePath(file: string) {
     if (!imageFilePattern.test(file)) throw new Error("图片引用无效。");
     return path.join(this.directory, file);
@@ -106,7 +112,7 @@ export class LocalImageStore {
   }
   async list(collection?: string) {
     if (collection) return { collection, images: (await this.assets(collection)).map(({ name }) => name).slice(0, 40) };
-    const directory = path.join(this.directory, "collections");
+    const directory = path.join(this.directory, "collections", this.collectionScope);
     const directories = await readdir(directory).catch((error) => {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw error;
@@ -120,7 +126,7 @@ export class LocalImageStore {
       }
       if (groups.length >= 30) break;
     }
-    return groups;
+    return groups.sort((left, right) => left.collection.localeCompare(right.collection));
   }
   async attachment(ref: ImageReference): Promise<ImageContent> {
     return { type: "image", data: (await readFile(this.filePath(ref.file))).toString("base64"), mimeType: ref.mimeType };

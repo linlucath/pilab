@@ -103,33 +103,11 @@ export const runSchema = z.object({
   settings: settingsSchema,
   messages: z.array(messageSchema).min(1).max(500),
 });
-export const sessionForkArgsSchema = z.object({
-  title: z.string().trim().min(1).max(200),
-  distilledMemory: z.string().trim().min(1).max(20_000),
-  keepRecentTurns: z.number().int().min(0).max(20).default(0),
-});
-const sessionForkedRunStreamEventSchema = z.object({
-  type: z.literal("session_forked"),
-  fork: z.object({
-    id: z.string().min(1).max(100),
-    title: z.string().min(1).max(200),
-    forkSummary: z.string().min(1).max(20_000),
-    keepRecentTurns: z.number().int().min(0).max(20),
-    messages: z.array(messageSchema).max(500),
-  }),
-});
-export const runStreamEventSchema = z.union([
-  sessionForkedRunStreamEventSchema,
-  z.object({ type: z.string().min(1) }).passthrough().refine((event) => event.type !== "session_forked"),
-]);
 export const fileSchema = z.object({
   version: z.literal(1),
   title: z.string().max(200),
   settings: settingsSchema.omit({ apiKey: true }),
   messages: z.array(messageSchema).max(500),
-  parentSessionId: z.string().max(200).optional(),
-  parentSessionTitle: z.string().max(200).optional(),
-  forkSummary: z.string().max(20_000).optional(),
 });
 export type Message = z.infer<typeof messageSchema>;
 export type ToolCall = z.infer<typeof toolCallSchema>;

@@ -22,7 +22,7 @@ export function Sidebar({ sessions, folders, rootSessionIds, active, collapsed, 
   const editingFolderRef = useRef<string | null>(null);
   const sessionById = useMemo(() => new Map(sessions.map((session) => [session.id, session])), [sessions]);
   const query = search.trim().toLowerCase();
-  const matchesSession = (session: Session) => !query || `${session.title} ${session.parentSessionTitle || ""} ${session.settings.workingDirectory}`.toLowerCase().includes(query);
+  const matchesSession = (session: Session) => !query || `${session.title} ${session.settings.workingDirectory}`.toLowerCase().includes(query);
   const rootSessions = rootSessionIds.map((id) => sessionById.get(id)).filter((session): session is Session => !!session && matchesSession(session));
   const folderSessions = (folder: WorkspaceFolder) => {
     const ids = query && folder.name.toLowerCase().includes(query) ? folder.sessionIds : folder.sessionIds.filter((id) => {
@@ -103,7 +103,7 @@ export function Sidebar({ sessions, folders, rootSessionIds, active, collapsed, 
       onDragStart={(event) => startDrag(event, session)} onDragEnd={() => { setDraggedId(""); setDropTarget(null); }}
       onDragOver={(event) => rowDragOver(event, session.id, folderId)} onDrop={(event) => dropOnSession(event, session.id, folderId)}
       className={`session-row ${session.id === active ? "selected" : ""} ${draggedId === session.id ? "is-dragging" : ""} ${target ? `drop-${target}` : ""}`}>
-      <button className="session-main" onClick={() => onSelect(session.id)} aria-label={session.title || "未命名对话"} title={[session.parentSessionTitle ? `${session.title} · 派生自 ${session.parentSessionTitle}` : session.title, session.settings.workingDirectory].filter(Boolean).join(" · ")}>
+      <button className="session-main" onClick={() => onSelect(session.id)} aria-label={session.title || "未命名对话"} title={[session.title, session.settings.workingDirectory].filter(Boolean).join(" · ")}>
         <span className="session-initial" aria-hidden="true"><MessageSquare size={15} /></span><span className="session-copy"><strong><span className="session-title-text">{session.title || "未命名对话"}</span>{running && <span className="session-running-indicator" role="img" aria-label="后台运行中" title="后台运行中" />}</strong></span>
       </button>
       {!collapsed && <div className="session-row-actions">

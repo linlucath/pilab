@@ -52,6 +52,7 @@ export interface WorkerSpec {
   id: string;
   name: string;
   rolePreset?: GptRolePreset;
+  ownerSessionId?: string;
   cwd: string;
   model: string;
   sessionDirectory: string;
@@ -235,7 +236,7 @@ export class GptSessionManager {
     entry.info.status = "starting";
     entry.info.error = undefined;
     const client = this.options.createTransport({
-      id: entry.info.id, name: entry.info.name, rolePreset: entry.info.rolePreset, cwd: entry.info.cwd,
+      id: entry.info.id, name: entry.info.name, rolePreset: entry.info.rolePreset, ownerSessionId: entry.info.ownerSessionId, cwd: entry.info.cwd,
       model: entry.info.model, sessionFile: entry.info.sessionFile,
       sessionDirectory: path.join(this.options.storageDir, "native"),
     }, (event) => this.handleEvent(entry, event), (error) => {

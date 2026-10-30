@@ -35,7 +35,13 @@ export function nativeTransportFactory(imageRoot = process.env.PI_LAB_IMAGE_ROOT
     else args.push("--session-id", session.id);
 
     // Each process uses Pi's existing credential store and the normal local shell environment.
-    const env = { ...process.env, PI_CODING_AGENT_DIR: getAgentDir(), PI_LAB_GPT_WORKER: "1", PI_LAB_IMAGE_ROOT: imageRoot };
+    const env = {
+      ...process.env,
+      PI_CODING_AGENT_DIR: getAgentDir(),
+      PI_LAB_GPT_WORKER: "1",
+      PI_LAB_IMAGE_ROOT: imageRoot,
+      PI_LAB_IMAGE_SESSION_ID: session.ownerSessionId || session.id,
+    };
     return new PiRpcProcess({ command, args, cwd: session.cwd, env, onEvent, onExit });
   };
 }
