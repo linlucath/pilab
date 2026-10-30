@@ -1,14 +1,34 @@
-import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import { mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Message } from "../shared/schema";
 import { applyWorkspaceChanges, mergeProjectWorkspace, projectWorkspaceSchema, workspaceChangesSchema, workspaceDataSchema, type ProjectWorkspace } from "../shared/workspace";
 
+type FileSignature = { dev: string; ino: string; size: string; mtimeNs: string; ctimeNs: string };
+
+function sameSignature(left: FileSignature | null, right: FileSignature | null) {
+  return left !== null && right !== null && left.dev === right.dev && left.ino === right.ino &&
+    left.size === right.size && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
+}
+
 export class ProjectWorkspaceStore {
   private queue: Promise<unknown> = Promise.resolve();
   private latest?: ProjectWorkspace;
+  private diskSignature: FileSignature | null = null;
   private snapshots = new Map<number, ProjectWorkspace>();
   constructor(private file: string) {}
+  private async signature(): Promise<FileSignature | null> {
+    try {
+      const file = await stat(this.file, { bigint: true });
+      return {
+        dev: String(file.dev), ino: String(file.ino), size: String(file.size),
+        mtimeNs: String(file.mtimeNs), ctimeNs: String(file.ctimeNs),
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+  }
   private remember(workspace: ProjectWorkspace) {
     this.latest = workspace;
     this.snapshots.set(workspace.revision, workspace);
@@ -20,16 +40,31 @@ export class ProjectWorkspaceStore {
     return result;
   }
   private async read(): Promise<ProjectWorkspace | null> {
-    try {
-      const stored = JSON.parse(await readFile(this.file, "utf8")) as Record<string, unknown>;
-      const workspace = projectWorkspaceSchema.parse(stored);
-      if (stored.version !== workspace.version || !Array.isArray(stored.folders) || !Array.isArray(stored.rootSessionIds))
-        await this.write(workspace);
-      return workspace;
-    }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw new Error("项目会话文件无法读取，请检查 .pi-lab/workspace.json。", { cause: error });
+    while (true) {
+      const before = await this.signature();
+      let contents: string;
+      try { contents = await readFile(this.file, "utf8"); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          const after = await this.signature();
+          if (after) continue;
+          this.diskSignature = null;
+          return null;
+        }
+        throw new Error("项目会话文件无法读取，请检查 .pi-lab/workspace.json。", { cause: error });
+      }
+      const after = await this.signature();
+      if (!sameSignature(before, after)) continue;
+      try {
+        const stored = JSON.parse(contents) as Record<string, unknown>;
+        const workspace = projectWorkspaceSchema.parse(stored);
+        this.diskSignature = after;
+        if (stored.version !== workspace.version || !Array.isArray(stored.folders) || !Array.isArray(stored.rootSessionIds))
+          await this.write(workspace);
+        return workspace;
+      } catch (error) {
+        throw new Error("项目会话文件无法读取，请检查 .pi-lab/workspace.json。", { cause: error });
+      }
     }
   }
   private async write(workspace: ProjectWorkspace) {
@@ -40,7 +75,24 @@ export class ProjectWorkspaceStore {
       try { await handle.writeFile(JSON.stringify(workspace, null, 2) + "\n"); await handle.sync(); }
       finally { await handle.close(); }
       await rename(temporary, this.file);
+      this.diskSignature = await this.signature();
     } finally { await unlink(temporary).catch(() => {}); }
+  }
+  getRevision() {
+    return this.exclusive(async () => {
+      const signature = await this.signature();
+      if (!signature) {
+        this.latest = undefined;
+        this.snapshots.clear();
+        this.diskSignature = null;
+        return null;
+      }
+      if (this.latest && sameSignature(signature, this.diskSignature)) return this.latest.revision;
+      const workspace = await this.read();
+      if (!workspace) return null;
+      this.remember(workspace);
+      return workspace.revision;
+    });
   }
   get() {
     return this.exclusive(async () => {
@@ -56,6 +108,7 @@ export class ProjectWorkspaceStore {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       });
       this.latest = undefined;
+      this.diskSignature = null;
       this.snapshots.clear();
     });
   }

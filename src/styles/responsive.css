@@ -77,17 +77,10 @@
   .worker-wake-banner > div { width: 100%; justify-content: flex-end; }
 }
 @media (max-width: 680px) {
-  .thread-tabs-bar { min-height: 38px; gap: 4px; padding: 4px 7px; }
-  .thread-tab-select strong { max-width: 96px; }
-  .thread-tabs-tools { gap: 2px; }
-  .thread-cleanup { display: none; }
-  .thread-refresh, .thread-archived-toggle { min-width: 26px; padding: 0 5px; }
-  .worker-thread-header { align-items: flex-start; flex-direction: column; gap: 6px; padding: 8px 11px; }
-  .worker-thread-actions { width: 100%; justify-content: flex-end; }
-  .worker-persona-content, .worker-tool-detail { grid-template-columns: 1fr; }
-  .worker-transcript-scroll { padding: 12px 10px; }
-  .worker-scroll-to-bottom { right: 12px; bottom: 12px; }
-  .worker-guidance-form { width: calc(100% - 16px); margin-bottom: max(8px, env(safe-area-inset-bottom)); }
-  .worker-guidance-form textarea { font-size: 10px; }
+  .thread-tabs-bar { min-height: 40px; padding: 4px 7px; }
+  .thread-tabs-track { gap: 2px; }
+  .thread-tab-option-wrap { max-width: 180px; }
+  .thread-worker-tab > span:last-child { max-width: 112px; }
+  .thread-tab-close { width: 22px; flex-basis: 22px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }

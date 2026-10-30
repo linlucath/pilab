@@ -34,6 +34,21 @@ test("v1 workspace migration places newest sessions first and persists schema v2
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test("revision lookup reuses the cached file version and detects writes from another store", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "pilab-workspace-revision-"));
+  try {
+    const file = path.join(directory, "workspace.json");
+    const writer = new ProjectWorkspaceStore(file);
+    const reader = new ProjectWorkspaceStore(file);
+    const initial = await writer.initialize(workspace());
+    assert.equal(await writer.getRevision(), initial.revision);
+    assert.equal(await reader.getRevision(), initial.revision);
+    const next = await writer.update({ baseRevision: initial.revision, sessions: [{ id: "a", title: "updated externally" }] });
+    assert.equal(await reader.getRevision(), next.revision);
+    assert.equal(await reader.getRevision(), next.revision);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("stale server updates are rebased onto the newest on-disk workspace revision", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "pilab-workspace-"));
   try {

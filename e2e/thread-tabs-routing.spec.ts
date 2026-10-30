@@ -32,129 +32,101 @@ test("LAY-09 URL session routes remain independent across tabs and refresh", asy
   }
 });
 
-test("GPT worker transcript loads the complete reply history by default", async ({ page }) => {
-  const ownerSessionId = "transcript-owner";
-  await seedWorkspace(page, [{ id: ownerSessionId, title: "Transcript owner", messages: [firstMessage] }], ownerSessionId);
-  const worker = { id: "worker-history", name: "history-worker", status: "idle", model: "codex-mock", updatedAt: 1,
+test("worker conversations use MessageStream with editable native Message[] history", async ({ page }) => {
+  const ownerSessionId = "worker-message-owner";
+  await seedWorkspace(page, [{ id: ownerSessionId, title: "Worker messages", messages: [firstMessage] }], ownerSessionId);
+  const worker = { id: "worker-edit", name: "edit-worker", role: "工程执行员", status: "running", model: "gpt-6", updatedAt: 1,
     ownerSessionId, hasUnreadReply: false, hasActiveWaiter: false, pendingQuestionCount: 0, recentTools: [], lastReplyPreview: "Latest reply" };
-  const history = Array.from({ length: 101 }, (_, index) => ({ sequence: index + 1, at: index + 1, type: "assistant", text: `Historical reply ${index + 1}` }));
-  let initialLimit: string | null | undefined;
-  await page.route(/\/api\/gpt-sessions\?/, (route) => route.fulfill({
-    contentType: "application/json", body: JSON.stringify({ sessions: [worker] }),
-  }));
-  await page.route("**/api/gpt-sessions/*/transcript?*", async (route) => {
-    const query = new URL(route.request().url()).searchParams;
-    if (query.has("after")) {
-      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ events: [], hasMore: false }) });
-      return;
-    }
-    initialLimit = query.get("limit");
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ events: history, hasMore: false }) });
-  });
-  await page.goto(`/?session=${ownerSessionId}`);
-  await page.locator(".thread-tab-select").filter({ hasText: "history-worker" }).click();
-  await expect(page.locator(".worker-thread-view")).toContainText("Historical reply 101");
-  await expect(page.getByText("Historical reply 1", { exact: true })).toBeVisible();
-  expect(initialLimit).toBeNull();
-  await expect(page.getByRole("button", { name: "读取更早记录" })).toHaveCount(0);
-});
-
-test("GPT worker tabs expose compact tool logs, persona context, and sticky scrolling", async ({ page }) => {
-  const ownerSessionId = "worker-ux-owner";
-  await seedWorkspace(page, [{ id: ownerSessionId, title: "Worker UX", messages: [firstMessage] }], ownerSessionId);
-  const worker = { id: "worker-ux", name: "ux-worker", role: "工程执行员", rolePreset: "implementer", status: "running", model: "codex-mock", updatedAt: 1,
-    ownerSessionId, hasUnreadReply: false, hasActiveWaiter: false, pendingQuestionCount: 0, recentTools: [], lastReplyPreview: "" };
-  const events = [
-    { sequence: 1, at: 1, type: "message_sent", text: "Implement the requested UX and verify the focused browser tests." },
-    { sequence: 2, at: 2, type: "tool_start", text: '{"path":"specs/behaviors.md"}', toolName: "read", toolCallId: "read-1" },
-    { sequence: 3, at: 3, type: "tool_progress", text: "Reading behavior expectations", toolName: "read", toolCallId: "read-1" },
-    { sequence: 4, at: 4, type: "tool_end", text: "Behavior expectations loaded", toolName: "read", toolCallId: "read-1" },
-    { sequence: 5, at: 5, type: "tool_start", text: '{"path":"src/MessageStream.tsx"}', toolName: "edit", toolCallId: "edit-1" },
-    { sequence: 6, at: 6, type: "tool_end", text: "Updated stream scrolling", toolName: "edit", toolCallId: "edit-1" },
-    ...Array.from({ length: 25 }, (_, index) => ({ sequence: index + 7, at: index + 7, type: "assistant", text: `History ${index + 1} · ${"worker history content ".repeat(18)}` })),
+  let messages = [
+    { id: "worker-system", role: "system", content: "Worker system instructions", enabled: true },
+    { id: "worker-user", role: "user", content: "Inspect this project", enabled: true },
+    { id: "worker-assistant", role: "assistant", content: "Worker reply is editable.", enabled: true },
   ];
   await page.route(/\/api\/gpt-sessions\?/, (route) => route.fulfill({
     contentType: "application/json", body: JSON.stringify({ sessions: [worker] }),
   }));
-  await page.route("**/api/gpt-sessions/*/transcript?*", async (route) => {
-    const query = new URL(route.request().url()).searchParams;
-    if (query.has("after")) {
-      await route.fulfill({ contentType: "application/json", body: JSON.stringify({
-        events: [{ sequence: 32, at: 32, type: "assistant", text: "New reply arrived while reading history." }],
-        persona: { dispatchContext: events[0].text },
-      }) });
-      return;
-    }
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify({
-      events, hasMore: false,
-      persona: { dispatchContext: events[0].text },
-    }) });
-  });
+  await page.route("**/api/gpt-sessions/*/messages?*", (route) => route.fulfill({
+    contentType: "application/json", body: JSON.stringify({ session: worker, messages }),
+  }));
+
   await page.goto(`/?session=${ownerSessionId}`);
-  await page.locator(".thread-tab-select").filter({ hasText: "ux-worker" }).click();
-  const persona = page.locator(".worker-persona");
-  await expect(persona).toContainText("工兵人设 · 工程执行员 implementer");
-  await persona.getByRole("button").click();
-  await expect(persona).toContainText("System prompt");
-  await expect(persona).toContainText("当前职责（工程执行员）：按任务范围完成实现");
-  await expect(persona).toContainText("Implement the requested UX and verify the focused browser tests.");
+  await expect(page.getByRole("tab", { name: "💬 主会话 (Gemini)" })).toBeVisible();
+  await page.getByRole("tab", { name: /edit-worker/ }).click();
+  await expect(page.locator(".message-stream")).toContainText("Worker reply is editable.");
+  await expect(page.locator(".message-stream")).toContainText("gpt-6 · edit-worker");
+  await page.locator(".system-banner").getByRole("button", { name: /展开 \/ 编辑/ }).click();
+  await expect(page.locator(".system-banner")).toContainText("Worker system instructions");
 
-  const toolGroup = page.locator(".worker-tool-group");
-  await expect(toolGroup).toHaveCount(1);
-  await expect(toolGroup.locator(".worker-tool-call").first()).toBeHidden();
-  await toolGroup.locator(":scope > summary").click();
-  await expect(toolGroup).toContainText("已读取 specs/behaviors.md");
-  await expect(toolGroup).toContainText("已编辑 src/MessageStream.tsx");
-  const readCall = toolGroup.locator(".worker-tool-call").first();
-  await readCall.locator(":scope > summary").click();
-  await expect(readCall).toContainText("Behavior expectations loaded");
-  await persona.getByRole("button").click();
+  const reply = page.locator('[data-message-id="worker-assistant"]');
+  await reply.hover();
+  await expect(reply.getByRole("button", { name: "复制消息" })).toBeVisible();
+  await expect(reply.getByRole("button", { name: "从此处分支" })).toBeVisible();
+  await expect(reply.getByRole("button", { name: "在下方插入消息" })).toBeVisible();
+  await reply.getByRole("button", { name: "编辑消息" }).click();
+  await reply.getByRole("textbox", { name: "编辑 gpt-6 · edit-worker 消息" }).fill("Edited through the shared message stream.");
+  await reply.getByRole("button", { name: "保存消息" }).first().click();
+  await expect(reply).toContainText("Edited through the shared message stream.");
 
-  const scroll = page.locator(".worker-transcript-scroll");
-  await expect.poll(() => scroll.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
-  await scroll.evaluate((element) => { element.scrollTop = 0; element.dispatchEvent(new Event("scroll")); });
-  await expect(page.getByRole("button", { name: "跳到底部工兵记录" })).toBeVisible();
-  await expect(page.getByText("New reply arrived while reading history.", { exact: true })).toBeVisible({ timeout: 6_000 });
-  expect(await scroll.evaluate((element) => element.scrollTop)).toBeLessThan(80);
-  await page.getByRole("button", { name: "跳到底部工兵记录" }).click();
-  await expect.poll(() => scroll.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(80);
-  await page.setViewportSize({ width: 390, height: 844 });
-  await persona.getByRole("button").click();
-  const personaColumns = await persona.locator(".worker-persona-content").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length);
-  expect(personaColumns).toBe(1);
-  const transcriptWidth = await page.locator(".worker-thread-view").evaluate((element) => ({ client: element.clientWidth, scroll: element.scrollWidth }));
-  expect(transcriptWidth.scroll).toBeLessThanOrEqual(transcriptWidth.client);
+  const prompt = page.locator('[data-message-id="worker-user"]');
+  await prompt.hover();
+  await prompt.getByRole("button", { name: "删除消息" }).click();
+  await expect(page.locator('[data-message-id="worker-user"]')).toHaveCount(0);
+
+  messages = [...messages, { id: "worker-next-reply", role: "assistant", content: "Worker replied after editing.", enabled: true }];
+  await expect(page.locator(".message-stream")).toContainText("Worker replied after editing.");
+  await expect(reply).toContainText("Edited through the shared message stream.");
+  await expect(page.locator('[data-message-id="worker-user"]')).toHaveCount(0);
 });
 
-test("GPT worker tabs expose owned transcripts and send guidance without the old workbench drawer", async ({ page }) => {
-  const ownerSessionId = "thread-owner";
-  await seedWorkspace(page, [{ id: ownerSessionId, title: "Owner", messages: [firstMessage] }], ownerSessionId);
-  let sessions = [
-    { id: "worker-live", name: "live-worker", role: "implementer", status: "running", model: "codex-mock", updatedAt: 1,
-      ownerSessionId, hasUnreadReply: false, hasActiveWaiter: false, pendingQuestionCount: 0, recentTools: [], lastReplyPreview: "" },
-    { id: "worker-idle", name: "idle-worker", status: "idle", model: "codex-mock", updatedAt: 2,
-      ownerSessionId, hasUnreadReply: true, hasActiveWaiter: false, pendingQuestionCount: 0, recentTools: [], lastReplyPreview: "Completed" },
+test("worker tool history and steering share the main conversation layout while the worker runs", async ({ page }) => {
+  const ownerSessionId = "worker-tool-owner";
+  await seedWorkspace(page, [{ id: ownerSessionId, title: "Worker tools", messages: [firstMessage] }], ownerSessionId);
+  const worker = { id: "worker-running", name: "steer-worker", role: "implementer", status: "running", model: "gpt-6", updatedAt: 1,
+    ownerSessionId, hasUnreadReply: false, hasActiveWaiter: false, pendingQuestionCount: 0, recentTools: [], lastReplyPreview: "" };
+  const base = [
+    { id: "stream-system", role: "system", content: "Worker system prompt", enabled: true },
+    { id: "stream-user", role: "user", content: "Read a file", enabled: true },
+    { id: "stream-tool-assistant", role: "assistant", content: "I am checking the file.", enabled: true,
+      providerState: { api: "openai-responses", provider: "openai-codex", model: "gpt-6", thinking: [{ type: "thinking", thinking: "I should inspect the file." }] },
+      toolCalls: [{ id: "stream-call", name: "read", arguments: JSON.stringify({ path: "README.md" }) }] },
+    { id: "stream-tool-result", role: "tool", content: "README contents are available.", enabled: true, toolCallId: "stream-call", toolName: "read" },
+    ...Array.from({ length: 36 }, (_, index) => ({ id: `stream-history-${index}`, role: "assistant", content: `History ${index + 1} · ${"worker conversation content ".repeat(16)}`, enabled: true })),
   ];
   let sentBody: Record<string, unknown> | undefined;
-  await page.route(/\/api\/gpt-sessions\?/, async (route) => route.fulfill({
-    contentType: "application/json", body: JSON.stringify({ sessions }),
+  let interruptCalls = 0;
+  await page.route(/\/api\/gpt-sessions\?/, (route) => route.fulfill({
+    contentType: "application/json", body: JSON.stringify({ sessions: [worker] }),
   }));
-  await page.route("**/api/gpt-sessions/*/transcript?*", async (route) => route.fulfill({
-    contentType: "application/json",
-    body: JSON.stringify({ events: [{ sequence: 1, at: 1, type: "assistant", text: "Transcript marker" }], hasMore: false }),
+  await page.route("**/api/gpt-sessions/*/messages?*", (route) => route.fulfill({
+    contentType: "application/json", body: JSON.stringify({ session: worker, messages: base }),
   }));
   await page.route("**/api/gpt-sessions/*/send", async (route) => {
     sentBody = route.request().postDataJSON() as Record<string, unknown>;
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ accepted: true }) });
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ session: worker, delivery: "accepted" }) });
   });
-  await page.goto("/?session=thread-owner");
+  await page.route("**/api/gpt-sessions/interrupt", async (route) => {
+    interruptCalls++;
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ session: worker }) });
+  });
 
-  await expect(page.locator(".thread-tab").filter({ hasText: "live-worker" })).toContainText("运行中");
-  await expect(page.locator(".thread-tab").filter({ hasText: "idle-worker" })).toContainText("空闲");
-  await page.locator(".thread-tab-select").filter({ hasText: "live-worker" }).click();
-  await expect(page.locator(".worker-thread-view")).toContainText("Transcript marker");
-  await page.getByRole("textbox", { name: "指导工兵" }).fill("Please verify the edge case");
+  await page.goto(`/?session=${ownerSessionId}`);
+  await page.getByRole("tab", { name: /steer-worker/ }).click();
+  const stream = page.locator(".message-stream");
+  await expect(stream).toContainText("History 36");
+  await expect(stream).toContainText("gpt-6 · steer-worker");
+  const tool = page.locator(".tool-step-row").first();
+  await tool.locator(":scope > summary").click();
+  await expect(tool).toContainText("README contents are available.");
+  await expect(tool.getByText("gpt-6 · steer-worker 思考过程")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "给工兵发送指导" })).toHaveAttribute("placeholder", "给工兵发送直接指导 (Steer)…");
+  await page.getByRole("textbox", { name: "给工兵发送指导" }).fill("Please focus on the failing test.");
   await page.getByRole("button", { name: "发送指导" }).click();
-  await expect.poll(() => sentBody).toMatchObject({ ownerSessionId, message: "Please verify the edge case" });
-  await expect(page.locator(".right-panel")).toHaveCount(0);
+  await expect.poll(() => sentBody).toMatchObject({ ownerSessionId, message: "Please focus on the failing test.", mode: "steer" });
+  await expect(stream).toContainText("Please focus on the failing test.");
+
+  await page.locator(".thread-tab-option-wrap").filter({ hasText: "steer-worker" }).hover();
+  await page.getByRole("button", { name: "关闭工兵标签 steer-worker" }).click();
+  await expect(page.getByRole("tab", { name: "💬 主会话 (Gemini)" })).toHaveAttribute("aria-selected", "true");
+  expect(interruptCalls).toBe(0);
+  await expect(page.locator(".thread-worker-tab")).toHaveCount(0);
 });

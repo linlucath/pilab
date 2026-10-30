@@ -1,4 +1,4 @@
-import { Children, cloneElement, isValidElement, useMemo, useState, type ReactElement, type ReactNode } from "react";
+import { Children, cloneElement, isValidElement, memo, useMemo, useState, type ReactElement, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkBreaks from "remark-breaks";
@@ -93,7 +93,7 @@ function renderCodeBlock(children: ReactNode) {
   return <CodeBlock source={source} language={language} />;
 }
 
-export function Markdown({ content, highlight = "", trailing }: { content: string; highlight?: string; trailing?: ReactNode }) {
+export const Markdown = memo(function Markdown({ content, highlight = "", trailing }: { content: string; highlight?: string; trailing?: ReactNode }) {
   const hasTrailing = trailing !== undefined && trailing !== null && trailing !== false;
   const components = useMemo<Components>(() => ({
     a({ href, title, children }) {
@@ -146,4 +146,4 @@ export function Markdown({ content, highlight = "", trailing }: { content: strin
       {content}
     </ReactMarkdown>
   </div>;
-}
+}, (previous, next) => previous.content === next.content && previous.highlight === next.highlight && previous.trailing === next.trailing);

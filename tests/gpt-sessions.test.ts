@@ -5,13 +5,31 @@ import { once } from "node:events";
 import { mkdtemp, mkdir, writeFile, readFile, access, rm, cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { getPackageDir } from "@earendil-works/pi-coding-agent";
+import { getPackageDir, parseSessionEntries } from "@earendil-works/pi-coding-agent";
 import { GptSessionManager, type SessionInfo } from "../extensions/pi-gpt-subagent/sessions";
 import { nativeTransportFactory } from "../extensions/pi-gpt-subagent/native";
 import { createSessionTools } from "../extensions/pi-gpt-subagent/tools";
+import { workerMessagesFromNativeEntries } from "../server/gpt-subagent";
 import { PiRpcProcess, type RpcTransport } from "../extensions/pi-gpt-subagent/rpc";
 
 const model = "gpt-session-fixture";
+
+test("worker native Pi history becomes editable standard messages with the role prompt first", () => {
+  const entries = parseSessionEntries([
+    JSON.stringify({ type: "session", version: 3, id: "worker-test", timestamp: new Date(0).toISOString(), cwd: "/tmp" }),
+    JSON.stringify({ type: "message", id: "user-entry", parentId: null, timestamp: new Date(1).toISOString(), message: { role: "user", content: "inspect the project", timestamp: 1 } }),
+    JSON.stringify({ type: "message", id: "assistant-entry", parentId: "user-entry", timestamp: new Date(2).toISOString(), message: { role: "assistant", content: [{ type: "text", text: "I found a paired tool call." }, { type: "toolCall", id: "read-call", name: "read", arguments: { path: "README.md" } }], api: "openai-completions", provider: "openai-codex", model: "gpt-6", timestamp: 2, stopReason: "toolUse", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } }),
+    JSON.stringify({ type: "message", id: "tool-entry", parentId: "assistant-entry", timestamp: new Date(3).toISOString(), message: { role: "toolResult", toolCallId: "read-call", toolName: "read", content: [{ type: "text", text: "README contents" }], isError: false, timestamp: 3 } }),
+  ].join("\n"));
+  const messages = workerMessagesFromNativeEntries(entries, "implementer");
+  assert.equal(messages[0].role, "system");
+  assert.match(messages[0].content, /工程执行员/);
+  assert.deepEqual(messages.slice(1).map((message) => message.role), ["user", "assistant", "tool"]);
+  assert.equal(messages[2].content, "I found a paired tool call.");
+  assert.equal(messages[2].toolCalls?.[0].id, "read-call");
+  assert.equal(messages[3].toolCallId, "read-call");
+  assert.equal(messages[3].content, "README contents");
+});
 function text(content: any): string {
   return typeof content === "string" ? content : (content || []).filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n");
 }

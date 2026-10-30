@@ -1,13 +1,19 @@
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { Message as PiMessage } from "@earendil-works/pi-ai";
+import { buildSessionProjection, parseSessionEntries } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import { GptSessionManager, type ProgressEvent, type SessionInfo } from "../extensions/pi-gpt-subagent/sessions";
+import { gptWorkerSystemPrompt } from "../extensions/pi-gpt-subagent/persona";
 import { nativeTransportFactory, sessionStorageDir } from "../extensions/pi-gpt-subagent/native";
 import { createSessionTools, type ConversationHistory } from "../extensions/pi-gpt-subagent/tools";
 import { piRuntime } from "./pi-subscription";
 import { projectImages } from "./images";
 import type { GptSessionSummary } from "../shared/gpt-sessions";
+import type { Message } from "../shared/schema";
+import { fromPiMessage } from "./transcript";
 
 const managers = new Map<string, GptSessionManager>();
 
@@ -76,6 +82,34 @@ export async function listGptSessions(cwdInput?: string, ownerInput?: string): P
   const owner = checkedOwnerSessionId(ownerInput);
   const manager = managerFor(cwd);
   return manager.list(owner).map((session) => summarize(manager, session));
+}
+
+export function workerMessagesFromNativeEntries(entries: ReturnType<typeof parseSessionEntries>, rolePreset?: SessionInfo["rolePreset"]): Message[] {
+  const messages: Message[] = [{ id: "worker-system-prompt", role: "system", content: gptWorkerSystemPrompt(rolePreset), enabled: true }];
+  const projection = buildSessionProjection(entries.filter((entry) => entry.type !== "session"));
+  for (const projected of projection.entries) {
+    projected.messages.forEach((message, index) => {
+      if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult") return;
+      messages.push(fromPiMessage(message as PiMessage, `worker-${projected.sourceEntry.id}-${index}`));
+    });
+  }
+  return messages;
+}
+
+export async function readGptSessionMessages(cwdInput: string | undefined, name: string, ownerInput: string) {
+  const cwd = await checkedCwd(cwdInput);
+  const owner = checkedOwnerSessionId(ownerInput);
+  const manager = managerFor(cwd);
+  const session = manager.assertOwner(name, owner);
+  let messages = workerMessagesFromNativeEntries([], session.rolePreset);
+  if (session.sessionFile && existsSync(session.sessionFile)) {
+    const entries = parseSessionEntries(await readFile(session.sessionFile, "utf8"));
+    messages = workerMessagesFromNativeEntries(entries, session.rolePreset);
+  }
+  if (session.partialText.trim()) messages.push({
+    id: `worker-live-${session.id}`, role: "assistant", content: session.partialText, enabled: true,
+  });
+  return { session: summarize(manager, session), messages };
 }
 
 export async function readGptSessionTranscript(cwdInput: string | undefined, name: string, ownerInput: string, options: { after?: number; before?: number; limit?: number } = {}) {

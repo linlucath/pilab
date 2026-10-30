@@ -70,8 +70,16 @@ export default function App() {
   const [piConnection, setPiConnection] = useState<PiConnection | null>(null);
   const [gptSessionSnapshot, setGptSessionSnapshot] = useState<{ ownerSessionId: string; cwd: string; sessions: GptSessionSummary[] }>({ ownerSessionId: "", cwd: "", sessions: [] });
   const [selectedWorkerId, setSelectedWorkerId] = useState("");
+  const [workerMessagesById, setWorkerMessagesById] = useState<Record<string, Message[]>>({});
+  const [pendingWorkerMessagesById, setPendingWorkerMessagesById] = useState<Record<string, Message[]>>({});
+  const [workerMessagesError, setWorkerMessagesError] = useState("");
+  const workerMessagesRef = useRef<Record<string, Message[]>>({});
+  const workerMessagesDirtyRef = useRef(new Set<string>());
+  const workerMessageBaselineRef = useRef<Record<string, Map<string, Message>>>({});
+  const pendingWorkerMessagesRef = useRef<Record<string, Message[]>>({});
   const [gptSessionsError, setGptSessionsError] = useState("");
-  const [composerText, setComposerText] = useState("");
+  workerMessagesRef.current = workerMessagesById;
+  pendingWorkerMessagesRef.current = pendingWorkerMessagesById;
   const [workerWakeNotices, setWorkerWakeNotices] = useState<WorkerWakeNotice[]>([]);
   const workerSnapshotsRef = useRef(new Map<string, Map<string, GptSessionSummary>>());
   const activeRunsRef = useRef(activeRuns);
@@ -212,6 +220,98 @@ export default function App() {
   }, [effectiveCwd, workspaceRef]);
   const visibleGptSessions = gptSessionSnapshot.ownerSessionId === session.id && gptSessionSnapshot.cwd === effectiveCwd
     ? gptSessionSnapshot.sessions.filter((worker) => worker.ownerSessionId === session.id) : [];
+  const selectedWorker = visibleGptSessions.find((worker) => worker.id === selectedWorkerId);
+  const currentMessages = selectedWorker ? workerMessagesById[selectedWorker.id] || [] : session.messages;
+  const currentContextMetrics = selectedWorker ? contextTokenMetrics(currentMessages) : contextMetrics;
+  const updateSelectedWorkerMessages = (update: (messages: Message[]) => Message[], markDirty = true) => {
+    const workerId = selectedWorkerId;
+    if (!workerId) return false;
+    if (markDirty) workerMessagesDirtyRef.current.add(workerId);
+    setWorkerMessagesById((current) => ({ ...current, [workerId]: update(current[workerId] || []) }));
+    return true;
+  };
+  const updateWorkerSummary = useCallback((worker: GptSessionSummary) => {
+    if (worker.ownerSessionId !== session.id) return;
+    const snapshotKey = `${session.id}\\0${normalizedWorkerCwd(effectiveCwd)}`;
+    const previous = workerSnapshotsRef.current.get(snapshotKey);
+    if (previous) workerSnapshotsRef.current.set(snapshotKey, new Map(previous).set(worker.id, worker));
+    setGptSessionSnapshot((current) => {
+      if (current.ownerSessionId !== session.id || current.cwd !== effectiveCwd) return current;
+      const index = current.sessions.findIndex((item) => item.id === worker.id);
+      const sessions = index < 0 ? [...current.sessions, worker] : current.sessions.map((item) => item.id === worker.id ? worker : item);
+      return JSON.stringify(current.sessions) === JSON.stringify(sessions)
+        ? current : { ...current, sessions };
+    });
+  }, [effectiveCwd, session.id]);
+  useEffect(() => {
+    setSelectedWorkerId("");
+    setWorkerMessagesError("");
+  }, [session.id]);
+  useEffect(() => {
+    if (!selectedWorker) return;
+    const workerId = selectedWorker.id;
+    let cancelled = false;
+    let loading = false;
+    const controller = new AbortController();
+    const loadMessages = async () => {
+      if (loading || cancelled) return;
+      loading = true;
+      try {
+        const query = new URLSearchParams({ cwd: effectiveCwd, ownerSessionId: session.id });
+        const response = await fetch(`/api/gpt-sessions/${encodeURIComponent(selectedWorker.name)}/messages?${query}`, { cache: "no-store", signal: controller.signal });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "读取工兵消息失败。");
+        if (cancelled) return;
+        if (data.session) updateWorkerSummary(data.session);
+        const serverMessages = Array.isArray(data.messages) ? data.messages as Message[] : [];
+        const pending = pendingWorkerMessagesRef.current[workerId] || [];
+        const remaining = [...pending];
+        for (const message of serverMessages) {
+          const index = remaining.findIndex((item) => item.role === message.role && item.content === message.content);
+          if (index >= 0) remaining.splice(index, 1);
+        }
+        const remainingIds = new Set(remaining.map((message) => message.id));
+        const matchedPendingIds = new Set(pending.filter((message) => !remainingIds.has(message.id)).map((message) => message.id));
+        setPendingWorkerMessagesById((current) => ({ ...current, [workerId]: remaining }));
+        const localMessages = (workerMessagesRef.current[workerId] || []).filter((message) => !matchedPendingIds.has(message.id));
+        const baseline = workerMessageBaselineRef.current[workerId] || new Map<string, Message>();
+        let messages = [...serverMessages, ...remaining];
+        if (workerMessagesDirtyRef.current.has(workerId)) {
+          const localById = new Map(localMessages.map((message) => [message.id, message]));
+          const serverIds = new Set(serverMessages.map((message) => message.id));
+          const resolvedById = new Map<string, Message>();
+          for (const message of serverMessages) {
+            const local = localById.get(message.id);
+            const previous = baseline.get(message.id);
+            if (previous && !local) continue;
+            resolvedById.set(message.id, local && previous && JSON.stringify(local) !== JSON.stringify(previous) ? local : message);
+          }
+          messages = [
+            ...localMessages.flatMap((message) => {
+              const resolved = resolvedById.get(message.id);
+              if (resolved) return [resolved];
+              return !baseline.has(message.id) && !serverIds.has(message.id) ? [message] : [];
+            }),
+            ...serverMessages
+              .filter((message) => !localById.has(message.id) && !baseline.has(message.id))
+              .map((message) => resolvedById.get(message.id) || message),
+            ...remaining.filter((message) => !localById.has(message.id)),
+          ];
+        }
+        workerMessageBaselineRef.current[workerId] = new Map(serverMessages.map((message) => [message.id, message]));
+        setWorkerMessagesById((current) => {
+          return JSON.stringify(current[workerId] || []) === JSON.stringify(messages)
+            ? current : { ...current, [workerId]: messages };
+        });
+        setWorkerMessagesError("");
+      } catch (error) {
+        if (!controller.signal.aborted) setWorkerMessagesError(error instanceof Error ? error.message : "读取工兵消息失败。");
+      } finally { loading = false; }
+    };
+    void loadMessages();
+    const timer = window.setInterval(() => void loadMessages(), activeWorkerStatuses.has(selectedWorker.status) ? 2_000 : 5_000);
+    return () => { cancelled = true; controller.abort(); window.clearInterval(timer); };
+  }, [selectedWorker?.id, selectedWorker?.name, selectedWorker?.status, session.id, effectiveCwd, updateWorkerSummary]);
   const fetchGptSessions = useCallback(async (signal?: AbortSignal) => {
     if (!effectiveCwd) return;
     const query = new URLSearchParams({ cwd: effectiveCwd, ownerSessionId: session.id });
@@ -226,27 +326,10 @@ export default function App() {
       if (!signal?.aborted) setGptSessionsError(cause instanceof Error ? cause.message : "读取工兵会话失败。");
     }
   }, [effectiveCwd, reportGptSessions, session.id]);
-  const updateWorkerSummary = useCallback((worker: GptSessionSummary) => {
-    if (worker.ownerSessionId !== session.id) return;
-    const snapshotKey = `${session.id}\\0${normalizedWorkerCwd(effectiveCwd)}`;
-    const previous = workerSnapshotsRef.current.get(snapshotKey);
-    if (previous) workerSnapshotsRef.current.set(snapshotKey, new Map(previous).set(worker.id, worker));
-    setGptSessionSnapshot((current) => {
-      if (current.ownerSessionId !== session.id || current.cwd !== effectiveCwd) return current;
-      const index = current.sessions.findIndex((item) => item.id === worker.id);
-      const sessions = index < 0 ? [...current.sessions, worker] : current.sessions.map((item) => item.id === worker.id ? worker : item);
-      return JSON.stringify(current.sessions) === JSON.stringify(sessions)
-        ? current : { ...current, sessions };
-    });
-  }, [effectiveCwd, session.id]);
-  const updateWorkerSummaries = useCallback((workers: GptSessionSummary[]) => {
-    reportGptSessions(session.id, workers);
-  }, [reportGptSessions, session.id]);
   const activeWakeNotices = workerWakeNotices.filter((notice) => notice.sessionId === session.id);
   const workerWakeNotice = activeWakeNotices.length ? {
     names: [...new Set(activeWakeNotices.flatMap((notice) => notice.names))],
   } : null;
-  const updateComposerText = (value: string) => setComposerText(value);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -265,7 +348,7 @@ export default function App() {
       finally { polling = false; }
     };
     void poll();
-    const timer = window.setInterval(() => void poll(), 3_000);
+    const timer = window.setInterval(() => void poll(), 1_200);
     return () => { cancelled = true; controller.abort(); window.clearInterval(timer); };
   }, [ready, effectiveCwd, fetchGptSessions]);
   useEffect(() => {
@@ -336,7 +419,7 @@ export default function App() {
   }, []);
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.key !== "Enter" || busyForSessionRef.current(workspaceRef.current.active)) return;
+      if (selectedWorkerId || !(event.metaKey || event.ctrlKey) || event.key !== "Enter" || busyForSessionRef.current(workspaceRef.current.active)) return;
       const target = event.target;
       if (target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
       event.preventDefault();
@@ -356,7 +439,18 @@ export default function App() {
   const updateSetting = <K extends keyof Settings>(key: K, value: Settings[K]) => updateActive((current) => ({ ...current, settings: { ...current.settings, [key]: value } }));
   const currentRunLocksActiveSession = () => busyForSessionRef.current(workspaceRef.current.active);
   const updateMessage = (id: string, values: Partial<Message>) => {
-    if (currentRunLocksActiveSession()) return;
+    if (!selectedWorkerId && currentRunLocksActiveSession()) return;
+    if (selectedWorkerId) {
+      const target = workerMessagesRef.current[selectedWorkerId]?.find((message) => message.id === id);
+      if (!target) return;
+      if (values.role !== undefined && values.role !== target.role &&
+        (target.role === "tool" || !!target.toolCalls?.length || values.role === "tool")) {
+        setNotice("不能直接更改工具调用或结果的角色，以免破坏工具配对。");
+        return;
+      }
+      updateSelectedWorkerMessages((messages) => patchMessageWithToolPairs(messages, id, values));
+      return;
+    }
     const active = workspaceRef.current.sessions.find((item) => item.id === workspaceRef.current.active);
     const target = active?.messages.find((message) => message.id === id);
     if (!active || !target) return;
@@ -372,7 +466,11 @@ export default function App() {
     }));
   };
   const updateCall = (message: Message, index: number, values: Partial<ToolCall>) => {
-    if (currentRunLocksActiveSession()) return;
+    if (!selectedWorkerId && currentRunLocksActiveSession()) return;
+    if (selectedWorkerId) {
+      updateSelectedWorkerMessages((messages) => patchToolCallWithResult(messages, message.id, index, { ...values, ...(values.id ? { thoughtSignature: undefined } : {}) }));
+      return;
+    }
     updateActive((current) => ({
       ...current,
       messages: patchToolCallWithResult(current.messages, message.id, index, { ...values, ...(values.id ? { thoughtSignature: undefined } : {}) }),
@@ -380,8 +478,16 @@ export default function App() {
     }));
   };
   const addMessage = (after?: number, role: Message["role"] = "user") => {
-    if (currentRunLocksActiveSession()) return;
+    if (!selectedWorkerId && currentRunLocksActiveSession()) return;
     const id = uid();
+    if (selectedWorkerId) {
+      updateSelectedWorkerMessages((current) => {
+        const messages = [...current];
+        messages.splice(after === undefined ? messages.length : Math.max(0, Math.min(after + 1, messages.length)), 0, { id, role, content: "", enabled: true });
+        return messages;
+      });
+      return;
+    }
     updateActive((current) => {
       const messages = [...current.messages];
       messages.splice(after === undefined ? messages.length : Math.max(0, Math.min(after + 1, messages.length)), 0, { id, role, content: "", enabled: true });
@@ -390,13 +496,20 @@ export default function App() {
     setScrollRequest((value) => value + 1);
   };
   const moveMessage = (index: number, delta: number) => {
-    if (currentRunLocksActiveSession()) return;
+    if (!selectedWorkerId && currentRunLocksActiveSession()) return;
     const move = (messages: Message[]) => {
       if (index + delta < 0 || index + delta >= messages.length) return messages;
       const next = [...messages];
       [next[index], next[index + delta]] = [next[index + delta], next[index]];
       return next;
     };
+    if (selectedWorkerId) {
+      const messages = workerMessagesRef.current[selectedWorkerId] || [];
+      const issue = toolHistoryError(move(messages).filter((message) => message.enabled));
+      if (issue) { setNotice(`无法移动这条消息：${issue}`); return; }
+      updateSelectedWorkerMessages(move);
+      return;
+    }
     const active = workspaceRef.current.sessions.find((item) => item.id === workspaceRef.current.active);
     if (!active) return;
     const issue = toolHistoryError(move(active.messages).filter((message) => message.enabled));
@@ -407,7 +520,11 @@ export default function App() {
     });
   };
   const deleteMessage = (id: string) => {
-    if (currentRunLocksActiveSession()) return;
+    if (!selectedWorkerId && currentRunLocksActiveSession()) return;
+    if (selectedWorkerId) {
+      updateSelectedWorkerMessages((messages) => deleteMessageWithToolPairs(messages, id));
+      return;
+    }
     const activeId = workspaceRef.current.active;
     const active = workspaceRef.current.sessions.find((item) => item.id === activeId);
     const target = active?.messages.find((message) => message.id === id);
@@ -432,7 +549,11 @@ export default function App() {
     }));
   };
   const deleteToolCall = (assistantId: string, callId: string) => {
-    if (currentRunLocksActiveSession()) return;
+    if (!selectedWorkerId && currentRunLocksActiveSession()) return;
+    if (selectedWorkerId) {
+      updateSelectedWorkerMessages((messages) => deleteToolCallWithResult(messages, assistantId, callId));
+      return;
+    }
     updateActive((current) => ({
       ...current,
       messages: deleteToolCallWithResult(current.messages, assistantId, callId),
@@ -440,7 +561,15 @@ export default function App() {
     }));
   };
   const addManualToolResult = (assistantId: string, callId: string, content: string, isError: boolean): boolean => {
-    if (currentRunLocksActiveSession()) return false;
+    if (!selectedWorkerId && currentRunLocksActiveSession()) return false;
+    if (selectedWorkerId) {
+      const messages = workerMessagesRef.current[selectedWorkerId] || [];
+      try {
+        const next = createToolResult(messages, assistantId, callId, content, isError);
+        updateSelectedWorkerMessages(() => next);
+        return true;
+      } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); return false; }
+    }
     const active = workspaceRef.current.sessions.find((item) => item.id === workspaceRef.current.active);
     if (!active) return false;
     let messages: Message[];
@@ -504,6 +633,13 @@ export default function App() {
     });
   };
   const branchAt = (message: Message, index: number) => {
+    if (selectedWorkerId) {
+      const messages = workerMessagesRef.current[selectedWorkerId] || [];
+      const end = completeToolBranchEnd(messages, index);
+      if (end === null) { setNotice("无法在未完成的工具调用处创建分支；请先补齐工具结果。"); return; }
+      if (selectedWorker) void createSession({ ...session, title: `${selectedWorker.name} · 分支`, messages: messages.slice(0, end + 1) });
+      return;
+    }
     if (busyForSessionRef.current(workspaceRef.current.active)) return;
     const currentSession = workspaceRef.current.sessions.find((item) => item.id === workspaceRef.current.active);
     if (!currentSession) return;
@@ -595,17 +731,48 @@ export default function App() {
     let runControl: RunControl | null = null;
     let text = ""; let thought = ""; let currentMessageId = uid(); let terminalReceived = false; let errorEventReceived = false; let failureMessage = "";
     let finalGenerationStatus = "done";
-    const textById = new Map<string, string>(); const trace: Message[] = []; const requests: unknown[] = [];
+    const textById = new Map<string, string>(); const pendingTextIds = new Set<string>(); const trace: Message[] = []; const requests: unknown[] = [];
+    let pendingThinkingText = "";
+    let streamTextFlushTimer: number | undefined;
     const updateRun = (values: Partial<Run>) => setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === sessionId ? { ...item, runs: item.runs.map((run) => run.id === runId ? { ...run, ...values, elapsed: Date.now() - started } : run) } : item) }));
     const upsert = (message: Message) => {
       const index = trace.findIndex((item) => item.id === message.id); if (index < 0) trace.push(message); else trace[index] = { ...trace[index], ...message };
       setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id !== sessionId ? item : { ...item, messages: item.messages.some((entry) => entry.id === message.id) ? item.messages.map((entry) => entry.id === message.id ? { ...entry, ...message } : entry) : [...item.messages, message] }) }));
       updateRun({ trace: [...trace] });
     };
+    const flushPendingText = () => {
+      if (streamTextFlushTimer !== undefined) window.clearTimeout(streamTextFlushTimer);
+      streamTextFlushTimer = undefined;
+      if (!pendingTextIds.size && !pendingThinkingText) return;
+      if (pendingTextIds.size) {
+        for (const id of pendingTextIds) {
+          const content = textById.get(id);
+          if (content !== undefined) upsert({ id, role: "assistant", content, enabled: true });
+        }
+        pendingTextIds.clear();
+        text = [...textById.values()].filter(Boolean).join("\n\n");
+        updateRun({ output: text });
+      }
+      if (pendingThinkingText) {
+        const delta = pendingThinkingText;
+        pendingThinkingText = "";
+        updateStreamView(sessionId, (current) => ({ ...current, thinking: current.thinking + delta }));
+        updateRun({ thinking: thought });
+      }
+    };
+    const scheduleStreamFlush = () => {
+      if (streamTextFlushTimer === undefined)
+        streamTextFlushTimer = window.setTimeout(flushPendingText, 30);
+    };
+    const queueStreamText = (id: string, content: string) => {
+      textById.set(id, content);
+      pendingTextIds.add(id);
+      scheduleStreamFlush();
+    };
     const removeEmpty = (id: string) => {
       const empty = (message: Message) => message.id === id && message.role === "assistant" && !message.content.trim() && !message.toolCalls?.length && !message.images?.length && !message.providerState?.thinking.some((item) => item.thinking);
       const existing = trace.find((message) => message.id === id); if (existing && !empty(existing)) return;
-      const index = trace.findIndex(empty); if (index >= 0) trace.splice(index, 1); textById.delete(id); text = [...textById.values()].filter(Boolean).join("\n\n");
+      const index = trace.findIndex(empty); if (index >= 0) trace.splice(index, 1); textById.delete(id); pendingTextIds.delete(id); text = [...textById.values()].filter(Boolean).join("\n\n");
       setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === sessionId ? { ...item, messages: item.messages.filter((message) => !empty(message)) } : item) })); updateRun({ trace: [...trace], output: text });
     };
     const settlePendingToolCalls = (content: string) => {
@@ -638,12 +805,14 @@ export default function App() {
         if (event.type === "runtime") updateRun({ cwd: event.cwd as string | undefined });
         if (event.type === "request") { requests.push(event.payload); updateRun({ request: event.payload, requests: [...requests], turns: event.turn }); }
         if (event.type === "assistant_start") {
+          flushPendingText();
           currentMessageId = event.id; updateStreamView(sessionId, (current) => ({ ...current, streamingId: event.id, thinking: "" })); textById.set(event.id, "");
           upsert({ id: event.id, role: "assistant", content: "", enabled: true });
         }
-        if (event.type === "text") { const id = event.id || currentMessageId; const next = (textById.get(id) || "") + event.delta; textById.set(id, next); upsert({ id, role: "assistant", content: next, enabled: true }); text = [...textById.values()].filter(Boolean).join("\n\n"); updateRun({ output: text }); }
-        if (event.type === "thinking") { thought += event.delta; updateStreamView(sessionId, (current) => ({ ...current, thinking: current.thinking + event.delta })); updateRun({ thinking: thought }); }
+        if (event.type === "text") { const id = event.id || currentMessageId; const next = (textById.get(id) || "") + event.delta; queueStreamText(id, next); }
+        if (event.type === "thinking") { thought += event.delta; pendingThinkingText += event.delta; scheduleStreamFlush(); }
         if (event.type === "assistant" || event.type === "message") {
+          flushPendingText();
           const message = event.message as Message;
           const failedEmpty = message.role === "assistant" && ["error", "aborted"].includes(message.providerState?.stopReason || "") && !message.content.trim() && !message.toolCalls?.length && !message.images?.length && !message.providerState?.thinking.some((item) => item.thinking);
           if (failedEmpty) removeEmpty(message.id); else upsert(message);
@@ -651,9 +820,10 @@ export default function App() {
         }
         if (event.type === "tool_activity") updateStreamView(sessionId, (current) => ({ ...current, toolActivity: event as ToolActivity }));
         if (event.type === "tool_activity_end") updateStreamView(sessionId, (current) => ({ ...current, toolActivity: null }));
-        if (event.type === "done") { finalGenerationStatus = event.reason === "length" ? "length" : event.reason === "turn_limit" ? "turn_limit" : "done"; updateRun({ status: finalGenerationStatus, usage: event.usage, turns: event.turns, output: text }); if (workspaceRef.current.active === sessionId && event.reason === "turn_limit") setNotice("已达到 Agent 最大轮数；可检查轨迹后继续。"); if (workspaceRef.current.active === sessionId && event.reason === "length") setNotice("已达到输出上限，回复未完成。"); }
+        if (event.type === "done") { flushPendingText(); finalGenerationStatus = event.reason === "length" ? "length" : event.reason === "turn_limit" ? "turn_limit" : "done"; updateRun({ status: finalGenerationStatus, usage: event.usage, turns: event.turns, output: text }); if (workspaceRef.current.active === sessionId && event.reason === "turn_limit") setNotice("已达到 Agent 最大轮数；可检查轨迹后继续。"); if (workspaceRef.current.active === sessionId && event.reason === "length") setNotice("已达到输出上限，回复未完成。"); }
         if (event.type === "error") { errorEventReceived = true; failureMessage = typeof event.message === "string" ? event.message : "模型运行发生错误。"; updateRun({ status: "error", error: failureMessage, output: text }); setSessionRunError(sessionId, failureMessage); }
         if (event.type === "run_status") {
+          flushPendingText();
           terminalReceived = true;
           completedRunIdsRef.current.add(remoteRunId);
           if (completedRunIdsRef.current.size > 100)
@@ -742,6 +912,7 @@ export default function App() {
       updateRun({ status: "error", error: message, output: text });
       setSessionRunError(sessionId, message);
     } finally {
+      flushPendingText();
       setSessionStarting(sessionId, false);
       if (runControl && runControlsRef.current.get(sessionId) === runControl) {
         runControl.readerController?.abort();
@@ -786,6 +957,33 @@ export default function App() {
     if (workspaceRef.current.active === activeId) setScrollRequest((value) => value + 1);
     if (shouldRun) void run(nextSession.messages, activeId);
     return true;
+  };
+  const sendWorkerGuidance = async (content: string, _role: Message["role"], _shouldRun: boolean, images?: Message["images"]): Promise<boolean> => {
+    const workerId = selectedWorkerId;
+    const worker = visibleGptSessions.find((item) => item.id === workerId);
+    if (!worker || !ready) return false;
+    if (images?.length) { setNotice("工兵指导目前只支持文本消息。"); return false; }
+    try {
+      const response = await fetch(`/api/gpt-sessions/${encodeURIComponent(worker.name)}/send`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd: effectiveCwd, ownerSessionId: session.id, message: content, mode: "steer" }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "发送工兵指导失败。");
+      if (data.session) updateWorkerSummary(data.session);
+      const message: Message = { id: uid(), role: "user", content, enabled: true };
+      setPendingWorkerMessagesById((current) => ({ ...current, [workerId]: [...(current[workerId] || []), message] }));
+      setWorkerMessagesById((current) => {
+        const messages = current[workerId] || [];
+        if (messages.some((item) => item.role === "user" && item.content === content)) return current;
+        return { ...current, [workerId]: [...messages, message] };
+      });
+      setWorkerMessagesError("");
+      return true;
+    } catch (error) {
+      setWorkerMessagesError(error instanceof Error ? error.message : "发送工兵指导失败。");
+      return false;
+    }
   };
   function rememberReviewedWorkers(sessionId: string, cwd: string, names: string[]) {
     const owner = workspaceRef.current.sessions.find((item) => item.id === sessionId);
@@ -835,6 +1033,23 @@ export default function App() {
       rememberReviewedWorkers(item.sessionId, item.cwd, item.names);
     setWorkerWakeNotices((current) => current.filter((notice) => notice.sessionId !== sessionId));
   }
+  const messageStreamHandlersRef = useRef({
+    updateMessage, updateCall, addMessage, moveMessage, deleteMessage, deleteToolCall, addManualToolResult, branchAt, selectSession,
+    copyMessage: (text: string) => { void copyText(text); },
+  });
+  messageStreamHandlersRef.current = {
+    updateMessage, updateCall, addMessage, moveMessage, deleteMessage, deleteToolCall, addManualToolResult, branchAt, selectSession,
+    copyMessage: (text: string) => { void copyText(text); },
+  };
+  const onMessage = useCallback((...args: Parameters<typeof updateMessage>) => messageStreamHandlersRef.current.updateMessage(...args), []);
+  const onCall = useCallback((...args: Parameters<typeof updateCall>) => messageStreamHandlersRef.current.updateCall(...args), []);
+  const onAdd = useCallback((...args: Parameters<typeof addMessage>) => messageStreamHandlersRef.current.addMessage(...args), []);
+  const onMove = useCallback((...args: Parameters<typeof moveMessage>) => messageStreamHandlersRef.current.moveMessage(...args), []);
+  const onDelete = useCallback((...args: Parameters<typeof deleteMessage>) => messageStreamHandlersRef.current.deleteMessage(...args), []);
+  const onDeleteCall = useCallback((...args: Parameters<typeof deleteToolCall>) => messageStreamHandlersRef.current.deleteToolCall(...args), []);
+  const onAddToolResult = useCallback((...args: Parameters<typeof addManualToolResult>) => messageStreamHandlersRef.current.addManualToolResult(...args), []);
+  const onBranch = useCallback((...args: Parameters<typeof branchAt>) => messageStreamHandlersRef.current.branchAt(...args), []);
+  const onCopyMessage = useCallback((text: string) => messageStreamHandlersRef.current.copyMessage(text), []);
   if (!ready) return <div className="app-loading" role="status">{storageError || "正在打开本地工作区…"}{storageError && <button onClick={() => location.reload()}>重试</button>}</div>;
   return <div className={`app-shell ${sidebarCollapsed ? "sidebar-compact" : ""}`}>
     <Sidebar sessions={workspace.sessions} folders={workspace.folders} rootSessionIds={workspace.rootSessionIds} active={session.id} collapsed={sidebarCollapsed} activeRuns={activeRuns} onToggle={() => setSidebarCollapsed((value) => !value)} onCreate={() => createSession()} onCreateFolder={createFolder} onSelect={selectSession} onRename={renameSession} onDuplicate={duplicateSession} onDelete={deleteSession} onRenameFolder={renameFolder} onDeleteFolder={deleteFolder} onToggleFolder={toggleFolder} onMoveSession={moveSession} />
@@ -842,12 +1057,12 @@ export default function App() {
       <TopBar session={session} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onTitle={(title) => patchSession({ title })} />
       <div className="workspace-body">
         <section className="conversation-pane">
-          <ThreadTabs ownerSessionId={session.id} cwd={effectiveCwd} workers={visibleGptSessions} selectedId={selectedWorkerId} onSelect={setSelectedWorkerId} onWorkerUpdate={updateWorkerSummary} onWorkersUpdate={updateWorkerSummaries} onRefresh={() => void fetchGptSessions()} sessionsError={gptSessionsError} />
-          {!selectedWorkerId && <>
-            <MessageStream sessionId={session.id} scrollRequest={scrollRequest} messages={session.messages} busy={busy} compactTools={compactTools} streamingId={streamingId} streamingThinking={streamingThinking} toolActivity={toolActivity} gptWorkers={visibleGptSessions} onMessage={updateMessage} onCall={updateCall} onAdd={addMessage} onMove={moveMessage} onDelete={deleteMessage} onDeleteCall={deleteToolCall} onAddToolResult={addManualToolResult} onBranch={branchAt} onCopy={(text) => void copyText(text)} />
-            {runErrors[session.id] && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>本次运行失败</strong><span>{runErrors[session.id]}</span></div><button onClick={() => setSessionRunError(session.id)} aria-label="关闭运行错误">关闭<X size={14} /></button></div>}
-            <ComposerBar busy={busy} toolName={toolActivity?.name} messageCount={session.messages.length} contextTokens={contextMetrics.context} savedPercent={contextMetrics.savedPercent} settings={session.settings} models={piConnection?.models || []} defaultModel={piConnection?.defaultModel} piConnected={piConnection?.connected} onSetting={updateSetting} onNotice={setNotice} onRefreshModels={() => void refreshPiStatus()} draft={composerText} onDraftChange={updateComposerText} backgroundWorkers={visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={workerWakeNotice} onDismissWake={() => dismissSessionWorkerWake(session.id)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={sendMessage} onRun={() => void run()} onStop={() => void abortRun()} />
-          </>}
+          <ThreadTabs key={session.id} workers={visibleGptSessions} selectedWorkerId={selectedWorkerId} onSelectWorker={setSelectedWorkerId} onCloseWorker={(workerId) => setSelectedWorkerId((current) => current === workerId ? "" : current)} />
+          {gptSessionsError && !selectedWorker && <div className="run-error-banner" role="status"><AlertTriangle size={17} /><div><strong>读取工兵列表失败</strong><span>{gptSessionsError}</span></div><button onClick={() => setGptSessionsError("")} aria-label="关闭工兵列表错误">关闭<X size={14} /></button></div>}
+          {selectedWorker && workerMessagesError && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>工兵对话失败</strong><span>{workerMessagesError}</span></div><button onClick={() => setWorkerMessagesError("")} aria-label="关闭工兵对话错误">关闭<X size={14} /></button></div>}
+          <MessageStream sessionId={`${session.id}:${selectedWorker?.id || "main"}`} scrollRequest={scrollRequest} messages={currentMessages} assistantName={selectedWorker ? `${selectedWorker.model} · ${selectedWorker.name}` : "Gemini"} busy={selectedWorker ? false : busy} compactTools={compactTools} streamingId={selectedWorker ? undefined : streamingId} streamingThinking={selectedWorker ? undefined : streamingThinking} toolActivity={selectedWorker ? undefined : toolActivity} gptWorkers={selectedWorker ? [] : visibleGptSessions} onMessage={onMessage} onCall={onCall} onAdd={onAdd} onMove={onMove} onDelete={onDelete} onDeleteCall={onDeleteCall} onAddToolResult={onAddToolResult} onBranch={onBranch} onCopy={onCopyMessage} />
+          {!selectedWorker && runErrors[session.id] && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>本次运行失败</strong><span>{runErrors[session.id]}</span></div><button onClick={() => setSessionRunError(session.id)} aria-label="关闭运行错误">关闭<X size={14} /></button></div>}
+          <ComposerBar key={session.id} busy={selectedWorker ? false : busy} workerMode={!!selectedWorker} placeholder={selectedWorker ? `给工兵发送直接指导 (Steer)…` : undefined} toolName={selectedWorker ? undefined : toolActivity?.name} messageCount={currentMessages.length} contextTokens={currentContextMetrics.context} savedPercent={currentContextMetrics.savedPercent} settings={session.settings} models={piConnection?.models || []} defaultModel={piConnection?.defaultModel} piConnected={piConnection?.connected} onSetting={updateSetting} onNotice={setNotice} onRefreshModels={() => void refreshPiStatus()} backgroundWorkers={selectedWorker ? [] : visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={selectedWorker ? undefined : workerWakeNotice} onDismissWake={() => dismissSessionWorkerWake(session.id)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={selectedWorker ? sendWorkerGuidance : sendMessage} onRun={() => { if (!selectedWorker) void run(); }} onStop={() => { if (!selectedWorker) void abortRun(); }} />
         </section>
       </div>
     </main>

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { generate, validateTranscript } from "./engine";
 import { runSchema } from "../shared/schema";
 import { piStatus } from "./pi-subscription";
-import { cleanupIdleGptSessions, closeGptSession, interruptGptSession, listGptSessions, readGptSessionTranscript, sendGptSessionGuidance, shutdownGptSessions } from "./gpt-subagent";
+import { cleanupIdleGptSessions, closeGptSession, interruptGptSession, listGptSessions, readGptSessionMessages, readGptSessionTranscript, sendGptSessionGuidance, shutdownGptSessions } from "./gpt-subagent";
 import { ProjectWorkspaceStore } from "./workspace";
 import { ensureSessionWorkspace } from "./session-workspaces";
 import { ActiveRunError, RunManager } from "./runs";
@@ -65,6 +65,13 @@ app.get("/api/images/file", (req, res) => {
       if (error && !res.headersSent) res.status(404).end();
     });
   } catch { res.status(400).end(); }
+});
+app.get("/api/workspace/revision", async (_req, res) => {
+  try {
+    const revision = await workspaceStore.getRevision();
+    if (revision === null) { res.status(404).json({ error: "项目会话尚未初始化。" }); return; }
+    res.set("Cache-Control", "no-store").json({ revision });
+  } catch (error) { res.status(503).json({ error: (error as Error).message }); }
 });
 app.get("/api/workspace", async (_req, res) => {
   try { res.set("Cache-Control", "no-store").json({ workspace: await workspaceStore.get() }); }
@@ -145,6 +152,18 @@ app.get("/api/gpt-sessions", async (req, res) => {
       cwd, durationMs: Date.now() - startedAt, reason,
     });
     res.status(400).json({ error: reason });
+  }
+});
+app.get("/api/gpt-sessions/:name/messages", async (req, res) => {
+  try {
+    const { cwd, ownerSessionId } = req.query;
+    if (cwd !== undefined && typeof cwd !== "string") throw new Error("cwd 必须是单个目录路径。");
+    if (typeof ownerSessionId !== "string" || !ownerSessionId.trim() || ownerSessionId.length > 200) throw new Error("ownerSessionId 必须是 1 到 200 个字符。");
+    const result = await readGptSessionMessages(cwd, req.params.name, ownerSessionId);
+    res.set("Cache-Control", "no-store").json(result);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    res.status(/不属于当前会话|找不到 GPT 会话/.test(reason) ? 404 : 400).json({ error: reason });
   }
 });
 app.get("/api/gpt-sessions/:name/transcript", async (req, res) => {

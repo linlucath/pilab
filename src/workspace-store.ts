@@ -100,6 +100,15 @@ export function useProjectWorkspace(loadLegacy: () => Workspace, fresh: () => Se
     if (!response.ok) throw new Error(data.error || "项目会话保存失败。");
     return data.workspace ? projectWorkspaceSchema.parse(data.workspace) : null;
   }
+  async function requestRevision(): Promise<number | null> {
+    const response = await fetch("/api/workspace/revision", { cache: "no-store" });
+    if (response.status === 404) return null;
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "读取项目会话版本失败。");
+    if (!Number.isSafeInteger(data.revision) || data.revision < 0)
+      throw new Error("项目会话版本响应无效。");
+    return data.revision as number;
+  }
   useEffect(() => {
     alive.current = true;
     let cancelled = false;
@@ -170,6 +179,9 @@ export function useProjectWorkspace(loadLegacy: () => Workspace, fresh: () => Se
       try {
         if (changed(changes(baseline.current, saved(workspaceRef.current)))) return;
         polling = true;
+        const remoteRevision = await requestRevision();
+        if (cancelled || remoteRevision === null || remoteRevision === revision.current || saving.current ||
+          changed(changes(baseline.current!, saved(workspaceRef.current)))) return;
         const project = await request("GET");
         if (cancelled || !project || project.revision === revision.current || saving.current ||
           changed(changes(baseline.current!, saved(workspaceRef.current)))) return;

@@ -20,10 +20,21 @@ async function prepare(page: Page) {
 async function mockWorkerList(page: Page, getWorkers: () => Worker[]) {
   const data = await page.context().request.get(new URL("/api/workspace", page.url()).href).then((response) => response.json());
   const ownerSessionId = data.workspace.active as string;
+  let listed = false;
   await page.route(/\/api\/gpt-sessions\?/, async (route) => {
     const sessions = getWorkers();
     for (const item of sessions) item.ownerSessionId ||= ownerSessionId;
+    listed = true;
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ sessions }) });
+  });
+  await page.route("**/api/gpt-sessions/*/messages?*", async (route) => {
+    const name = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-2) || "");
+    const current = getWorkers().find((item) => item.name === name);
+    const messages = [
+      { id: `system-${name}`, role: "system", content: `System instructions for ${name}`, enabled: true },
+      ...(current?.lastReplyPreview ? [{ id: `reply-${name}`, role: "assistant", content: current.lastReplyPreview, enabled: true }] : []),
+    ];
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ session: current, messages }) });
   });
   await page.route("**/api/gpt-sessions/*/transcript?*", async (route) => {
     const name = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-2) || "");
@@ -34,79 +45,74 @@ async function mockWorkerList(page: Page, getWorkers: () => Worker[]) {
     ];
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ events, hasMore: false }) });
   });
-  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await expect.poll(() => listed).toBe(true);
+}
+async function waitForWorkerListUpdate(page: Page) {
+  const isListResponse = (response: import("@playwright/test").Response) => response.request().method() === "GET" && new URL(response.url()).pathname === "/api/gpt-sessions";
+  await page.waitForResponse(isListResponse, { timeout: 6_000 });
+  // A poll may already be in flight when a test changes its mock snapshot. The next response is guaranteed to observe it.
+  await page.waitForResponse(isListResponse, { timeout: 6_000 });
 }
 
 test.beforeEach(async ({ page }) => prepare(page));
 
-test("GPT-01 活动与历史工兵可查看，清理需确认且排除运行中会话", async ({ page }) => {
-  let workers = [worker("running-worker", "running"), ...Array.from({ length: 6 }, (_, index) => worker(`idle-${index}`, "idle", { hasUnreadReply: index === 0, recentTools: index === 0 ? [{ name: "read_file", status: "completed", at: Date.now() }] : [] }))];
-  let cleanupCalls = 0;
+test("GPT-01 worker names are tabs, worker replies use the shared stream, and closing only hides a tab", async ({ page }) => {
+  const workers = [worker("running-worker", "running"), ...Array.from({ length: 6 }, (_, index) => worker(`idle-${index}`, "idle", { hasUnreadReply: index === 0 }))];
+  let interruptCalls = 0;
+  let closeCalls = 0;
   await mockWorkerList(page, () => workers);
-  await expect(page.locator(".thread-tab")).toHaveCount(7);
-  await expect(page.locator(".thread-tab").filter({ hasText: "running-worker" })).toContainText("运行中");
-  const firstTab = page.locator(".thread-tab-select").filter({ hasText: "idle-0" });
-  await firstTab.click();
-  await expect(page.locator(".worker-thread-view")).toContainText("idle-0 preview");
-
-  await page.route("**/api/gpt-sessions/cleanup", async (route) => {
-    cleanupCalls++;
-    const closed = workers.filter((item) => item.status !== "running").map((item) => item.name);
-    workers = workers.filter((item) => item.status === "running");
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ closed, failures: [], sessions: workers }) });
-  });
-  const cleanup = page.getByRole("button", { name: /归档空闲/ });
-  page.once("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("idle-0");
-    expect(dialog.message()).not.toContain("running-worker");
-    await dialog.dismiss();
-  });
-  await cleanup.click();
-  expect(cleanupCalls).toBe(0);
-  page.once("dialog", async (dialog) => { await dialog.accept(); });
-  await cleanup.click();
-  expect(cleanupCalls).toBe(1);
-  await expect(page.locator(".thread-tab")).toHaveCount(1);
-  await expect(page.locator(".thread-tab")).toContainText("running-worker");
+  await page.route("**/api/gpt-sessions/interrupt", async (route) => { interruptCalls++; await route.fulfill({ json: { session: workers[0] } }); });
+  await page.route("**/api/gpt-sessions/close", async (route) => { closeCalls++; await route.fulfill({ json: { session: workers[0] } }); });
+  await expect(page.locator(".thread-worker-tab")).toHaveCount(7);
+  const runningTab = page.locator(".thread-worker-tab").filter({ hasText: "running-worker" });
+  await expect(runningTab.locator(".thread-running-dot")).toHaveCount(1);
+  await page.locator(".thread-worker-tab").filter({ hasText: "idle-0" }).click();
+  await expect(page.locator(".message-stream")).toContainText("idle-0 preview");
+  await page.getByRole("button", { name: "关闭工兵标签 idle-0" }).click();
+  await expect(page.locator(".thread-worker-tab")).toHaveCount(6);
+  await expect(page.getByRole("tab", { name: "💬 主会话 (Gemini)" })).toHaveAttribute("aria-selected", "true");
+  expect(interruptCalls).toBe(0);
+  expect(closeCalls).toBe(0);
 });
 
-test("GPT-02 工兵状态轮询自动更新，活动工具可见且原始参数不泄露", async ({ page }) => {
+test("GPT-02 worker snapshots update the running dot and shared activity summary without exposing raw tool data", async ({ page }) => {
   let current = worker("live-worker", "starting");
   await mockWorkerList(page, () => [current]);
-  await expect(page.locator(".thread-tab")).toContainText("启动中");
+  const liveTab = page.locator(".thread-worker-tab").filter({ hasText: "live-worker" });
+  await expect(liveTab.locator(".thread-running-dot")).toHaveCount(1);
   current = worker("live-worker", "waiting_input", {
     pendingQuestionCount: 1,
     recentTools: [{ name: "read_file", status: "running", at: Date.now() }],
     lastReplyPreview: "safe reply preview",
   });
-  const liveTab = page.locator(".thread-tab").filter({ hasText: "live-worker" });
-  await expect(liveTab).toContainText("等待输入", { timeout: 7_000 });
-  await expect(liveTab).toContainText("read_file");
-  await expect(liveTab.locator(".thread-tab-pending")).toHaveText("1问");
+  await expect(page.locator(".background-task-bar")).toContainText("等待输入", { timeout: 7_000 });
   await expect(page.locator(".thread-tabs-bar")).not.toContainText("SECRET_RAW_ARGUMENT");
-  await expect(page.locator(".background-task-bar")).toContainText("等待输入");
-  await liveTab.locator(".thread-tab-select").click();
-  await expect(page.locator(".worker-thread-view")).toContainText("safe reply preview");
+  await expect(page.locator(".background-task-bar")).not.toContainText("SECRET_RAW_ARGUMENT");
+  await liveTab.click();
+  await expect(page.locator(".message-stream")).toContainText("safe reply preview");
 });
 
-test("GPT-03 中断与关闭后仍保留工兵历史且反馈对应状态", async ({ page }) => {
+test("GPT-03 closing a worker tab does not stop its retained session and the main agent can resume it", async ({ page }) => {
   let current = worker("resume-me", "running", { hasUnreadReply: true });
   await mockWorkerList(page, () => [current]);
+  let interruptCalls = 0;
+  let closeCalls = 0;
   await page.route("**/api/gpt-sessions/interrupt", async (route) => {
+    interruptCalls++;
     current = { ...current, status: "interrupted", updatedAt: Date.now() };
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ session: current }) });
   });
   await page.route("**/api/gpt-sessions/close", async (route) => {
+    closeCalls++;
     current = { ...current, status: "closed", updatedAt: Date.now() };
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ session: current }) });
   });
-  await page.locator(".thread-tab-select").filter({ hasText: "resume-me" }).click();
-  await page.locator(".worker-thread-view").getByRole("button", { name: "中断工兵" }).click();
-  await expect(page.locator(".worker-thread-view")).toContainText("已中断");
-  await page.locator(".worker-thread-view").getByRole("button", { name: "归档会话" }).click();
-  await expect(page.locator(".worker-thread-view")).toContainText("已归档");
-  await expect(page.locator(".worker-thread-view")).toContainText("resume-me");
-  await page.getByRole("tab", { name: "Gemini 主会话" }).click();
+  await page.locator(".thread-worker-tab").filter({ hasText: "resume-me" }).click();
+  await expect(page.locator(".message-stream")).toContainText("resume-me preview");
+  await page.getByRole("button", { name: "关闭工兵标签 resume-me" }).click();
+  expect(interruptCalls).toBe(0);
+  expect(closeCalls).toBe(0);
+  await page.getByRole("tab", { name: "💬 主会话 (Gemini)" }).click();
 
   const call = { id: "resume-call", name: "gpt_session_send", arguments: JSON.stringify({ name: "resume-me", message: "continue prior task" }) };
   let resumeSessionId = "";
@@ -160,7 +166,7 @@ test("GPT-04 交卷提醒只是 UI 状态，草稿保留且只有手动点击才
   });
   await ui(page).composer.fill("keep-this-user-draft");
   workers = [worker("manual-review", "idle", { hasUnreadReply: true, lastReplyPreview: "delivered report" })];
-  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await waitForWorkerListUpdate(page);
   await expect(page.locator(".worker-wake-banner")).toContainText("审阅不会清除输入草稿");
   await expect(ui(page).composer).toHaveValue("keep-this-user-draft");
   await page.waitForTimeout(1_700);
@@ -188,7 +194,7 @@ test("GPT-04 主模型运行时不排队唤醒；运行结束后再次手动点�
   await sendMessage(page, "keep the main model busy");
   await expect(page.locator(".composer-running")).toBeVisible();
   workers = [worker("busy-review", "idle", { hasUnreadReply: true })];
-  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await waitForWorkerListUpdate(page);
   await expect(page.locator(".worker-wake-banner")).toContainText("主模型运行中");
   await expect(page.getByRole("button", { name: /让 Gemini 审阅汇报/ })).toBeDisabled();
   await page.waitForTimeout(1_700);
@@ -218,34 +224,26 @@ test("GPT-04 已读回复或 waitAndReport 接管时不提醒，忽略提醒不�
   let workers = [claimedWorker("running")];
   await mockWorkerList(page, () => workers);
   workers = [claimedWorker("idle", { hasUnreadReply: true, hasActiveWaiter: true })];
-  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await waitForWorkerListUpdate(page);
   await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
   workers = [claimedWorker("idle", { hasUnreadReply: true })];
-  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await waitForWorkerListUpdate(page);
   await expect(page.locator(".worker-wake-banner")).toContainText("claimed-worker");
   workers = [claimedWorker("idle", { hasUnreadReply: true, hasActiveWaiter: true })];
-  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await waitForWorkerListUpdate(page);
   await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
   workers = [claimedWorker("idle", { hasUnreadReply: false })];
-  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await waitForWorkerListUpdate(page);
   await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
   workers = [claimedWorker("idle", { hasUnreadReply: true })];
-  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await waitForWorkerListUpdate(page);
   await expect(page.locator(".worker-wake-banner")).toContainText("claimed-worker");
   await page.getByRole("button", { name: "忽略工兵交卷提醒" }).click();
   workers = [claimedWorker("idle", { hasUnreadReply: false })];
-  const clearedRefresh = page.waitForResponse((response) =>
-    response.request().method() === "GET" && new URL(response.url()).pathname === "/api/gpt-sessions",
-  );
-  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
-  await clearedRefresh;
+  await waitForWorkerListUpdate(page);
   await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
   workers = [claimedWorker("idle", { hasUnreadReply: true })];
-  const ignoredRefresh = page.waitForResponse((response) =>
-    response.request().method() === "GET" && new URL(response.url()).pathname === "/api/gpt-sessions",
-  );
-  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
-  await ignoredRefresh;
+  await waitForWorkerListUpdate(page);
   await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
   expect(workers[0].status).toBe("idle");
 });
@@ -286,13 +284,13 @@ test("GPT-04 工兵交卷只唤醒派出会话，删除后同一回复签名不�
     worker("owned-worker", "running", { ownerSessionId: "owning-session", hasUnreadReply: true, replySequence, updatedAt: replyAt }),
     worker("unowned-worker", "running", { ownerSessionId: "unrelated-session", hasUnreadReply: true, replySequence: replySequence + 1, updatedAt: replyAt + 1 }),
   ];
-  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await waitForWorkerListUpdate(page);
   await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
   workers = [
     worker("owned-worker", "idle", { ownerSessionId: "owning-session", hasUnreadReply: true, replySequence, updatedAt: replyAt }),
     worker("unowned-worker", "idle", { ownerSessionId: "unrelated-session", hasUnreadReply: true, replySequence: replySequence + 1, updatedAt: replyAt + 1 }),
   ];
-  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await waitForWorkerListUpdate(page);
   await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
 
   await page.locator('[data-session-id="owning-session"] .session-main').click();
@@ -310,9 +308,9 @@ test("GPT-04 工兵交卷只唤醒派出会话，删除后同一回复签名不�
   // The same unread reply can reappear in polling data (for example after a cwd/session refresh).
   // Its stable worker/reply signature must not create another wake after processing/dismissal.
   workers = [worker("owned-worker", "idle", { hasUnreadReply: false, replySequence, updatedAt: replyAt })];
-  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await waitForWorkerListUpdate(page);
   workers = [worker("owned-worker", "idle", { hasUnreadReply: true, replySequence, updatedAt: replyAt })];
-  await page.getByRole("button", { name: "刷新 GPT 会话" }).click();
+  await waitForWorkerListUpdate(page);
   await expect(page.locator(".worker-wake-banner")).toHaveCount(0);
   await expect(page.locator(".system-worker-wake-notice")).toHaveCount(0);
 
