@@ -6,7 +6,7 @@ import type { Static, TSchema } from "typebox";
 import { subagentToolUi, type SubagentToolUiMetadata } from "./tool-ui.ts";
 import { ToolRegistry } from "./registry.ts";
 import {
-  rolePresetLabels, type GptRolePreset, type GptSessionManager,
+  type GptRolePreset, type GptSessionManager,
   type ProgressEvent, type SessionInfo, type SessionStatus,
 } from "./sessions.ts";
 
@@ -37,7 +37,7 @@ export const DEFAULT_REPLY_MAX_CHARS = 3_200;
 export const MIN_REPLY_MAX_CHARS = 500;
 export const MAX_REPLY_MAX_CHARS = 24_000;
 const sessionName = Type.String({ minLength: 1, maxLength: 160, description: "Unique conversation name or tracking handle returned by subagent_dispatch." });
-const message = Type.String({ minLength: 1, maxLength: 100_000 });
+const message = Type.String({ minLength: 1, maxLength: 100_000, description: "Task or follow-up text sent to the worker unchanged." });
 const rolePreset = Type.Union([
   Type.Literal("scout"), Type.Literal("experimenter"), Type.Literal("implementer"),
 ], { description: "探路学者 scout、路径实验员 experimenter、工程执行员 implementer。" });
@@ -116,16 +116,6 @@ const legacyRespondSchema = Type.Object({
 const legacyNameSchema = Type.Object({ name: sessionName }, { additionalProperties: false });
 
 const clip = (text: string, length: number) => text.length <= length ? text : `${text.slice(0, length)}\n…（内容已截断）`;
-
-export function withFeynmanReport(task: string, preset?: GptRolePreset) {
-  const role = preset ? `本轮角色：${rolePresetLabels[preset]}（${preset}）。` : "本轮角色：通用探索，按任务自主判断并明确风险。";
-  const behavior = preset === "scout" ? "优先解释问题本质，定位关键代码路径与可验证证据，不做无关修改。"
-    : preset === "experimenter" ? "设计并执行低风险实验，比较路径，用结果解释因果并说明失败边界。"
-    : preset === "implementer" ? "按约束实施必要改动并运行最相关的验证，准确说明关键改动与结果。"
-    : "涉及调研或排查时先解释根因与核心原理，再给出有证据的结论。";
-  const protocol = "【费曼式探索与结构化汇报协议】回复主 Agent 时，禁止流水账和无证据的成功宣称，必须按四节汇报：1. 【核心直觉与本质】用直白语言说明任务本质或根因；2. 【尝试路径与成果】说明关键修改、验证结果和证据；3. 【碰壁与反例】说明失败路径及原因，没有则明确写“无”；4. 【下一步建议】给出可执行的决策建议。区分事实与猜测。";
-  return `【本轮角色与要求】${role} ${behavior}\n\n${task}${task.includes("【费曼式探索与结构化汇报协议】") ? "" : `\n\n${protocol}`}`;
-}
 
 export function clipReply(text: string, maxChars = DEFAULT_REPLY_MAX_CHARS) {
   if (!Number.isInteger(maxChars) || maxChars < MIN_REPLY_MAX_CHARS || maxChars > MAX_REPLY_MAX_CHARS)
@@ -427,7 +417,7 @@ async function dispatch(input: DispatchInput, context: ToolContext, signal?: Abo
 
   const startPromise = Promise.allSettled(ready.map(({ task, name }) => manager.send(
     name,
-    withFeynmanReport(task.message, task.rolePreset),
+    task.message,
     task.sendMode ?? "steer",
     task.rolePreset,
     owner,
@@ -556,14 +546,14 @@ export function createSessionTools(
   registry
     .register<typeof dispatchSchema, AgentToolResult<unknown>>({
       name: "subagent_dispatch",
-      description: `Delegate one task or up to eight independent tasks. mode="async" (default) starts work in the background and returns stable tracking handles. mode="sync" quietly blocks until each current turn finishes, fails, needs input, or is cancelled. Do not call wait or query repeatedly to monitor a synchronous dispatch. New task instructions receive the four-section Feynman handoff protocol. Use action=send to continue an existing worker.`,
+      description: `Create or continue one worker task, or submit up to eight tasks. mode="async" (default) starts work in the background and returns tracking handles. mode="sync" waits until each current turn finishes, fails, needs input, or is cancelled. action="auto" selects create or send based on the worker name; action="create" and action="send" select explicitly. sendMode controls message delivery. maxChars bounds returned briefs.`,
       parameters: dispatchSchema,
       ui: subagentToolUi.subagent_dispatch,
       execute: (input, context) => dispatch(input, context, context.signal),
     })
     .register<typeof querySchema, AgentToolResult<unknown>>({
       name: "subagent_query",
-      description: "Query all workers or one worker by name/tracking handle. Status returns the latest unread brief, current state, questions, and recent activity. Failed workers automatically include bounded diagnostics; set diagnostics=true for a deeper failure report. Repeating a query does not replay an already delivered brief unless repeat=true.",
+      description: "Read the worker list or one worker's status by name or tracking handle. Status includes the latest brief, current state, pending questions, and recent activity. diagnostics=true includes bounded failure details; repeat=true includes the latest brief again. limit and maxChars bound the response.",
       parameters: querySchema,
       ui: subagentToolUi.subagent_query,
       async execute(input, context) {
@@ -579,7 +569,7 @@ export function createSessionTools(
     })
     .register<typeof controlSchema, AgentToolResult<unknown>>({
       name: "subagent_control",
-      description: "Intervene in one worker: abort stops current work and clears queued tasks while retaining its session; respond answers a pending question; close stops the process and releases resources while preserving native history.",
+      description: "Apply an operation to a worker: abort stops current work and clears queued tasks; respond submits an answer to pending input; close stops the process and preserves its native session history. Respond fields include question, value, confirmed, and cancelled.",
       parameters: controlSchema,
       ui: subagentToolUi.subagent_control,
       async execute(input, context) {
@@ -607,14 +597,14 @@ export function createSessionTools(
     ui: SubagentToolUiMetadata,
     execute: (input: Static<Parameters>, context: ToolContext) => Promise<AgentToolResult<unknown>>,
   ) => registry.register({ name, description, parameters, ui, defaultActive: false, execute });
-  addLegacy("gpt_session_create", "Create GPT conversation", "Legacy alias for subagent_dispatch; retained for saved transcripts and direct integrations. wait=true blocks until the current worker turn finishes.", legacyCreateSchema, subagentToolUi.subagent_dispatch, legacyCreate);
-  addLegacy("gpt_session_send", "Message GPT conversation", "Legacy alias for subagent_dispatch action=send. wait=true blocks for the current turn; do not repeatedly call it to poll.", legacySendSchema, subagentToolUi.subagent_dispatch, legacySend);
+  addLegacy("gpt_session_create", "Create GPT conversation", "Compatibility alias for subagent_dispatch. wait=true waits for the current worker turn to finish, fail, or request input.", legacyCreateSchema, subagentToolUi.subagent_dispatch, legacyCreate);
+  addLegacy("gpt_session_send", "Message GPT conversation", "Compatibility alias for subagent_dispatch action=send. wait=true waits for the current turn to finish, fail, or request input.", legacySendSchema, subagentToolUi.subagent_dispatch, legacySend);
   addLegacy("gpt_session_batch", "Run GPT tasks in parallel", "Legacy alias for subagent_dispatch with tasks[].", legacyBatchSchema, subagentToolUi.subagent_dispatch, legacyBatch);
   addLegacy("gpt_session_list", "List GPT conversations", "Legacy alias for subagent_query action=list.", legacyListSchema, subagentToolUi.subagent_query,
     async (_input, context) => response(context.manager.list(context.owner).map(conversationSummary)));
   addLegacy("gpt_session_read", "Read GPT conversation", "Legacy alias for subagent_query action=status.", legacyReadSchema, subagentToolUi.subagent_query,
     async (input, context) => queryStatus(context, input.name, input));
-  addLegacy("gpt_session_wait", "Wait for GPT conversations", "Legacy blocking alias for subagent_dispatch mode=sync. Do not call repeatedly to poll.", legacyWaitSchema, subagentToolUi.subagent_query, legacyWait);
+  addLegacy("gpt_session_wait", "Wait for GPT conversations", "Compatibility alias that waits for selected workers to reach the requested completion condition.", legacyWaitSchema, subagentToolUi.subagent_query, legacyWait);
   addLegacy("gpt_session_logs", "Diagnose GPT conversation", "Legacy alias for subagent_query diagnostics.", legacyLogsSchema, subagentToolUi.subagent_query,
     async (input, context) => queryStatus(context, input.name, { diagnostics: true, limit: input.limit }));
   addLegacy("gpt_session_interrupt", "Interrupt GPT conversation", "Legacy alias for subagent_control action=abort.", legacyNameSchema, subagentToolUi.subagent_control,

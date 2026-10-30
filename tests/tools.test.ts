@@ -116,6 +116,11 @@ test("Agent exposes GPT and image tools, feeds tool results back, and replays ed
       "subagent_query",
       "view_images",
     ]);
+    const descriptions = Object.fromEntries(sent[0].tools.map((tool: any) => [tool.function.name, tool.function.description]));
+    for (const name of ["subagent_dispatch", "subagent_query", "subagent_control", "view_images", "list_images"])
+      assert.doesNotMatch(descriptions[name], /Feynman|费曼|Do not|Never|Use only when|only when needed|Delegate .*GPT/i, `${name} description should describe API behavior neutrally`);
+    assert.match(descriptions.list_images, /collection names and counts/);
+    assert.match(descriptions.view_images, /original=true/);
     assert.equal(sent[0].messages[0].content, "Original system text.");
     assert.equal(sent[1].messages[2].tool_calls[0].function.name, "subagent_query");
     assert.equal(sent[1].messages[3].role, "tool");

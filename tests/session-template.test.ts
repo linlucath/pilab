@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { NEW_SESSION_SYSTEM_PROMPT, newSession, toolTitle } from "../src/utils/session";
 
-test("new sessions use the dual-model template and a supplied dedicated workspace without history", () => {
+test("new sessions use a neutral engineering prompt and dedicated workspace without history", () => {
   const session = newSession("/tmp/project");
   assert.equal(session.settings.protocol, "pi-subscription");
   assert.equal(session.settings.model, "antigravity/gemini-3.8-flash");
@@ -15,9 +15,13 @@ test("new sessions use the dual-model template and a supplied dedicated workspac
   assert.equal(session.messages.length, 1);
   assert.equal(session.messages[0].role, "system");
   assert.equal(session.messages[0].content, NEW_SESSION_SYSTEM_PROMPT);
-  assert.match(NEW_SESSION_SYSTEM_PROMPT, /不暴露超时参数/);
+  assert.match(NEW_SESSION_SYSTEM_PROMPT, /高级产品设计与软件工程伙伴/);
+  assert.match(NEW_SESSION_SYSTEM_PROMPT, /subagent_dispatch/);
+  assert.match(NEW_SESSION_SYSTEM_PROMPT, /subagent_query/);
+  assert.match(NEW_SESSION_SYSTEM_PROMPT, /subagent_control/);
+  assert.match(NEW_SESSION_SYSTEM_PROMPT, /不套固定模板/);
+  assert.doesNotMatch(NEW_SESSION_SYSTEM_PROMPT, /Gemini|GPT|讨厌|最好的伙伴|费曼|四节|核心直觉与本质/);
   assert.doesNotMatch(NEW_SESSION_SYSTEM_PROMPT, /timeoutSeconds/);
-  assert.match(NEW_SESSION_SYSTEM_PROMPT, /同步派发期间无需也绝不能反复调用 wait 或 query 轮询/);
   assert.equal(session.runs.length, 0);
 });
 

@@ -150,8 +150,11 @@ test("native GPT conversations run concurrently, accept steering, interrupt real
     assert.match(manager.read(beta.id).session.lastText, /\u2028finished:BETA/);
     assert.equal(notices.filter((session) => session.id === alpha.id && session.status === "idle").length, 1);
     assert.ok(f.requests.every((request) => text(request.messages[0].content).includes("FULL_NATIVE_CONTEXT_MARKER")));
-    assert.ok(f.requests.some((request) => JSON.stringify(request.messages).includes("费曼式探索与结构化汇报协议")), "tool-created workers receive the Feynman report format");
-    assert.ok(f.requests.some((request) => JSON.stringify(request.messages).includes("探路学者")), "role presets reach the worker instruction");
+    const workerRequests = JSON.stringify(f.requests);
+    assert.match(workerRequests, /senior software engineer/i, "new workers receive the engineering persona");
+    assert.match(workerRequests, /do not force fixed headings or a report template/i);
+    assert.doesNotMatch(workerRequests, /Feynman|费曼|核心直觉与本质|尝试路径与成果|碰壁与反例|下一步建议/);
+    assert.ok(workerRequests.includes("探路学者"), "role presets reach the worker instruction");
 
     const page = manager.read(alpha.id, 0, 2);
     assert.equal(page.events.length, 2);

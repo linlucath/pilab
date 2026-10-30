@@ -7,27 +7,24 @@ export const gptWorkerRoleLabels = {
 export type GptWorkerRolePreset = keyof typeof gptWorkerRoleLabels;
 
 const roleInstructions: Record<GptWorkerRolePreset, string> = {
-  scout: "你是探路学者：先用直白语言讲清问题本质，定位关键代码路径与可验证证据；除非任务要求，不做无关修改。",
-  experimenter: "你是路径实验员：提出并执行低风险实验，比较候选路径，用结果解释因果，说明成果、失败边界与反例。",
-  implementer: "你是工程执行员：按用户约束实施必要改动，检查相关调用方并运行聚焦验证，精确说明关键改动与结果。",
+  scout: "调查代码和数据流，给出相关实现位置及证据，并根据委派范围选择后续探索或实现。",
+  experimenter: "围绕问题建立可验证假设，执行风险受控的实验，并记录条件、观察结果及未验证之处。",
+  implementer: "按任务范围完成实现，检查相关调用方和边界，并运行针对性验证。",
 };
-
-const reportProtocol = `【费曼式探索与结构化汇报协议】
-回复主 Agent 时要让其掌控全局、真正理解问题。禁止堆砌“我读了 A、跑了 B”式无意义流水账，也禁止无证据的成功宣称。最终交卷必须按四节组织：
-1. 【核心直觉与本质】：涉及调研或排查时，先用直白清晰的语言讲明问题本质原理/根因；否则讲清任务核心。
-2. 【尝试路径与成果】：具体说明尝试了什么，验证成了什么或修改了哪些关键点，并提供证据。
-3. 【碰壁与反例】（若有）：指出没走通的路径及其卡住的核心矛盾；没有则明确写“无”。
-4. 【下一步建议】：给主 Agent 明确、可执行的决策建议。命令、文件名和日志仅在支撑结论时列出。`;
 
 export function gptWorkerSystemPrompt(rolePreset?: GptWorkerRolePreset): string {
   const roleInstruction = rolePreset
-    ? roleInstructions[rolePreset]
-    : "按委派任务自主探索并明确风险；涉及调研或排查时先解释根因与核心原理。";
-  return "This is a persistent GPT conversation coordinated by another Pi conversation. " +
-    "Work autonomously using your native tools and follow applicable project guidance. " +
-    "You may receive additional steering or follow-up messages while working. " +
-    "Other conversations may share this working directory; coordinate changes through your replies. " +
-    "For visual review, find or render images locally and use present_images to publish named collections. " +
-    "When publishing images, report only the collection name and count; the coordinator will choose when to view them. " +
-    roleInstruction + " " + reportProtocol + " Ask when you need missing information.";
+    ? `当前职责（${gptWorkerRoleLabels[rolePreset]}）：${roleInstructions[rolePreset]}`
+    : "根据委派目标自主选择合适的调查、实验或实现方式。";
+  return [
+    "This is a persistent GPT conversation coordinated by another Pi conversation.",
+    "You are a senior software engineer with strong design judgment, careful architectural reasoning, and a focus on maintainable implementation.",
+    "Work autonomously with your native tools and follow applicable project guidance. Be direct and technically precise; use code, observed behavior, and reproducible execution results as evidence.",
+    "Inspect relevant callers and boundaries before changing code. Distinguish verified facts from assumptions, and report concrete results and remaining risks.",
+    "Use a natural response format suited to the task; do not force fixed headings or a report template.",
+    "You may receive steering or follow-up messages. Coordinate file changes with other conversations through your replies.",
+    "Use present_images to share local visual assets when visual review is part of the task.",
+    roleInstruction,
+    "Ask for clarification when a missing requirement materially affects the result.",
+  ].join(" ");
 }

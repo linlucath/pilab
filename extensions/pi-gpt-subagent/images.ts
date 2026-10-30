@@ -228,8 +228,8 @@ export function createImageTools(getStore: (ctx?: ExtensionToolContext) => Local
     }, { additionalProperties: false }), { minItems: 1, maxItems: 12 }) }, { additionalProperties: false });
     const tool: ImageTool<typeof parameters> = {
     name: "present_images", label: "提交图片素材",
-    description: "Copy existing local images into the project's durable image library. Give the collection and each image short, unique names. Include source URLs when known. Returns names only; no images or logs are sent to the coordinator. After publishing, report only the collection name and count, then wait for visual feedback.",
-    promptSnippet: "Submit named local images for the coordinator to review on demand",
+    description: "Copy 1–12 local image files into a named collection. Each image has a name and path; source URL and note are optional. Image names must be unique within the collection. Returns the collection name and saved image names.",
+    promptSnippet: "Publish local images to a named collection for visual review",
     parameters,
     execute: async (_id, args, signal, _update, ctx): Promise<AgentToolResult<unknown>> => {
       if (signal?.aborted) throw new Error("图片提交已取消。");
@@ -242,8 +242,8 @@ export function createImageTools(getStore: (ctx?: ExtensionToolContext) => Local
   const viewParameters = Type.Object({ collection: group, names: Type.Optional(Type.Array(group, { minItems: 1, maxItems: 6 })), original: Type.Optional(Type.Boolean()) }, { additionalProperties: false });
   const viewTool: ImageTool<typeof viewParameters> = {
     name: "view_images", label: "看图片",
-    description: "View a named local collection for visual judgment. Default: ONE numbered overview, up to 6 thumbnails. For detail, select 1–2 names and set original=true. Only the latest view stays attached to model requests; earlier views remain on disk. Request images only when visual judgment is needed. Delegate sourcing/rendering to GPT and ask it to use present_images. Do not repeatedly view unchanged images.",
-    promptSnippet: "View a small image overview or selected details only when needed for visual judgment",
+    description: "Read a named collection as a numbered overview of up to six images, or select images by name. names accepts 1–6 images; original=true requests detailed renders and accepts 1–2 names. The response includes image content. Only the latest view is attached to subsequent model requests; collection assets remain saved.",
+    promptSnippet: "Read images from a named collection or select particular images",
     parameters: viewParameters,
     execute: async (_id, args, signal, _update, ctx): Promise<AgentToolResult<unknown>> => {
       if (signal?.aborted) throw new Error("看图已取消。");
@@ -254,7 +254,7 @@ export function createImageTools(getStore: (ctx?: ExtensionToolContext) => Local
   const listParameters = Type.Object({ collection: Type.Optional(group) }, { additionalProperties: false });
   const listTool: ImageTool<typeof listParameters> = {
     name: "list_images", label: "图片素材",
-    description: "List local image collection names and counts, or image names in one collection. Does not attach any images. Use only when you need to find saved material; do not enumerate the library each turn.",
+    description: "List image collection names and counts, or provide collection to list image names. Returns metadata without attaching image content.",
     parameters: listParameters,
     execute: async (_id, args, _signal, _update, ctx): Promise<AgentToolResult<unknown>> => {
       const result = await getStore(ctx).list(args.collection);

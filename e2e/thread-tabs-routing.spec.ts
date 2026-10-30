@@ -96,7 +96,7 @@ test("GPT worker tabs expose compact tool logs, persona context, and sticky scro
   await expect(persona).toContainText("工兵人设 · 工程执行员 implementer");
   await persona.getByRole("button").click();
   await expect(persona).toContainText("System prompt");
-  await expect(persona).toContainText("你是工程执行员");
+  await expect(persona).toContainText("当前职责（工程执行员）：按任务范围完成实现");
   await expect(persona).toContainText("Implement the requested UX and verify the focused browser tests.");
 
   const toolGroup = page.locator(".worker-tool-group");

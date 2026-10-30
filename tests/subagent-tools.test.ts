@@ -33,6 +33,7 @@ async function until(check: () => boolean) {
 }
 
 function fixture(root: string) {
+  const sentPrompts: { name: string; message: string }[] = [];
   const manager = new GptSessionManager({
     storageDir: path.join(root, "sessions"),
     cwd: root,
@@ -41,6 +42,7 @@ function fixture(root: string) {
         if (type === "get_state") return { model: { provider: "openai-codex", id: model } } as T;
         if (type === "prompt") {
           const prompt = typeof fields?.message === "string" ? fields.message : "";
+          sentPrompts.push({ name: spec.name, message: prompt });
           onEvent({ type: "agent_start" });
           if (prompt.includes("ASK_FOR_INPUT")) {
             onEvent({ type: "extension_ui_request", id: `request-${spec.name}`, method: "input", title: "Need a value", message: "Choose a marker" });
@@ -53,7 +55,7 @@ function fixture(root: string) {
             onEvent({ type: "agent_settled" });
             return { disposition: "accepted" } as T;
           }
-          onEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `Feynman report for ${spec.name}` }] } });
+          onEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `Worker report for ${spec.name}` }] } });
           onEvent({ type: "agent_settled" });
           return { disposition: "accepted" } as T;
         }
@@ -71,7 +73,7 @@ function fixture(root: string) {
     }),
   });
   const tools = createSessionTools(async () => ({ manager, resolveModel: () => model }), undefined, owner);
-  return { manager, tools };
+  return { manager, tools, sentPrompts };
 }
 
 test("historical dispatch arguments discard the retired timeout parameter", () => {
@@ -108,7 +110,10 @@ test("the model surface is exactly three active native tools; legacy names remai
     assert.ok(findTool(tools, "gpt_session_send"), "saved transcripts/integrations retain a direct compatibility alias");
     assert.equal(findTool(tools, "gpt_session_send").defaultActive, false);
     assert.equal(typeof findTool(tools, "subagent_dispatch").parameters, "object");
-    assert.match(findTool(tools, "subagent_dispatch").description, /Do not call wait or query repeatedly/i);
+    const descriptions = ["subagent_dispatch", "subagent_query", "subagent_control"].map((name) => findTool(tools, name).description).join("\n");
+    assert.doesNotMatch(descriptions, /Feynman|费曼|never|do not|only when|must/i);
+    assert.match(findTool(tools, "subagent_dispatch").description, /mode="async"/);
+    assert.match(findTool(tools, "subagent_dispatch").description, /mode="sync"/);
     const parameters = findTool(tools, "subagent_dispatch").parameters as { properties: Record<string, unknown> };
     assert.equal(Object.hasOwn(parameters.properties, "timeoutSeconds"), false);
     for (const alias of ["gpt_session_create", "gpt_session_send", "gpt_session_batch", "gpt_session_wait"]) {
@@ -124,13 +129,13 @@ test("the model surface is exactly three active native tools; legacy names remai
   }
 });
 
-test("dispatch supports background batches and synchronous Feynman handoff; query returns one unread brief", async () => {
+test("dispatch passes task text unchanged and supports asynchronous and synchronous handoff", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "subagent-dispatch-"));
-  const { manager, tools } = fixture(root);
+  const { manager, tools, sentPrompts } = fixture(root);
   try {
     const dispatch = findTool(tools, "subagent_dispatch");
     const asyncResult = await dispatch.execute("async", { tasks: [
-      { name: "scout-a", message: "Map module A", rolePreset: "scout" },
+      { name: "scout-a", message: "  Map module A exactly as written.\n\nKeep this spacing.  ", rolePreset: "scout" },
       { name: "scout-b", message: "Map module B", rolePreset: "experimenter" },
     ] });
     const asyncDetails = details(asyncResult);
@@ -138,6 +143,8 @@ test("dispatch supports background batches and synchronous Feynman handoff; quer
     assert.equal((asyncDetails.started as unknown[]).length, 2);
     assert.ok((asyncDetails.started as { handle: string }[]).every((item) => item.handle.startsWith("gpt-")));
     assert.ok(manager.list(owner).every((session) => session.status === "idle"));
+    assert.ok(sentPrompts.some((item) => item.name === "scout-a" && item.message === "  Map module A exactly as written.\n\nKeep this spacing.  "));
+    assert.ok(sentPrompts.some((item) => item.name === "scout-b" && item.message === "Map module B"));
 
     const syncResult = await dispatch.execute("sync", {
       task: { name: "sync-worker", message: "Return an evidenced report.", rolePreset: "implementer" },
@@ -147,14 +154,15 @@ test("dispatch supports background batches and synchronous Feynman handoff; quer
     assert.equal(syncDetails.completed, true);
     assert.equal("timedOut" in syncDetails, false);
     const reports = syncDetails.sessions as { name: string; reply?: string; rolePreset?: string }[];
-    assert.match(reports[0].reply || "", /Feynman report for sync-worker/);
+    assert.match(reports[0].reply || "", /Worker report for sync-worker/);
+    assert.ok(sentPrompts.some((item) => item.name === "sync-worker" && item.message === "Return an evidenced report."));
     assert.equal(reports[0].rolePreset, "implementer");
 
     const query = findTool(tools, "subagent_query");
     const repeated = await query.execute("query-1", { action: "status", name: "sync-worker" });
     assert.equal(details(repeated).unchanged, true, "sync delivery should not be replayed by a later status query");
     const reread = await query.execute("query-repeat", { action: "status", name: "sync-worker", repeat: true });
-    assert.match(String(details(reread).reply), /Feynman report/);
+    assert.match(String(details(reread).reply), /Worker report/);
     const list = await query.execute("query-list", { action: "list" });
     assert.equal((details(list).sessions as unknown[]).length, 3);
   } finally {
