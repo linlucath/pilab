@@ -9,7 +9,7 @@ import { subagentToolMetadata } from "../../extensions/pi-gpt-subagent/tool-ui";
 import { wireToolCallId } from "../../shared/tool-history";
 
 type Props = {
-  sessionId: string; scrollRequest: number;
+  sessionId: string; scrollRequest: number; searchJump?: { sessionId: string; messageId: string; query: string; token: number };
   messages: Message[]; busy: boolean; compactTools: boolean; assistantName?: string; streamingId?: string;
   streamingThinking?: string; toolActivity?: { name: string; arguments: unknown; output: string } | null;
   gptWorkers?: GptSessionSummary[];
@@ -387,7 +387,8 @@ export function MessageStream(props: Props) {
   const setDirectoryOpenState = (open: boolean) => props.onDirectoryOpenChange ? props.onDirectoryOpenChange(open) : setLocalDirectoryOpen(open);
   const archiveRequestRef = useRef(props.archiveRequest ?? 0);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const visibleSearchTerm = directoryOpen ? searchTerm : "";
+  const appliedSearchJumpRef = useRef(0);
+  const visibleSearchTerm = directoryOpen ? searchTerm : props.searchJump?.sessionId === props.sessionId ? props.searchJump.query : "";
   const [jumpedId, setJumpedId] = useState("");
   const [scrollState, setScrollState] = useState({ top: false, bottom: false });
   const followStream = useRef(true);
@@ -498,6 +499,14 @@ export function MessageStream(props: Props) {
     return value.split(new RegExp(`(${escaped})`, "gi")).map((part, index) => part.toLocaleLowerCase() === query.toLocaleLowerCase() ? <mark key={index}>{part}</mark> : part);
   };
   useEffect(() => { setSearchTerm(""); setDirectoryOpenState(false); setJumpedId(""); }, [props.sessionId]);
+  useEffect(() => {
+    const jump = props.searchJump;
+    if (!jump || jump.sessionId !== props.sessionId || jump.token === appliedSearchJumpRef.current) return;
+    appliedSearchJumpRef.current = jump.token;
+    setDirectoryOpenState(false);
+    setSearchTerm(jump.query);
+    requestAnimationFrame(() => requestAnimationFrame(() => jumpToMessage(jump.messageId)));
+  }, [props.sessionId, props.searchJump?.token, props.messages]);
   useEffect(() => { if (directoryOpen) requestAnimationFrame(() => searchInputRef.current?.focus()); }, [directoryOpen]);
   useEffect(() => {
     const onShortcut = (event: KeyboardEvent) => {

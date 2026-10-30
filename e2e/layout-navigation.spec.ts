@@ -57,6 +57,16 @@ test("LAY-02 收起与展开侧栏并在窄屏保持会话可切换且无横向�
   const dimensions = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, page: document.documentElement.scrollWidth }));
   expect(dimensions.page).toBeLessThanOrEqual(dimensions.viewport);
   await expect(ui(page).composer).toBeVisible();
+  await side.getByRole("button", { name: "搜索会话" }).click();
+  const dialog = page.getByRole("dialog", { name: "搜索聊天或消息" });
+  const search = dialog.getByRole("textbox", { name: "搜索聊天或消息正文" });
+  await expect(search).toBeFocused();
+  await expect(side.locator(".session-search")).toHaveCount(0);
+  await search.fill("Beta");
+  await expect(dialog.getByRole("option").filter({ hasText: "Beta" })).toBeVisible();
+  await search.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(sessionRows(page)).toHaveCount(2);
 });
 
 test("LAY-03 搜索标题与工作目录，清空或无匹配不改变会话", async ({ page }) => {
@@ -67,20 +77,95 @@ test("LAY-03 搜索标题与工作目录，清空或无匹配不改变会话", a
   ]);
   await openWorkspace(page);
   const side = sidebar(page);
-  const search = side.getByRole("textbox", { name: "搜索会话" });
+  await side.getByRole("button", { name: "搜索会话" }).click();
+  const dialog = page.getByRole("dialog", { name: "搜索聊天或消息" });
+  const search = dialog.getByRole("textbox", { name: "搜索聊天或消息正文" });
+  await expect(search).toBeFocused();
   await search.fill("derived");
-  await expect(sessionRows(page)).toHaveCount(1);
-  await expect(side.getByText("Derived")).toBeVisible();
+  await expect(dialog.getByRole("option").filter({ hasText: "Derived" })).toBeVisible();
   await search.fill("lab-gamma");
-  await expect(sessionRows(page)).toHaveCount(1);
-  await expect(side.locator('[data-session-id="lay-03-c"] .session-main')).toBeVisible();
+  await expect(dialog.getByRole("option").filter({ hasText: "Gamma" })).toBeVisible();
   await search.fill("no-such-session");
-  await expect(side.getByText("没有匹配的会话")).toBeVisible();
-  await search.fill("");
+  await expect(dialog.getByText("没有匹配结果")).toBeVisible();
+  await search.press("Escape");
+  await expect(dialog).toHaveCount(0);
   await expect(sessionRows(page)).toHaveCount(3);
   const saved = await page.context().request.get(new URL("/api/workspace", page.url()).href);
   const workspace = (await saved.json()).workspace;
   expect(workspace.sessions.map((session: { title: string }) => session.title)).toEqual(["Alpha", "Derived", "Gamma"]);
+});
+
+test("LAY-03 搜索弹窗呈现最近会话、分组消息命中并键盘跳转", async ({ page }) => {
+  const messages = [
+    msg("search-current-system", "system", "system prompt"),
+    msg("search-archive-system", "system", "system prompt"),
+    msg("search-archive-user", "user", "Remember the hiddenlighthouse reference from this old conversation."),
+    msg("search-archive-assistant", "assistant", "A compacted note.", { compactedByModel: true, modelSummary: "The hiddenlighthouse was discussed in the archived summary." }),
+  ];
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await seedWorkspace(page, [
+    e2eSession("search-current", "Current chat", [messages[0]]),
+    e2eSession("search-archive", "hiddenlighthouse Archive Notes", messages.slice(1)),
+  ]);
+  await openWorkspace(page);
+  await page.addStyleTag({ content: ".search-modal-overlay, .search-modal { animation: none !important; }" });
+  const side = sidebar(page);
+  await side.getByRole("button", { name: "搜索会话" }).click();
+  const dialog = page.getByRole("dialog", { name: "搜索聊天或消息" });
+  const search = dialog.getByRole("textbox", { name: "搜索聊天或消息正文" });
+  await expect(search).toBeFocused();
+  await expect(dialog.getByRole("tab")).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: /新建对话/ })).toHaveCount(0);
+  await expect(dialog.locator(".search-modal-hint")).toHaveText("输入关键词搜索会话或消息正文");
+  await expect(dialog.getByText("最近会话")).toBeVisible();
+  await expect(dialog.getByRole("option")).toHaveCount(2);
+  await expect(dialog.locator(".search-modal-footer")).toHaveCount(0);
+  await expect(dialog.getByRole("option").first().locator("svg")).toHaveCount(0);
+  const emptyGeometry = await dialog.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const input = element.querySelector(".search-modal-input")!.getBoundingClientRect();
+    return { width: rect.width, top: rect.top, viewportHeight: window.innerHeight, inputHeight: input.height };
+  });
+  expect(Math.round(emptyGeometry.width)).toBe(560);
+  expect(Math.abs(emptyGeometry.top - emptyGeometry.viewportHeight * .16)).toBeLessThanOrEqual(1);
+  expect(emptyGeometry.inputHeight).toBeCloseTo(42, 1);
+  await page.screenshot({ path: "artifacts/shots/pure-search-empty.png", animations: "disabled" });
+
+  await search.fill("hiddenlighthouse");
+  await expect(dialog.getByRole("option")).toHaveCount(3);
+  await expect(dialog.getByText("会话", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("消息", { exact: true })).toBeVisible();
+  await expect(dialog.locator("mark").first()).toHaveText("hiddenlighthouse");
+  const resultTypography = await dialog.evaluate((element) => ({
+    title: getComputedStyle(element.querySelector(".search-modal-item-copy > strong")!).fontSize,
+    preview: getComputedStyle(element.querySelector(".search-modal-preview")!).fontSize,
+    previewLineHeight: Number.parseFloat(getComputedStyle(element.querySelector(".search-modal-preview")!).lineHeight),
+  }));
+  expect(resultTypography.title).toBe("14px");
+  expect(resultTypography.preview).toBe("13px");
+  expect(resultTypography.previewLineHeight).toBeCloseTo(18.85, 1);
+  const chatRowHeight = await dialog.getByRole("option").first().evaluate((row) => row.getBoundingClientRect().height);
+  const messageRowHeight = await dialog.getByRole("option").nth(1).evaluate((row) => row.getBoundingClientRect().height);
+  expect(chatRowHeight).toBeLessThanOrEqual(44);
+  expect(messageRowHeight).toBeLessThanOrEqual(60);
+  await page.screenshot({ path: "artifacts/shots/pure-search-results.png", animations: "disabled" });
+
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "会话标题" })).toHaveValue("hiddenlighthouse Archive Notes");
+  await expect(page.locator('[data-message-id="search-archive-assistant"]')).toHaveClass(/jump-highlight/);
+
+  await side.getByRole("button", { name: "搜索会话" }).click();
+  const reopened = page.getByRole("dialog", { name: "搜索聊天或消息" });
+  await reopened.getByRole("textbox", { name: "搜索聊天或消息正文" }).press("Escape");
+  await expect(reopened).toHaveCount(0);
+  await side.getByRole("button", { name: "搜索会话" }).click();
+  const overlay = page.locator(".search-modal-overlay");
+  await overlay.click({ position: { x: 4, y: 4 } });
+  await expect(page.getByRole("dialog", { name: "搜索聊天或消息" })).toHaveCount(0);
+  await expect(sessionRows(page)).toHaveCount(2);
 });
 
 test("LAY-04 新建、快捷键新建、改名复制及确认删除会话", async ({ page }) => {
@@ -273,9 +358,10 @@ test("LAY-08 侧栏只显示标题、动作轻量对齐且收起态不泄漏文�
   await expect(side).toHaveCSS("width", "68px");
   await expect(side.locator(".folder-children")).toHaveCount(0);
   await expect(side.locator(".sidebar-folder .session-row")).toHaveCount(0);
-  const brandRight = await side.locator(".brand-mark").boundingBox().then((box) => box!.x + box!.width);
+  const searchRight = await side.getByRole("button", { name: "搜索会话" }).boundingBox().then((box) => box!.x + box!.width);
   const collapseLeft = await side.getByRole("button", { name: "展开侧栏" }).boundingBox().then((box) => box!.x);
-  expect(brandRight).toBeLessThanOrEqual(collapseLeft);
+  expect(searchRight).toBeLessThanOrEqual(collapseLeft);
+  await expect(page.locator(".search-modal")).toHaveCount(0);
   const leakedLabels = await side.evaluate((element) => [
     ".session-copy", ".folder-name", ".folder-toggle small", ".session-group-heading", ".new-conversation span", ".new-conversation kbd", ".new-folder-button span",
   ].flatMap((selector) => [...element.querySelectorAll<HTMLElement>(selector)]).filter((node) => node.textContent?.trim() && getComputedStyle(node).display !== "none").map((node) => node.textContent!.trim()));
@@ -289,23 +375,17 @@ test("LAY-09 新建文件夹无需弹窗且失焦时持久化", async ({ page })
   await seedWorkspace(page, [e2eSession("lay-09-session", "Folder creation", [msg("lay-09-system", "system", "system")])]);
   await openWorkspace(page);
   const side = sidebar(page);
-  const search = side.getByRole("textbox", { name: "搜索会话" });
-  await search.fill("no-such-folder");
-  await expect(side.getByText("没有匹配的会话")).toBeVisible();
   await side.getByRole("button", { name: "新建文件夹" }).click();
-  await expect(search).toHaveValue("");
   const folder = side.locator(".sidebar-folder");
   await expect(folder).toHaveCount(1);
   await expect(folder.locator(".folder-toggle")).toHaveAttribute("title", "新建文件夹");
   await expect(folder.locator(".folder-name-input")).toHaveCount(0);
-  await search.fill("新建");
   await folder.getByRole("button", { name: "重命名文件夹 新建文件夹" }).click();
-  await expect(search).toHaveValue("");
   const input = folder.locator(".folder-name-input");
   await expect(input).toBeFocused();
   await expect(input).toHaveValue("新建文件夹");
   await input.fill("Inbox");
-  await side.getByRole("textbox", { name: "搜索会话" }).click();
+  await input.press("Tab");
   await expect(folder.locator(".folder-toggle")).toHaveAttribute("title", "Inbox");
   await expect.poll(async () => {
     const response = await page.context().request.get(new URL("/api/workspace", page.url()).href);

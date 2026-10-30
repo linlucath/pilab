@@ -13,7 +13,10 @@
 @media (max-width: 860px) {
   :root { --sidebar-width: 68px; --topbar-height: 62px; }
   .sidebar { width: 68px; min-width: 68px; align-items: center; padding: 15px 8px; }
-  .sidebar-brand-row { justify-content: center; padding: 0; }.sidebar-brand-row > strong, .sidebar-collapse, .new-conversation span, .session-search, .session-copy, .session-row-actions, .sidebar-folder-actions { display: none; }
+  .sidebar-brand-row { justify-content: center; gap: 4px; padding: 0; }.sidebar-brand-row > strong, .sidebar-collapse, .new-conversation span, .session-copy, .session-row-actions, .sidebar-folder-actions { display: none; }
+  .brand-mark { width: 22px; height: 22px; border-radius: 7px; font-size: 16px; }
+  .sidebar-brand-actions { gap: 0; }
+  .sidebar-brand-actions .icon-button { width: 26px; height: 26px; }
   .sidebar-mobile-toggle { display: grid; }
   .sidebar:not(.is-collapsed) .session-initial { display: grid; }
   .sidebar-create-row { flex-direction: column; gap: 6px; }.new-conversation { width: 34px; height: 34px; flex: 0 0 34px; justify-content: center; padding: 0; }.sidebar-create-row .new-folder-button { width: 34px; height: 34px; flex-basis: 34px; }
@@ -35,9 +38,18 @@
   .message-actions { opacity: .85; }.message-actions button span { display: none; }.message-actions button { min-width: 24px; padding: 0 4px; }
   .composer-bar { padding: 9px 10px max(10px, env(safe-area-inset-bottom)); }.composer-meta > span { display: none; }.composer-input-row { min-height: 58px; padding: 7px; }.composer-input-row textarea { font-size: 11px; }.send-button, .add-only-button { min-height: 33px; padding: 0 8px; font-size: 9px; }.run-current { min-width: 125px; }
 }
+@media (max-width: 620px) {
+  .search-modal-overlay { align-items: flex-start; padding: 8px; }
+  .search-modal { width: 100%; max-height: calc(100dvh - 16px); border-radius: 12px; }
+  .search-modal-input { margin: 10px 12px 8px; }
+  .search-modal-footer { gap: 8px; padding: 0 12px; }
+  .search-modal-footer > span { gap: 3px; }
+}
+
 @media (max-width: 440px) {
   :root { --sidebar-width: 58px; }
   .sidebar { width: 58px; min-width: 58px; padding-right: 6px; padding-left: 6px; }
+  .sidebar-brand-row .brand-mark { display: none; }
   .sidebar .new-conversation { width: 34px; height: 34px; flex-basis: 34px; }.sidebar-create-row .new-folder-button { width: 34px; height: 34px; flex-basis: 34px; }
   .topbar-leading { gap: 3px; }
   .title-line > svg { display: none; }.title-line input { width: 108px; padding-left: 3px; font-size: 10px; }

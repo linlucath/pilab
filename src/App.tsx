@@ -7,6 +7,7 @@ import { useProjectWorkspace, type Run, type Session, type Workspace } from "./w
 import { newSession, uid, loadLegacyWorkspace } from "./utils/session";
 import { contextTokenMetrics } from "./utils/context-tokens";
 import { Sidebar } from "./components/Sidebar";
+import { SearchModal } from "./components/SearchModal";
 import { TopBar } from "./components/TopBar";
 import { MessageStream } from "./components/MessageStream";
 import { ComposerBar } from "./components/ComposerBar";
@@ -20,6 +21,7 @@ type PiConnection = {
 type ToolActivity = { name: string; arguments: unknown; output: string };
 type WorkerWakeNotice = { sessionId: string; cwd: string; names: string[] };
 type WorkerReview = Pick<WorkerWakeNotice, "sessionId" | "cwd" | "names">;
+type SearchJump = { sessionId: string; messageId: string; query: string; token: number };
 type SessionStreamView = { streamingId: string; thinking: string; toolActivity: ToolActivity | null };
 type RunControl = { sessionId: string; runId: string; lastSeq: number; shouldSubscribe: boolean; readerController?: AbortController; resume?: () => void };
 const emptyStreamView: SessionStreamView = { streamingId: "", thinking: "", toolActivity: null };
@@ -62,6 +64,9 @@ export default function App() {
   const [compactTools, setCompactTools] = useState(() => {
     try { return localStorage.getItem("pilab-tools-compact-v1") !== "false"; } catch { return true; }
   });
+  const [searchModalOpen, setSearchModalOpen] = useState(false);
+  const [searchJump, setSearchJump] = useState<SearchJump | undefined>();
+  const searchJumpSequence = useRef(0);
   const [runErrors, setRunErrors] = useState<Record<string, string>>({});
   const [scrollRequest, setScrollRequest] = useState(0);
   const [streamViews, setStreamViews] = useState<Record<string, SessionStreamView>>({});
@@ -652,6 +657,17 @@ export default function App() {
     updateSessionUrl(id);
     setWorkspace((current) => ({ ...current, active: id, followPi: false }));
   };
+  const selectSearchSession = (id: string) => {
+    setSelectedWorkerId("");
+    selectSession(id);
+  };
+  const jumpToSearchMessage = (sessionId: string, messageId: string, query: string) => {
+    const token = ++searchJumpSequence.current;
+    setSelectedWorkerId("");
+    setSearchJump({ sessionId, messageId, query, token });
+    selectSession(sessionId);
+    window.setTimeout(() => setSearchJump((current) => current?.token === token ? undefined : current), 2_600);
+  };
   const renameSession = (id: string, title: string) => setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === id ? { ...item, title } : item) }));
   const createFolder = (name = "新建文件夹") => setWorkspace((current) => ({
     ...current, folders: [...current.folders, { id: uid(), name: name.trim().slice(0, 120) || "新建文件夹", collapsed: false, sessionIds: [] }],
@@ -1052,7 +1068,7 @@ export default function App() {
   const onCopyMessage = useCallback((text: string) => messageStreamHandlersRef.current.copyMessage(text), []);
   if (!ready) return <div className="app-loading" role="status">{storageError || "正在打开本地工作区…"}{storageError && <button onClick={() => location.reload()}>重试</button>}</div>;
   return <div className={`app-shell ${sidebarCollapsed ? "sidebar-compact" : ""}`}>
-    <Sidebar sessions={workspace.sessions} folders={workspace.folders} rootSessionIds={workspace.rootSessionIds} active={session.id} collapsed={sidebarCollapsed} activeRuns={activeRuns} onToggle={() => setSidebarCollapsed((value) => !value)} onCreate={() => createSession()} onCreateFolder={createFolder} onSelect={selectSession} onRename={renameSession} onDuplicate={duplicateSession} onDelete={deleteSession} onRenameFolder={renameFolder} onDeleteFolder={deleteFolder} onToggleFolder={toggleFolder} onMoveSession={moveSession} />
+    <Sidebar sessions={workspace.sessions} folders={workspace.folders} rootSessionIds={workspace.rootSessionIds} active={session.id} collapsed={sidebarCollapsed} activeRuns={activeRuns} onToggle={() => setSidebarCollapsed((value) => !value)} onOpenSearch={() => setSearchModalOpen(true)} onCreate={() => createSession()} onCreateFolder={createFolder} onSelect={selectSession} onRename={renameSession} onDuplicate={duplicateSession} onDelete={deleteSession} onRenameFolder={renameFolder} onDeleteFolder={deleteFolder} onToggleFolder={toggleFolder} onMoveSession={moveSession} />
     <main className="app-main">
       <TopBar session={session} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onTitle={(title) => patchSession({ title })} />
       <div className="workspace-body">
@@ -1060,12 +1076,13 @@ export default function App() {
           <ThreadTabs key={session.id} workers={visibleGptSessions} selectedWorkerId={selectedWorkerId} onSelectWorker={setSelectedWorkerId} onCloseWorker={(workerId) => setSelectedWorkerId((current) => current === workerId ? "" : current)} />
           {gptSessionsError && !selectedWorker && <div className="run-error-banner" role="status"><AlertTriangle size={17} /><div><strong>读取工兵列表失败</strong><span>{gptSessionsError}</span></div><button onClick={() => setGptSessionsError("")} aria-label="关闭工兵列表错误">关闭<X size={14} /></button></div>}
           {selectedWorker && workerMessagesError && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>工兵对话失败</strong><span>{workerMessagesError}</span></div><button onClick={() => setWorkerMessagesError("")} aria-label="关闭工兵对话错误">关闭<X size={14} /></button></div>}
-          <MessageStream sessionId={`${session.id}:${selectedWorker?.id || "main"}`} scrollRequest={scrollRequest} messages={currentMessages} assistantName={selectedWorker ? `${selectedWorker.model} · ${selectedWorker.name}` : "Gemini"} busy={selectedWorker ? false : busy} compactTools={compactTools} streamingId={selectedWorker ? undefined : streamingId} streamingThinking={selectedWorker ? undefined : streamingThinking} toolActivity={selectedWorker ? undefined : toolActivity} gptWorkers={selectedWorker ? [] : visibleGptSessions} onMessage={onMessage} onCall={onCall} onAdd={onAdd} onMove={onMove} onDelete={onDelete} onDeleteCall={onDeleteCall} onAddToolResult={onAddToolResult} onBranch={onBranch} onCopy={onCopyMessage} />
+          <MessageStream sessionId={`${session.id}:${selectedWorker?.id || "main"}`} scrollRequest={scrollRequest} searchJump={!selectedWorker && searchJump?.sessionId === session.id ? { ...searchJump, sessionId: `${session.id}:main` } : undefined} messages={currentMessages} assistantName={selectedWorker ? `${selectedWorker.model} · ${selectedWorker.name}` : "Gemini"} busy={selectedWorker ? false : busy} compactTools={compactTools} streamingId={selectedWorker ? undefined : streamingId} streamingThinking={selectedWorker ? undefined : streamingThinking} toolActivity={selectedWorker ? undefined : toolActivity} gptWorkers={selectedWorker ? [] : visibleGptSessions} onMessage={onMessage} onCall={onCall} onAdd={onAdd} onMove={onMove} onDelete={onDelete} onDeleteCall={onDeleteCall} onAddToolResult={onAddToolResult} onBranch={onBranch} onCopy={onCopyMessage} />
           {!selectedWorker && runErrors[session.id] && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>本次运行失败</strong><span>{runErrors[session.id]}</span></div><button onClick={() => setSessionRunError(session.id)} aria-label="关闭运行错误">关闭<X size={14} /></button></div>}
           <ComposerBar key={session.id} busy={selectedWorker ? false : busy} workerMode={!!selectedWorker} placeholder={selectedWorker ? `给工兵发送直接指导 (Steer)…` : undefined} toolName={selectedWorker ? undefined : toolActivity?.name} messageCount={currentMessages.length} contextTokens={currentContextMetrics.context} savedPercent={currentContextMetrics.savedPercent} settings={session.settings} models={piConnection?.models || []} defaultModel={piConnection?.defaultModel} piConnected={piConnection?.connected} onSetting={updateSetting} onNotice={setNotice} onRefreshModels={() => void refreshPiStatus()} backgroundWorkers={selectedWorker ? [] : visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={selectedWorker ? undefined : workerWakeNotice} onDismissWake={() => dismissSessionWorkerWake(session.id)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={selectedWorker ? sendWorkerGuidance : sendMessage} onRun={() => { if (!selectedWorker) void run(); }} onStop={() => { if (!selectedWorker) void abortRun(); }} />
         </section>
       </div>
     </main>
+    {searchModalOpen && <SearchModal sessions={workspace.sessions} activeSessionId={session.id} onClose={() => setSearchModalOpen(false)} onSelectSession={selectSearchSession} onJumpToMessage={jumpToSearchMessage} />}
     {notice && <div className="toast" role="status"><CircleHelp size={16} /><span>{notice}</span><button onClick={() => setNotice("")} aria-label="关闭提示"><X size={14} /></button></div>}
   </div>;
 }

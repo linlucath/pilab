@@ -6,14 +6,13 @@ import type { Session, WorkspaceFolder } from "../workspace-store";
 type DropTarget = { kind: "session"; folderId: string | null; sessionId: string; position: "before" | "after" } | { kind: "root" | "folder"; folderId: string | null };
 type Props = {
   sessions: Session[]; folders: WorkspaceFolder[]; rootSessionIds: string[]; active: string; collapsed: boolean; activeRuns: Map<string, string>;
-  onToggle: () => void; onCreate: () => void; onCreateFolder: (name: string) => void; onSelect: (id: string) => void;
+  onToggle: () => void; onOpenSearch: () => void; onCreate: () => void; onCreateFolder: (name: string) => void; onSelect: (id: string) => void;
   onRename: (id: string, title: string) => void; onDuplicate: (session: Session) => void; onDelete: (id: string) => void;
   onRenameFolder: (id: string, name: string) => void; onDeleteFolder: (id: string) => void; onToggleFolder: (id: string) => void;
   onMoveSession: (id: string, folderId: string | null, targetId?: string, position?: "before" | "after" | "end") => void;
 };
 
-export function Sidebar({ sessions, folders, rootSessionIds, active, collapsed, activeRuns, onToggle, onCreate, onCreateFolder, onSelect, onRename, onDuplicate, onDelete, onRenameFolder, onDeleteFolder, onToggleFolder, onMoveSession }: Props) {
-  const [search, setSearch] = useState("");
+export function Sidebar({ sessions, folders, rootSessionIds, active, collapsed, activeRuns, onToggle, onOpenSearch, onCreate, onCreateFolder, onSelect, onRename, onDuplicate, onDelete, onRenameFolder, onDeleteFolder, onToggleFolder, onMoveSession }: Props) {
   const [draggedId, setDraggedId] = useState("");
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
@@ -21,21 +20,10 @@ export function Sidebar({ sessions, folders, rootSessionIds, active, collapsed, 
   const folderInputRef = useRef<HTMLInputElement>(null);
   const editingFolderRef = useRef<string | null>(null);
   const sessionById = useMemo(() => new Map(sessions.map((session) => [session.id, session])), [sessions]);
-  const query = search.trim().toLowerCase();
-  const matchesSession = (session: Session) => !query || `${session.title} ${session.settings.workingDirectory}`.toLowerCase().includes(query);
-  const rootSessions = rootSessionIds.map((id) => sessionById.get(id)).filter((session): session is Session => !!session && matchesSession(session));
-  const folderSessions = (folder: WorkspaceFolder) => {
-    const ids = query && folder.name.toLowerCase().includes(query) ? folder.sessionIds : folder.sessionIds.filter((id) => {
-      const session = sessionById.get(id);
-      return !!session && matchesSession(session);
-    });
-    return ids.map((id) => sessionById.get(id)).filter((session): session is Session => !!session);
-  };
-  const visibleFolders = folders.filter((folder) => !query || folder.name.toLowerCase().includes(query) || folderSessions(folder).length > 0);
-  const hasMatches = rootSessions.length > 0 || visibleFolders.length > 0;
+  const rootSessions = rootSessionIds.map((id) => sessionById.get(id)).filter((session): session is Session => !!session);
+  const folderSessions = (folder: WorkspaceFolder) => folder.sessionIds.map((id) => sessionById.get(id)).filter((session): session is Session => !!session);
 
   const beginFolderEdit = (id: string, name: string) => {
-    setSearch("");
     editingFolderRef.current = id;
     setFolderDraft(name);
     setEditingFolderId(id);
@@ -118,22 +106,24 @@ export function Sidebar({ sessions, folders, rootSessionIds, active, collapsed, 
     <div className="sidebar-brand-row">
       <div className="brand-mark">π</div>
       {!collapsed && <strong>Pi Lab</strong>}
-      <button className="icon-button sidebar-collapse" onClick={onToggle} title={collapsed ? "展开侧栏" : "收起侧栏"} aria-label={collapsed ? "展开侧栏" : "收起侧栏"}>
-        {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
-      </button>
+      <div className="sidebar-brand-actions">
+        <button className="icon-button sidebar-search-toggle" onClick={onOpenSearch} title="搜索聊天或消息" aria-label="搜索会话" aria-haspopup="dialog"><Search size={17} /></button>
+        <button className="icon-button sidebar-collapse" onClick={onToggle} title={collapsed ? "展开侧栏" : "收起侧栏"} aria-label={collapsed ? "展开侧栏" : "收起侧栏"}>
+          {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+        </button>
+      </div>
     </div>
     <div className="sidebar-create-row">
       <button className="new-conversation" onClick={onCreate} title="新建对话" aria-label="新建对话">
         <Plus size={17} />{!collapsed && <span>新建对话</span>}
       </button>
-      <button className="icon-button new-folder-button" onClick={() => { setSearch(""); onCreateFolder("新建文件夹"); }} title="新建文件夹" aria-label="新建文件夹"><FolderPlus size={17} /></button>
+      <button className="icon-button new-folder-button" onClick={() => onCreateFolder("新建文件夹")} title="新建文件夹" aria-label="新建文件夹"><FolderPlus size={17} /></button>
     </div>
-    {!collapsed && <label className="session-search"><Search size={15} /><input placeholder="搜索会话" value={search} onChange={(event) => setSearch(event.target.value)} aria-label="搜索会话" />{search && <button onClick={() => setSearch("")} aria-label="清除搜索">×</button>}</label>}
     <div className="session-list" aria-label="已保存会话">
       <section className={`session-group root-session-group ${dropTarget?.kind === "root" ? "drop-hover" : ""}`} onDragOver={(event) => { if (draggedId) { event.preventDefault(); setDropTarget((current) => current?.kind === "root" ? current : { kind: "root", folderId: null }); } }} onDrop={(event) => dropAtEnd(event, null)}>
         {rootSessions.map((session) => sessionRow(session, null))}
       </section>
-      {visibleFolders.map((folder) => {
+      {folders.map((folder) => {
         const children = folderSessions(folder);
         const isDropTarget = dropTarget?.kind === "folder" && dropTarget.folderId === folder.id;
         const isEditing = editingFolderId === folder.id && !collapsed;
@@ -153,7 +143,6 @@ export function Sidebar({ sessions, folders, rootSessionIds, active, collapsed, 
           {!collapsed && !folder.collapsed && <div className="folder-children">{children.map((session) => sessionRow(session, folder.id))}</div>}
         </section>;
       })}
-      {!hasMatches && <div className="sidebar-empty">{collapsed ? "·" : "没有匹配的会话"}</div>}
     </div>
   </aside>;
 }
