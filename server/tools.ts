@@ -7,7 +7,7 @@ import { sessionForkArgsSchema, type Settings, type Message } from "../shared/sc
 import { buildForkMessages } from "../shared/session-fork";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { createGptSessionTools } from "./gpt-subagent";
-import { createImageTools } from "../extensions/pi-gpt-subagent/images";
+import { createViewImageTool } from "../extensions/pi-gpt-subagent/images";
 import { projectImages } from "./images";
 import type { ConversationHistory } from "../extensions/pi-gpt-subagent/tools";
 
@@ -116,7 +116,7 @@ export async function agentTools(
     createContextCompactTool(history, onEvent),
     createSessionForkTool(history, onEvent),
     ...createGptSessionTools(cwd, getHistory, ownerSessionId),
-    ...createImageTools(() => projectImages, "viewer") as unknown as AgentTool<TSchema, unknown>[],
+    createViewImageTool(() => projectImages, () => cwd) as unknown as AgentTool<TSchema, unknown>,
   ];
   return { cwd, tools };
 }

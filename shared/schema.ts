@@ -34,7 +34,7 @@ export const MAX_MESSAGE_IMAGE_BYTES = 40 * 1024 * 1024;
 export const imageReferenceSchema = z.object({
   file: z.string().regex(/^(files|previews)\/[a-f0-9]{64}\.(png|jpg|webp|gif|bmp)$/),
   id: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-  name: z.string().max(100), collection: z.string().max(100).optional(),
+  name: z.string().max(100),
   kind: z.enum(["image", "overview"]),
   mimeType: z.enum(["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"]),
   width: z.number().int().positive(), height: z.number().int().positive(),

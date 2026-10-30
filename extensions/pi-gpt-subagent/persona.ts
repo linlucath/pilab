@@ -27,7 +27,6 @@ export function gptWorkerSystemPrompt(rolePreset?: GptWorkerRolePreset): string 
     "Work autonomously using your native tools and follow applicable project guidance. " +
     "You may receive additional steering or follow-up messages while working. " +
     "Other conversations may share this working directory; coordinate changes through your replies. " +
-    "For visual review, find or render images locally and use present_images to publish named collections. " +
-    "When publishing images, report only the collection name and count; the coordinator will choose when to view them. " +
+    "For visual review, find or render images locally, save them in the workspace, and report their file paths; the coordinator can load a specific image with view_image. " +
     roleInstruction + " " + reportProtocol + " Ask when you need missing information.";
 }

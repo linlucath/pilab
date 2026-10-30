@@ -119,7 +119,7 @@ test("context_compact streams a UI event and feeds dehydrated summaries back int
   }
 });
 
-test("Agent exposes GPT and image tools, feeds tool results back, and replays edited history", async () => {
+test("Agent exposes GPT and view_image, feeds tool results back, and replays edited history", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "pi-lab-tools-"));
   const sent: any[] = [];
   const mock = await provider((body, res) => {
@@ -149,12 +149,11 @@ test("Agent exposes GPT and image tools, feeds tool results back, and replays ed
     assert.equal(sent.length, 2);
     assert.deepEqual(sent[0].tools.map((t: any) => t.function.name).sort(), [
       "context_compact",
-      "list_images",
       "session_fork",
       "subagent_control",
       "subagent_dispatch",
       "subagent_query",
-      "view_images",
+      "view_image",
     ]);
     assert.equal(sent[0].messages[0].content, "Original system text.");
     assert.equal(sent[1].messages[2].tool_calls[0].function.name, "subagent_query");
@@ -229,12 +228,11 @@ test("Agent tools are always enabled and expose the full tool set", async () => 
     const names = sent[0].tools.map((tool: any) => tool.function.name).sort();
     assert.deepEqual(names, [
       "context_compact",
-      "list_images",
       "session_fork",
       "subagent_control",
       "subagent_dispatch",
       "subagent_query",
-      "view_images",
+      "view_image",
     ]);
     assert.equal(events.some((event) => event.type === "error"), false, JSON.stringify(events));
     assert.equal(sent.length, 2);
