@@ -380,6 +380,7 @@ export function MessageStream(props: Props) {
   const innerRef = useRef<HTMLDivElement>(null);
   const sessionRef = useRef<string | null>(null);
   const scrollRequestRef = useRef(props.scrollRequest);
+  const autoScrollRafRef = useRef<number | null>(null);
   const [imagePreview, setImagePreview] = useState<{ file: string; name: string } | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [localDirectoryOpen, setLocalDirectoryOpen] = useState(false);
@@ -389,6 +390,8 @@ export function MessageStream(props: Props) {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const appliedSearchJumpRef = useRef(0);
   const visibleSearchTerm = directoryOpen ? searchTerm : props.searchJump?.sessionId === props.sessionId ? props.searchJump.query : "";
+  const searchJump = props.searchJump;
+  const hasValidSearchJump = !!searchJump && searchJump.sessionId === props.sessionId && !!searchJump.messageId && props.messages.some((message) => message.id === searchJump.messageId);
   const [jumpedId, setJumpedId] = useState("");
   const [scrollState, setScrollState] = useState({ top: false, bottom: false });
   const followStream = useRef(true);
@@ -423,11 +426,22 @@ export function MessageStream(props: Props) {
     const bottom = distance > 80;
     setScrollState((current) => current.top === top && current.bottom === bottom ? current : { top, bottom });
   };
+  const cancelAutoScroll = () => {
+    if (autoScrollRafRef.current !== null) cancelAnimationFrame(autoScrollRafRef.current);
+    autoScrollRafRef.current = null;
+  };
+  const requestAutoScrollFrame = (callback: FrameRequestCallback) => {
+    cancelAutoScroll();
+    autoScrollRafRef.current = requestAnimationFrame((timestamp) => {
+      autoScrollRafRef.current = null;
+      callback(timestamp);
+    });
+  };
   const scrollToBottom = (element: HTMLDivElement, behavior: ScrollBehavior = "auto") => {
     settlingAtBottom.current = true;
     followStream.current = true;
     element.scrollTo({ top: element.scrollHeight, behavior });
-    const settle = () => requestAnimationFrame(() => {
+    const settle = () => requestAutoScrollFrame(() => {
       if (!element.isConnected) { settlingAtBottom.current = false; return; }
       element.scrollTop = element.scrollHeight;
       if (element.scrollHeight - element.scrollTop - element.clientHeight > 2) settle();
@@ -436,6 +450,9 @@ export function MessageStream(props: Props) {
     settle();
   };
   const jumpToMessage = (id: string) => {
+    cancelAutoScroll();
+    settlingAtBottom.current = false;
+    followStream.current = false;
     const root = scrollRef.current;
     if (!root) return;
     let target = [...root.querySelectorAll<HTMLElement>("[data-message-id], [data-result-id]")].find((element) => element.dataset.messageId === id || element.dataset.resultId === id);
@@ -524,9 +541,14 @@ export function MessageStream(props: Props) {
     const requested = scrollRequestRef.current !== props.scrollRequest;
     sessionRef.current = props.sessionId;
     scrollRequestRef.current = props.scrollRequest;
-    if (sessionChanged || requested) followStream.current = true;
-    if (sessionChanged || requested) {
-      requestAnimationFrame(() => {
+    const shouldScrollToBottom = requested || (sessionChanged && !hasValidSearchJump);
+    if (sessionChanged && hasValidSearchJump && !requested) {
+      followStream.current = false;
+      settlingAtBottom.current = false;
+    }
+    if (shouldScrollToBottom) followStream.current = true;
+    if (shouldScrollToBottom) {
+      requestAutoScrollFrame(() => {
         if (!element.isConnected) return;
         scrollToBottom(element, sessionChanged ? "auto" : "smooth");
       });

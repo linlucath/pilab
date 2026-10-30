@@ -168,6 +168,40 @@ test("LAY-03 搜索弹窗呈现最近会话、分组消息命中并键盘跳转"
   await expect(sessionRows(page)).toHaveCount(2);
 });
 
+test("LAY-03 跨会话搜索跳转停留在长会话中间消息而不滚到底部", async ({ page }) => {
+  const messages = Array.from({ length: 10 }, (_, index) => msg(
+    `search-jump-message-${index + 1}`,
+    index % 2 === 0 ? "user" : "assistant",
+    index === 1
+      ? `middlejumpneedle · This is the second message in a ten-message conversation. ${"Target context continues for scroll verification. ".repeat(5)}`
+      : `Conversation item ${index + 1}. ${"Additional historical context keeps the conversation taller than the viewport. ".repeat(4)}`,
+  ));
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await seedWorkspace(page, [
+    e2eSession("search-jump-current", "Current conversation", [msg("search-jump-current-message", "user", "Current conversation")]),
+    e2eSession("search-jump-target", "Long target conversation", messages),
+  ]);
+  await openWorkspace(page);
+  await sidebar(page).getByRole("button", { name: "搜索会话" }).click();
+  const dialog = page.getByRole("dialog", { name: "搜索聊天或消息" });
+  await dialog.getByRole("textbox", { name: "搜索聊天或消息正文" }).fill("middlejumpneedle");
+  await dialog.getByRole("option").filter({ hasText: "Long target conversation" }).click();
+
+  const stream = page.locator(".message-stream");
+  const target = stream.locator('[data-message-id="search-jump-message-2"]');
+  await expect(page.getByRole("textbox", { name: "会话标题" })).toHaveValue("Long target conversation");
+  await expect(target).toHaveClass(/jump-highlight/);
+  await expect.poll(() => target.evaluate((element) => {
+    const container = element.closest<HTMLElement>(".message-stream")!;
+    const row = element.getBoundingClientRect();
+    const viewport = container.getBoundingClientRect();
+    const visible = row.bottom > viewport.top && row.top < viewport.bottom;
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    return visible && distanceFromBottom > 120;
+  })).toBe(true);
+  await expect(stream.locator(".message-row")).toHaveCount(10);
+});
+
 test("LAY-04 新建、快捷键新建、改名复制及确认删除会话", async ({ page }) => {
   await seedWorkspace(page, [e2eSession("lay-04-source", "Alpha", [
     msg("lay-04-system", "system", "system prompt"),
