@@ -1,20 +1,28 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { X } from "lucide-react";
 import type { GptSessionSummary } from "../../shared/gpt-sessions";
+import { filterClosedWorkerTabs, sortWorkerTabs } from "../utils/worker-tabs";
 
 type Props = {
+  sessionId: string;
   workers: GptSessionSummary[];
   selectedWorkerId: string;
   onSelectWorker: (id: string) => void;
   onCloseWorker: (id: string) => void;
 };
 
-export function ThreadTabs({ workers, selectedWorkerId, onSelectWorker, onCloseWorker }: Props) {
-  const [closedTabIds, setClosedTabIds] = useState<Set<string>>(() => new Set());
-  const visibleWorkers = workers.filter((worker) => !closedTabIds.has(worker.id));
+export function ThreadTabs({ sessionId, workers, selectedWorkerId, onSelectWorker, onCloseWorker }: Props) {
+  const [closedTabs, setClosedTabs] = useState<{ sessionId: string; ids: Set<string> }>(() => ({ sessionId, ids: new Set() }));
+  const visibleWorkers = useMemo(() => {
+    const closedTabIds = closedTabs.sessionId === sessionId ? closedTabs.ids : new Set<string>();
+    return sortWorkerTabs(filterClosedWorkerTabs(workers, closedTabIds));
+  }, [workers, closedTabs, sessionId]);
 
   const closeTab = (workerId: string) => {
-    setClosedTabIds((current) => new Set(current).add(workerId));
+    setClosedTabs((current) => {
+      const ids = current.sessionId === sessionId ? current.ids : new Set<string>();
+      return { sessionId, ids: new Set(ids).add(workerId) };
+    });
     onCloseWorker(workerId);
   };
 
@@ -38,6 +46,9 @@ export function ThreadTabs({ workers, selectedWorkerId, onSelectWorker, onCloseW
         >
           {worker.status === "running" || worker.status === "starting"
             ? <span className="thread-running-dot" aria-label="运行中" />
+            : null}
+          {(worker.status === "waiting_input" || (worker.pendingQuestionCount ?? 0) > 0) && worker.status !== "running"
+            ? <span className="thread-waiting-dot" aria-label="等待输入" />
             : null}
           <span>🤖 {worker.name}</span>
         </button>
