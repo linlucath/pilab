@@ -115,7 +115,8 @@ test("the model surface is exactly three active native tools; legacy names remai
       const aliasParameters = findTool(tools, alias).parameters as { properties: Record<string, unknown> };
       assert.equal(Object.hasOwn(aliasParameters.properties, "timeoutSeconds"), false, `${alias} must not expose a timeout`);
     }
-    assert.equal(subagentToolUi.subagent_dispatch.summarizeInput({ task: { name: "scout-a" } }), "派发工兵「scout-a」任务");
+    assert.equal(subagentToolUi.subagent_dispatch.summarizeInput({ task: { name: "scout-a" } }), "派发任务 · scout-a");
+    assert.equal(subagentToolUi.subagent_dispatch.summarizeInput({ task: { message: "请梳理 API 模块的入口和依赖。" } }), "派发任务 · 梳理 API 模块的入口和依赖。");
     assert.match(subagentToolUi.subagent_dispatch.summarizeResult({ mode: "async", started: [{}] }), /后台派发/);
     assert.equal(manager.list(owner).length, 0);
   } finally {

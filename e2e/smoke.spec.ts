@@ -49,5 +49,5 @@ test("SMOKE-05 脚本化工具调用仅执行安全 mock 工具", async ({ page 
   await expect(tool).toBeVisible();
   await expect(tool.locator(":scope > .tool-step-body")).toBeVisible();
   await expect(page.getByText("TOOL-CALL-COMPLETE")).toBeVisible();
-  await expect(page.getByText("Mock tool result: smoke-tool")).toBeVisible();
+  await expect(tool.locator(".tool-readable-block")).toContainText("Mock tool result: smoke-tool");
 });

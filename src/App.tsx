@@ -18,7 +18,7 @@ type PiConnection = {
   connected: boolean; provider: string; defaultModel?: string;
   models: { id: string; name: string; reasoningEfforts: ReasoningEffort[]; reasoningEffortMap?: Partial<Record<ReasoningEffort, string | null>> }[];
 };
-type ToolActivity = { name: string; arguments: unknown; output: string };
+type ToolActivity = { id?: string; name: string; arguments: unknown; output: string };
 type CompactedMessage = Message & { compactedByModel?: boolean; modelSummary?: string };
 type WorkerWakeNotice = { sessionId: string; cwd: string; names: string[] };
 type WorkerReview = Pick<WorkerWakeNotice, "sessionId" | "cwd" | "names">;
