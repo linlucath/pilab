@@ -25,11 +25,19 @@ test("new sessions use a neutral engineering prompt and dedicated workspace with
   assert.equal(session.runs.length, 0);
 });
 
-test("tool titles rely on semantic icons instead of duplicate leading emoji", () => {
-  assert.equal(toolTitle("gpt_session_create", '{"name":"ppt_prep"}'), "创建并派发 GPT「ppt_prep」");
+test("tool titles include concise targets without wrapping long parameters", () => {
+  assert.equal(toolTitle("gpt_session_create", '{"name":"ppt_prep"}'), "创建并派发 GPT · ppt_prep");
   assert.equal(toolTitle("gpt_session_wait", '{"names":["ppt_prep"]}'), "等待 GPT 完成 · ppt_prep");
   assert.equal(toolTitle("gpt_session_read", '{"name":"ppt_prep"}'), "读取 GPT「ppt_prep」 状态");
-  assert.equal(toolTitle("subagent_dispatch", '{"task":{"name":"ppt_prep","message":"prepare"}}'), "派发工兵「ppt_prep」任务");
+  assert.equal(toolTitle("subagent_dispatch", '{"task":{"name":"ppt_prep","message":"prepare"}}'), "派发任务 · ppt_prep");
   assert.equal(toolTitle("subagent_query", '{"action":"status","name":"ppt_prep"}'), "读取工兵「ppt_prep」状态");
-  assert.equal(toolTitle("bash", "{}"), "调用工具 bash");
+  assert.equal(toolTitle("read", '{"path":"src/App.tsx"}'), "查阅文件 · src/App.tsx");
+  assert.equal(toolTitle("view_image", '{"path":"/tmp/real-screen.png"}'), "查看图片 · /tmp/real-screen.png");
+  assert.equal(toolTitle("bash", '{"command":"npm run test"}'), "执行命令 · npm run test");
+  assert.equal(toolTitle("grep", '{"pattern":"subagent_dispatch"}'), '搜索 "subagent_dispatch"');
+  assert.equal(toolTitle("find", '{"pattern":"*test*.ts"}'), '查找文件 "*test*.ts"');
+  assert.equal(toolTitle("bash", "{}"), "执行命令");
+  const longCommandTitle = toolTitle("bash", JSON.stringify({ command: `npm run test ${"--reporter verbose ".repeat(6)}` }));
+  assert.equal(Array.from(longCommandTitle).length, 63);
+  assert.match(longCommandTitle, /…$/);
 });

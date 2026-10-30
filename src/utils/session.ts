@@ -80,20 +80,77 @@ export function parseToolArguments(source: string): Record<string, unknown> {
   } catch { return {}; }
 }
 
+function compactToolTarget(value: unknown, limit = 56) {
+  if (typeof value !== "string") return "";
+  const normalized = value.replace(/[\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim();
+  const characters = Array.from(normalized);
+  return characters.length > limit ? `${characters.slice(0, limit - 1).join("")}…` : normalized;
+}
+function firstToolArgument(args: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = compactToolTarget(args[key]);
+    if (value) return value;
+  }
+  return "";
+}
+function targetedTitle(action: string, target: string) {
+  return target ? `${action} · ${target}` : action;
+}
+function taskDispatchTitle(args: Record<string, unknown>, action = "派发任务") {
+  const tasks = [
+    ...(args.task && typeof args.task === "object" && !Array.isArray(args.task) ? [args.task as Record<string, unknown>] : []),
+    ...(Array.isArray(args.tasks) ? args.tasks.filter((task): task is Record<string, unknown> => !!task && typeof task === "object" && !Array.isArray(task)) : []),
+  ];
+  const names = tasks.map((task) => compactToolTarget(task.name)).filter(Boolean);
+  if (names.length) return targetedTitle(action, compactToolTarget([...new Set(names)].slice(0, 2).join("、") + (names.length > 2 ? ` 等 ${names.length} 项` : "")));
+  const message = tasks.map((task) => task.message).find((value): value is string => typeof value === "string" && !!value.trim())
+    || (typeof args.message === "string" ? args.message : "");
+  const intent = compactToolTarget(message.split(/(?<=[。！？.!?])/)[0]?.replace(/^(?:请(?:你)?|任务(?:是|[:：])|目标(?:是|[:：]))\s*/, "").trim());
+  return targetedTitle(action, intent);
+}
+
 export function toolTitle(name: string, source: string) {
   const args = parseToolArguments(source);
-  const named = typeof args.name === "string" && args.name ? `「${args.name}」` : "";
+  const named = compactToolTarget(args.name);
+  const quotedName = named ? `「${named}」` : "";
   const metadata = subagentToolMetadata(name);
   if (metadata) return metadata.summarizeInput(args);
   switch (name) {
-    case "gpt_session_create": return `创建并派发 GPT${named}`;
-    case "gpt_session_send": return `发送指令给 GPT${named}`;
+    case "read": case "read_file":
+      return targetedTitle("查阅文件", firstToolArgument(args, ["path", "file", "filePath", "filename"]));
+    case "view_image":
+      return targetedTitle("查看图片", firstToolArgument(args, ["path", "file", "filePath", "filename"]));
+    case "bash":
+      return targetedTitle("执行命令", firstToolArgument(args, ["command", "cmd", "script"]));
+    case "grep": {
+      const pattern = firstToolArgument(args, ["pattern", "query", "searchTerm", "search"]);
+      return pattern ? `搜索 "${pattern.replace(/"/g, "\\\"")}"` : "搜索内容";
+    }
+    case "find": {
+      const pattern = firstToolArgument(args, ["pattern", "glob", "name"]);
+      return pattern ? `查找文件 "${pattern.replace(/"/g, "\\\"")}"` : "查找文件";
+    }
+    case "write": case "write_file": case "edit": case "edit_file":
+      return targetedTitle("更新文件", firstToolArgument(args, ["path", "file", "filePath", "filename"]));
+    case "ls":
+      return targetedTitle("查看目录", firstToolArgument(args, ["path", "directory"]));
+    case "gpt_session_create": return targetedTitle("创建并派发 GPT", named);
+    case "gpt_session_send": return targetedTitle("发送指令给 GPT", named);
+    case "gpt_session_batch": return taskDispatchTitle(args);
     case "gpt_session_wait": return `等待 GPT 完成${Array.isArray(args.names) ? ` · ${args.names.filter((item): item is string => typeof item === "string").join("、")}` : ""}`;
-    case "gpt_session_read": return `读取 GPT${named} 状态`;
+    case "gpt_session_read": return `读取 GPT${quotedName} 状态`;
     case "gpt_session_list": return "查看所有 GPT 会话";
-    case "view_image": return `查看图片「${typeof args.path === "string" && args.path ? args.path : ""}」`;
     case "view_images": return `查看图片集合「${typeof args.collection === "string" && args.collection ? args.collection : "素材库"}」`;
     case "list_images": return "列出图片素材库";
+    case "gpt_session_logs": return `查看 GPT${quotedName} 日志`;
+    case "gpt_session_interrupt": return `中止 GPT${quotedName} 任务`;
+    case "session_fork": return targetedTitle("创建提纯分身", compactToolTarget(args.title));
+    case "subagent_query": return `查看工兵${quotedName}状态`;
+    case "subagent_control": {
+      const action = args.action === "abort" ? "中止" : args.action === "respond" ? "回答" : args.action === "close" ? "关闭" : "管理";
+      return `${action}工兵${quotedName}`;
+    }
+    case "context_compact": return "整理对话记录";
     default: return `调用工具 ${name}`;
   }
 }

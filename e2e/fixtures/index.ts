@@ -2,9 +2,10 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import { defaults, type Message, type Settings } from "../../shared/schema";
 import type { SavedSession } from "../../shared/workspace";
 
+export type MockToolInvocation = { input?: string; output?: string; delayMs?: number; outputChunkDelayMs?: number; outputError?: boolean };
 export type MockScriptStep =
   | { type: "text" | "slow" | "long"; text?: string; delayMs?: number; delayBeforeMs?: number; chunkSize?: number; thinking?: string; reason?: "stop" | "length" }
-  | { type: "tool"; input?: string; assistantText?: string; thinking?: string; output?: string; delayMs?: number; outputChunkDelayMs?: number; outputError?: boolean }
+  | { type: "tool"; input?: string; assistantText?: string; thinking?: string; output?: string; delayMs?: number; outputChunkDelayMs?: number; outputError?: boolean; calls?: MockToolInvocation[] }
   | { type: "error"; message?: string };
 
 const serverOrigin = () => `http://127.0.0.1:${process.env.PI_LAB_E2E_PORT || "3100"}`;

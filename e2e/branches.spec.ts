@@ -77,10 +77,13 @@ test("BRN-02 工具分支纳入完整调用组，未完成调用会被拒绝", a
   await expect(completeBranchButton).toBeVisible();
   await completeBranchButton.click();
   await expect(page.getByLabel("会话标题")).toHaveValue("completed-tools · 分支");
-  const toolStep = page.locator('[data-tool-name="e2e_mock_tool"]');
+  const toolGroup = page.locator(".tool-group").first();
+  const groupDetails = toolGroup.locator(":scope > details");
+  if (!(await groupDetails.evaluate((element) => (element as HTMLDetailsElement).open))) await groupDetails.locator(":scope > summary").click();
+  const toolStep = toolGroup.locator('[data-tool-name="e2e_mock_tool"]');
   await expect(toolStep).toBeVisible();
-  await toolStep.locator("summary").click();
-  await expect(page.getByText("BRN02-PAIRED-RESULT")).toBeVisible();
+  await expect(toolStep.locator(":scope > .tool-step-body")).toBeVisible();
+  await expect(toolStep.locator(".tool-readable-block")).toContainText("BRN02-PAIRED-RESULT");
   await expect(page.locator(".message-row").getByText("BRN02-COMPLETE-PREFIX")).toBeVisible();
 
   await page.locator(".session-row").filter({ hasText: "incomplete-tools" }).locator(".session-main").click();

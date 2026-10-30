@@ -4,9 +4,10 @@ import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import { Type } from "typebox";
 
+type MockToolInvocation = { input?: string; output?: string; delayMs?: number; outputChunkDelayMs?: number; outputError?: boolean };
 type MockStep =
   | { type: "text" | "slow" | "long"; text?: string; delayMs?: number; delayBeforeMs?: number; chunkSize?: number; thinking?: string; reason?: "stop" | "length" }
-  | { type: "tool"; input?: string; assistantText?: string; thinking?: string; output?: string; delayMs?: number; outputChunkDelayMs?: number; outputError?: boolean }
+  | { type: "tool"; input?: string; assistantText?: string; thinking?: string; output?: string; delayMs?: number; outputChunkDelayMs?: number; outputError?: boolean; calls?: MockToolInvocation[] }
   | { type: "error"; message?: string };
 
 let steps: MockStep[] = [];
@@ -30,6 +31,17 @@ export function setE2eMockScript(input: unknown) {
         delayMs: typeof step.delayMs === "number" && Number.isFinite(step.delayMs) ? Math.max(0, Math.min(5000, step.delayMs)) : undefined,
         outputChunkDelayMs: typeof step.outputChunkDelayMs === "number" && Number.isFinite(step.outputChunkDelayMs) ? Math.max(0, Math.min(1000, step.outputChunkDelayMs)) : undefined,
         outputError: step.outputError === true,
+        calls: Array.isArray(step.calls) ? step.calls.slice(0, 10).flatMap((value): MockToolInvocation[] => {
+          if (!value || typeof value !== "object") return [];
+          const invocation = value as Record<string, unknown>;
+          return [{
+            input: typeof invocation.input === "string" ? invocation.input.slice(0, 2000) : undefined,
+            output: typeof invocation.output === "string" ? invocation.output.slice(0, 100_000) : undefined,
+            delayMs: typeof invocation.delayMs === "number" && Number.isFinite(invocation.delayMs) ? Math.max(0, Math.min(5000, invocation.delayMs)) : undefined,
+            outputChunkDelayMs: typeof invocation.outputChunkDelayMs === "number" && Number.isFinite(invocation.outputChunkDelayMs) ? Math.max(0, Math.min(1000, invocation.outputChunkDelayMs)) : undefined,
+            outputError: invocation.outputError === true,
+          }];
+        }) : undefined,
       };
     if (step.type === "error")
       return { type: "error", message: typeof step.message === "string" ? step.message.slice(0, 2000) : "Scripted E2E error" };
@@ -44,12 +56,12 @@ export function setE2eMockScript(input: unknown) {
   });
 }
 
-export function resetE2eMockScript() { steps = []; activeToolStep = undefined; }
+export function resetE2eMockScript() { steps = []; activeToolSteps = []; }
 function nextStep(): MockStep {
   return steps.shift() || { type: "text", text: "E2E mock response" };
 }
 
-let activeToolStep: Extract<MockStep, { type: "tool" }> | undefined;
+let activeToolSteps: MockToolInvocation[] = [];
 const abortedToolResult = () => ({ content: [{ type: "text" as const, text: "Mock tool execution interrupted." }], details: {}, isError: true });
 const mockTool: AgentTool<any> = {
   name: "e2e_mock_tool",
@@ -57,8 +69,7 @@ const mockTool: AgentTool<any> = {
   description: "Safe local fixture tool; it does not access the filesystem or network.",
   parameters: Type.Object({ input: Type.Optional(Type.String()) }),
   execute: async (_id, params, signal, onUpdate) => {
-    const step = activeToolStep;
-    activeToolStep = undefined;
+    const step = activeToolSteps.shift();
     if (step?.delayMs) {
       if (!(await wait(step.delayMs, signal))) return abortedToolResult();
     }
@@ -136,13 +147,16 @@ export const e2eMockStreamFn: StreamFn = (model, _context, options) => {
     if (step.type === "tool") {
       if (!(await emitThinking(step.thinking))) return;
       if (step.assistantText && !(await emitText(step.assistantText, 8, 0))) return;
-      const call = { type: "toolCall" as const, id: `e2e-${randomUUID()}`, name: "e2e_mock_tool", arguments: { input: step.input || "fixture tool call" } };
-      const contentIndex = message.content.length;
-      activeToolStep = step;
-      message.content.push(call);
-      stream.push({ type: "toolcall_start", contentIndex, partial: message });
-      stream.push({ type: "toolcall_delta", contentIndex, delta: JSON.stringify(call.arguments), partial: message });
-      stream.push({ type: "toolcall_end", contentIndex, toolCall: call, partial: message });
+      const invocations = step.calls?.length ? step.calls : [step];
+      activeToolSteps = [...invocations];
+      for (const invocation of invocations) {
+        const call = { type: "toolCall" as const, id: `e2e-${randomUUID()}`, name: "e2e_mock_tool", arguments: { input: invocation.input || "fixture tool call" } };
+        const contentIndex = message.content.length;
+        message.content.push(call);
+        stream.push({ type: "toolcall_start", contentIndex, partial: message });
+        stream.push({ type: "toolcall_delta", contentIndex, delta: JSON.stringify(call.arguments), partial: message });
+        stream.push({ type: "toolcall_end", contentIndex, toolCall: call, partial: message });
+      }
       message.stopReason = "toolUse";
       stream.push({ type: "done", reason: "toolUse", message });
       return;

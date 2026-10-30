@@ -90,8 +90,9 @@ test("MSG-01 仅添加各角色消息、从消息入口插入并在系统区添�
   await systemEditors.first().fill("system prompt saved by shortcut");
   await systemEditors.first().press("Control+Enter");
   await expect.poll(async () => (await savedWorkspace(page)).sessions[0].messages[0].content).toBe("system prompt saved by shortcut");
-  await page.locator('.tool-step[data-result-id="msg-01-tool-result"] summary').click();
-  await expect(page.locator('.tool-step[data-result-id="msg-01-tool-result"]')).toContainText("existing tool result");
+  const toolGroup = page.locator('.tool-group[data-message-id="msg-01-tool-owner"]');
+  await toolGroup.locator(":scope > details > summary").click();
+  await expect(toolGroup.locator('.tool-step[data-result-id="msg-01-tool-result"]')).toContainText("existing tool result");
 });
 
 test("MSG-02 编辑消息可保存、Esc 取消并用 Ctrl/Command+Enter 保存上下文", async ({ page }) => {
@@ -210,10 +211,11 @@ test("MSG-03 普通消息可改角色且工具调用和结果的角色修改有�
   const lockedRole = owner.getByRole("combobox");
   await expect(lockedRole).toBeDisabled();
   await expect(lockedRole).toHaveAttribute("title", /工具调用及其结果不能直接更改角色/);
-  const toolStep = page.locator('.tool-step[data-result-id="msg-03-tool-result"]');
+  const toolGroup = page.locator('.tool-group[data-message-id="msg-03-tool-owner"]');
+  await toolGroup.locator(":scope > details > summary").click();
+  const toolStep = toolGroup.locator('.tool-step[data-result-id="msg-03-tool-result"]');
   await expect(toolStep.locator("select")).toHaveCount(0);
   await expect(toolStep).toHaveAttribute("title", /工具调用及其结果不能直接更改角色/);
-  await toolStep.locator("summary").click();
   await expect(toolStep).toContainText("paired output");
 });
 
@@ -242,7 +244,7 @@ test("MSG-04 排除和恢复消息影响请求，工具调用与结果成组切�
   await owner.hover();
   await owner.getByRole("button", { name: "排除上下文" }).click();
   await expect(owner.locator("article")).toHaveClass(/excluded/);
-  await expect(page.locator('.tool-step[data-result-id="msg-04-result"]')).toBeAttached();
+  await expect(page.locator('.tool-group[data-message-id="msg-04-owner"]')).toHaveClass(/is-archived/);
   await expect.poll(async () => {
     const messages = (await savedWorkspace(page)).sessions[0].messages as Message[];
     return [messages.find((message) => message.id === "msg-04-owner")?.enabled, messages.find((message) => message.id === "msg-04-result")?.enabled];
@@ -321,8 +323,11 @@ test("MSG-06 删除普通消息或工具步骤会同步处理配对而保留其�
   await expect(ordinary).toHaveCount(0);
 
   const owner = row(page, "msg-06-owner");
-  const firstStep = owner.locator('.tool-step[data-result-id="msg-06-result-one"]');
-  await firstStep.locator("summary").click();
+  const toolGroup = page.locator('.tool-group[data-message-id="msg-06-owner"]');
+  await toolGroup.locator(":scope > details > summary").click();
+  const firstStep = toolGroup.locator('.tool-step[data-result-id="msg-06-result-one"]');
+  if (!(await firstStep.evaluate((element) => (element as HTMLDetailsElement).open))) await firstStep.locator(":scope > summary").click();
+  await firstStep.locator(".tool-raw-details > summary").click();
   await firstStep.getByRole("button", { name: "删除此步骤及配对结果" }).click();
   await expect(owner).toContainText("assistant prose survives deleting one step");
   await expect(page.locator('.tool-step[data-result-id="msg-06-result-one"]')).toHaveCount(0);
@@ -371,7 +376,7 @@ test("MSG-08 搜索旧消息和工具结果、展开目标并可退出且不改�
     msg("msg-08-owner", "assistant", "", { toolCalls: [call] }),
     msg("msg-08-result", "tool", "TOOL-SEARCH-ONLY-UNIQUE", { toolCallId: call.id, toolName: call.name }),
   ]);
-  await page.getByRole("button", { name: "目录与搜索" }).click();
+  await page.keyboard.press("Control+f");
   const search = page.getByRole("textbox", { name: "搜索会话消息" });
   await search.fill("TOOL-SEARCH-ONLY-UNIQUE");
   const results = page.getByRole("list", { name: "搜索结果" });
@@ -381,8 +386,10 @@ test("MSG-08 搜索旧消息和工具结果、展开目标并可退出且不改�
   await expect(result).toContainText("04");
   await expect(result).toContainText("TOOL-SEARCH-ONLY-UNIQUE");
   await result.click();
+  const toolGroup = page.locator('.tool-group[data-message-id="msg-08-owner"]');
+  await expect(toolGroup.locator(":scope > details")).toHaveAttribute("open", "");
   const tool = page.locator('.tool-step[data-result-id="msg-08-result"]');
-  await expect(tool).toHaveAttribute("open", "");
+  await expect(tool).toBeVisible();
   await expect(tool).toHaveClass(/jump-highlight/);
 
   await search.fill("collapsible system needle");
@@ -393,7 +400,7 @@ test("MSG-08 搜索旧消息和工具结果、展开目标并可退出且不改�
   await search.fill("definitely no matching message");
   await expect(page.getByText("没有匹配的消息。")).toBeVisible();
   await search.press("Escape");
-  await expect(page.getByRole("button", { name: "目录与搜索" })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".directory-panel")).toHaveCSS("display", "none");
   expect((await savedWorkspace(page)).sessions[0].messages.map((message: Message) => message.content)).toEqual([
     "collapsible system needle", "older user text", "", "TOOL-SEARCH-ONLY-UNIQUE",
   ]);

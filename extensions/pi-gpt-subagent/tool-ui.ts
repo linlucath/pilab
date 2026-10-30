@@ -19,8 +19,26 @@ function taskNames(input: Record<string, unknown>): string[] {
   const many = Array.isArray(input.tasks) ? input.tasks.map(record) : [];
   return [one.name, ...many.map((task) => task.name)].filter((name): name is string => typeof name === "string" && !!name.trim());
 }
-function namesText(names: string[]) {
-  return names.length ? names.map((name) => `「${name}」`).join("、") : "工兵";
+function compactText(value: string, limit = 56) {
+  const normalized = value.replace(/[\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim();
+  const characters = Array.from(normalized);
+  return characters.length > limit ? `${characters.slice(0, limit - 1).join("")}…` : normalized;
+}
+function taskMessages(input: Record<string, unknown>): string[] {
+  const one = record(input.task);
+  const many = Array.isArray(input.tasks) ? input.tasks.map(record) : [];
+  return [one.message, ...many.map((task) => task.message), input.message]
+    .filter((message): message is string => typeof message === "string" && !!message.trim());
+}
+function dispatchTarget(input: Record<string, unknown>) {
+  const names = taskNames(input).map((name) => compactText(name)).filter(Boolean);
+  if (names.length) return compactText([...new Set(names)].slice(0, 2).join("、") + (names.length > 2 ? ` 等 ${names.length} 项` : ""));
+  const message = taskMessages(input)[0];
+  if (!message) return "";
+  const intent = message.replace(/```[\s\S]*?```/g, "代码").replace(/\s+/g, " ").trim()
+    .split(/(?<=[。！？.!?])/).map((part) => part.trim())
+    .find((part) => !/^(?:you are\b|你是(?:一名|一个)|system prompt|系统提示)/i.test(part)) || "";
+  return compactText(intent.replace(/^(?:请(?:你)?|任务(?:是|[:：])|目标(?:是|[:：]))\s*/, "").trim());
 }
 
 /** Registry metadata is also consumed by the web UI, avoiding a second tool-name map. */
@@ -30,8 +48,8 @@ export const subagentToolUi = {
     displayName: "派发工兵任务",
     icon: "dispatch",
     summarizeInput(input: unknown) {
-      const names = taskNames(record(input));
-      return `派发工兵${namesText(names)}${names.length > 1 ? "等任务" : "任务"}`;
+      const target = dispatchTarget(record(input));
+      return target ? `派发任务 · ${target}` : "派发任务";
     },
     summarizeResult(result: unknown) {
       const value = record(result);

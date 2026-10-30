@@ -11,7 +11,7 @@ import { wireToolCallId } from "../../shared/tool-history";
 type Props = {
   sessionId: string; scrollRequest: number; searchJump?: { sessionId: string; messageId: string; query: string; token: number };
   messages: Message[]; busy: boolean; compactTools: boolean; assistantName?: string; streamingId?: string;
-  streamingThinking?: string; toolActivity?: { name: string; arguments: unknown; output: string } | null;
+  streamingThinking?: string; toolActivity?: { id?: string; name: string; arguments: unknown; output: string } | null;
   gptWorkers?: GptSessionSummary[];
   onMessage: (id: string, patch: Partial<Message>) => void; onCopy: (text: string) => void;
   onCall: (message: Message, index: number, patch: Partial<ToolCall>) => void;
@@ -132,6 +132,7 @@ const MessageCard = memo(function MessageCard({ message, index, total, busy, str
   };
   const roleLocked = busy || editing || message.role === "tool" || !!message.toolCalls?.length;
   const compacted = message as CompactedMessage;
+  const thoughtContents = (message.providerState?.thinking || []).map((item) => item.thinking.trim()).filter(Boolean);
   const isSearchHit = !!searchTerm && `${message.content} ${compacted.modelSummary || ""}`.toLocaleLowerCase().includes(searchTerm.toLocaleLowerCase());
   const toolbarStyle: React.CSSProperties = {
     display: "flex", alignItems: "center", gap: 3, padding: "3px 5px", border: "1px solid var(--border)",
@@ -172,7 +173,7 @@ const MessageCard = memo(function MessageCard({ message, index, total, busy, str
       </header>}
       {(editing || !!message.content.trim() || streaming) && <div className="message-content" style={{ padding: isUser ? 0 : "5px 0 10px", maxHeight: "none", overflow: "visible" }}>{editing ? <textarea ref={editor} aria-label={`编辑 ${roleName(message.role, assistantName)} 消息`} disabled={busy} value={draftContent} onChange={(event) => setDraftContent(event.target.value)} onKeyDown={onEditorKeyDown} /> : message.content.trim() ? <Markdown content={message.content} highlight={searchTerm} trailing={streaming ? <span className="streaming-cursor" aria-hidden="true" /> : undefined} /> : streaming ? <span className="streaming-cursor" aria-hidden="true" /> : null}{isUser && editing && <div className="message-editor-actions"><button type="button" className="text-button message-editor-cancel" disabled={busy} aria-label="取消编辑" title="Esc 取消" onClick={cancelEdit}>取消</button><button type="button" className="text-button message-editor-save" disabled={busy} aria-label="保存消息" title="⌘/Ctrl + Enter 保存" onClick={saveEdit}>保存</button></div>}</div>}
       {!!message.images?.length && <div className="image-gallery message-images" style={{ padding: isUser ? "0 14px 12px" : "0 0 12px" }}>{message.images.map((image) => <button key={image.file} title={image.name} onClick={() => onImage(image.file, image.name)}><img src={imageUrl(image.file)} alt={image.name} loading="lazy" /></button>)}</div>}
-      {message.role === "assistant" && message.providerState?.thinking.some((item) => item.thinking) && <details className="thinking-accordion" style={{ display: "inline-block", width: "fit-content", maxWidth: "100%", margin: "0 0 8px", border: 0, borderRadius: 0, background: "transparent" }}><summary style={{ display: "flex", width: "max-content", maxWidth: "100%", alignItems: "center", gap: 7, padding: "4px 9px", color: "var(--text-subtle)", fontSize: 9 }}><Brain size={13} />思考过程 <small>{message.providerState.thinking.reduce((n, item) => n + item.thinking.length, 0).toLocaleString()} 字符</small></summary><pre>{message.providerState.thinking.map((item) => item.thinking).join("\n")}</pre></details>}
+      {message.role === "assistant" && thoughtContents.length > 0 && <details className="thinking-accordion" style={{ display: "inline-block", width: "fit-content", maxWidth: "100%", margin: "0 0 8px", border: 0, borderRadius: 0, background: "transparent" }}><summary style={{ display: "flex", width: "max-content", maxWidth: "100%", alignItems: "center", gap: 7, padding: "4px 9px", color: "var(--text-subtle)", fontSize: 9 }}><Brain size={13} />思考过程 <small>{thoughtContents.reduce((n, item) => n + item.length, 0).toLocaleString()} 字符</small></summary><pre>{thoughtContents.join("\n")}</pre></details>}
       {children}
     </article>
     <button className="insert-after" disabled={busy || editing} title="在此处插入消息" onClick={() => onAdd(index, "user")}><Plus size={13} /></button>
@@ -194,33 +195,8 @@ function subagentRequests(args: Record<string, unknown>) {
 }
 
 const dispatchToolNames = new Set(["subagent_dispatch", "gpt_session_create", "gpt_session_send", "gpt_session_batch"]);
-function conciseTaskLabel(message: string) {
-  const normalized = message.replace(/```[\s\S]*?```/g, "代码").replace(/\s+/g, " ").trim();
-  if (!normalized) return "处理后台任务";
-  const sentences = normalized.split(/(?<=[。！？.!?])/).map((part) => part.trim()).filter(Boolean);
-  const sentence = sentences.find((part) => !/^(?:you are\b|你是(?:一名|一个)|system prompt|系统提示)/i.test(part)) || "";
-  if (!sentence) return "处理后台任务";
-  const label = sentence.replace(/^(?:请(?:你)?|任务(?:是|[:：])|目标(?:是|[:：]))\s*/, "").trim()
-    .replace(/(?:\.\.\/)?[\w.-]+(?:\/[\w.-]+)+\.(?:tsx?|jsx?|css|md|json)\b/gi, "相关文件");
-  return label ? `${label.slice(0, 58)}${label.length > 58 ? "…" : ""}` : "处理后台任务";
-}
-
 function toolActionTitle(call: ToolCall) {
-  const args = parseToolArguments(call.arguments);
-  if (dispatchToolNames.has(call.name)) {
-    const labels = subagentRequests(args).map((request) => conciseTaskLabel(request.message));
-    return labels.length ? [...new Set(labels)].slice(0, 2).join(" · ") : "处理后台任务";
-  }
-  if (call.name === "subagent_query" || call.name.startsWith("gpt_session_read") || call.name === "gpt_session_list" || call.name === "gpt_session_logs") return "查看后台任务";
-  if (call.name === "subagent_control" || call.name.startsWith("gpt_session_interrupt")) {
-    return args.action === "abort" ? "中止后台任务" : args.action === "respond" ? "回复后台任务" : "管理后台任务";
-  }
-  const actions: Record<string, string> = {
-    read: "查阅文件", read_file: "查阅文件", write: "更新文件", write_file: "更新文件", edit: "更新文件", edit_file: "更新文件",
-    bash: "执行命令", grep: "搜索内容", find: "查找文件", ls: "查看目录", context_compact: "整理对话记录",
-    session_fork: "创建独立会话", view_image: "查看图片",
-  };
-  return actions[call.name] || toolTitle(call.name, call.arguments);
+  return toolTitle(call.name, call.arguments);
 }
 
 function readGptReply(content: string) {
@@ -259,10 +235,9 @@ function dispatchResultContent(content: string) {
   return content;
 }
 
-const ToolStep = memo(function ToolStep({ assistant, assistantName = "Gemini", call, callIndex, result, onCall, onResult, onImage, onDeleteCall, onAddToolResult, disabled, searchTerm, jumpedId, showTitle = true }: { assistant: Message; assistantName?: string; call: ToolCall; callIndex: number; result?: Message; onCall: Props["onCall"]; onResult: Props["onMessage"]; onImage: (file: string, name: string) => void; onDeleteCall: Props["onDeleteCall"]; onAddToolResult: Props["onAddToolResult"]; disabled?: boolean; searchTerm?: string; jumpedId?: string; showTitle?: boolean }) {
+const ToolStep = memo(function ToolStep({ assistant, assistantName = "Gemini", call, callIndex, result, onCall, onResult, onImage, onDeleteCall, onAddToolResult, disabled, searchTerm, jumpedId, showTitle = true, stepNumber = 1, running = false }: { assistant: Message; assistantName?: string; call: ToolCall; callIndex: number; result?: Message; onCall: Props["onCall"]; onResult: Props["onMessage"]; onImage: (file: string, name: string) => void; onDeleteCall: Props["onDeleteCall"]; onAddToolResult: Props["onAddToolResult"]; disabled?: boolean; searchTerm?: string; jumpedId?: string; showTitle?: boolean; stepNumber?: number; running?: boolean }) {
   const dispatchesToGpt = dispatchToolNames.has(call.name);
-  const [expanded, setExpanded] = useState(dispatchesToGpt);
-  const [raw, setRaw] = useState(false);
+  const [expanded, setExpanded] = useState(true);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualContent, setManualContent] = useState("");
   const [manualIsError, setManualIsError] = useState(false);
@@ -272,8 +247,8 @@ const ToolStep = memo(function ToolStep({ assistant, assistantName = "Gemini", c
   const args = parseToolArguments(call.arguments);
   const readsFromGpt = ["subagent_query", "gpt_session_wait", "gpt_session_read", "gpt_session_list", "gpt_session_logs"].includes(call.name);
   const dispatchRequests = subagentRequests(args);
-  const thinking = assistant.providerState?.thinking.map((item) => item.thinking).filter(Boolean).join("\n") || "";
-  const status = result ? result.isError ? "失败" : "完成" : "待返回";
+  const thinking = assistant.providerState?.thinking.map((item) => item.thinking.trim()).filter(Boolean).join("\n") || "";
+  const status = running ? "执行中" : result ? result.isError ? "失败" : "完成" : "待返回";
   const title = toolActionTitle(call);
   const reply = result?.content ? readGptReply(result.content) : "";
   const hasGptReport = readsFromGpt && !!reply && !/暂无新回复|暂时还没有发来回复|还没有发来回复/.test(reply);
@@ -291,33 +266,42 @@ const ToolStep = memo(function ToolStep({ assistant, assistantName = "Gemini", c
     else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); saveManualResult(); }
   };
   const body = <div className="tool-step-body">
+    {dispatchesToGpt && dispatchRequests.map((request, index) => <section className="tool-task-instruction" key={`${request.name}-${index}`} aria-label={`任务指令 · ${request.name}`}>
+      <header className="tool-task-instruction-heading"><strong>任务指令</strong><small>{request.name}</small></header>
+      <div className="tool-task-instruction-content" role="region" aria-label={`发给${request.name}的任务指令`} tabIndex={0}><Markdown content={request.message} highlight={searchTerm} /></div>
+    </section>)}
     {dispatchesToGpt && result?.content && <section className="tool-dispatch-result tool-readable-block" aria-label="执行结果"><Markdown content={dispatchResultContent(result.content)} highlight={searchTerm} /></section>}
     {readsFromGpt && result?.content && <section className="tool-readable-block tool-reply-block"><Markdown content={reply || result.content} highlight={searchTerm} /></section>}
     {!dispatchesToGpt && !readsFromGpt && result?.content && <section className={`tool-readable-block ${result.isError ? "error" : ""}`}><strong>工具结果</strong><Markdown content={result.content} highlight={searchTerm} /></section>}
     {thinking && <details className="tool-step-thinking"><summary><Brain size={13} />{assistantName} 思考过程</summary><div className="tool-readable-block"><Markdown content={thinking} /></div></details>}
     {!!result?.images?.length && <div className="image-gallery tool-image-gallery">{result.images.map((image) => <button key={image.file} title={image.name} onClick={() => onImage(image.file, image.name)}><img src={imageUrl(image.file)} alt={image.name} loading="lazy" /></button>)}</div>}
-    {!result && <section className="manual-tool-result">
-      {!manualOpen ? <button type="button" className="manual-tool-result-button" disabled={disabled} onClick={() => { setManualOpen(true); requestAnimationFrame(() => manualEditor.current?.focus()); }}>添加结果</button> : <div className="manual-tool-result-editor">
-        <label htmlFor={`manual-tool-result-${assistant.id}-${call.id}`}>手动添加「{call.name}」的结果 <small>可输入普通文本或 JSON；不会重新执行工具。</small></label>
-        <textarea ref={manualEditor} id={`manual-tool-result-${assistant.id}-${call.id}`} aria-label="工具结果内容" maxLength={200_000} disabled={disabled} value={manualContent} onChange={(event) => setManualContent(event.target.value)} onKeyDown={onManualKeyDown} placeholder="输入工具返回内容…" />
-        <label className="manual-tool-result-error"><input type="checkbox" disabled={disabled} checked={manualIsError} onChange={(event) => setManualIsError(event.target.checked)} />标记为错误 (isError)</label>
-        <div className="manual-tool-result-actions"><button type="button" disabled={disabled} onClick={saveManualResult}>保存 <kbd>⌘/Ctrl+Enter</kbd></button><button type="button" className="cancel" disabled={disabled} onClick={cancelManualResult}>取消 <kbd>Esc</kbd></button></div>
-      </div>}
-    </section>}
-    <div className="tool-step-actions"><button className="raw-toggle" disabled={disabled} onClick={() => setRaw((value) => !value)}>{raw ? "收起原始参数" : "查看/编辑原始参数"}</button><button className="raw-toggle danger" disabled={disabled} onClick={() => onDeleteCall(assistant.id, call.id)}>删除此步骤及配对结果</button></div>
-    {raw && <div className="tool-raw-fields">
-      <label>工具名称<input disabled={disabled} value={call.name} onChange={(event) => onCall(assistant, callIndex, { name: event.target.value })} /></label>
-      <label>Call ID<input disabled={disabled} value={call.id} onChange={(event) => onCall(assistant, callIndex, { id: event.target.value })} /></label>
-      <label className="wide">参数 JSON<textarea disabled={disabled} spellCheck={false} value={call.arguments} onChange={(event) => onCall(assistant, callIndex, { arguments: event.target.value })} /></label>
-      {result && <><label>结果 Call ID<input disabled={disabled} value={result.toolCallId || ""} onChange={(event) => onResult(result.id, { toolCallId: event.target.value })} /></label><label className="check-label"><input disabled={disabled} type="checkbox" checked={!!result.isError} onChange={(event) => onResult(result.id, { isError: event.target.checked })} />错误结果</label><label className="wide">工具结果<textarea disabled={disabled} value={result.content} onChange={(event) => onResult(result.id, { content: event.target.value })} /></label></>}
-    </div>}
-    {dispatchesToGpt && !!dispatchRequests.length && <details className="tool-original-instruction"><summary>› 原始指令</summary><div>{dispatchRequests.map((request, index) => <Markdown key={index} content={request.message} highlight={searchTerm} />)}</div></details>}
+    <details className="tool-raw-details">
+      <summary>原始参数与调用数据</summary>
+      <div className="tool-raw-details-content">
+        <div className="tool-raw-fields">
+          <label>工具名称<input disabled={disabled} value={call.name} onChange={(event) => onCall(assistant, callIndex, { name: event.target.value })} /></label>
+          <label>Call ID<input disabled={disabled} value={call.id} onChange={(event) => onCall(assistant, callIndex, { id: event.target.value })} /></label>
+          <label className="wide">参数 JSON<textarea disabled={disabled} spellCheck={false} value={call.arguments} onChange={(event) => onCall(assistant, callIndex, { arguments: event.target.value })} /></label>
+          {result && <><label>结果 Call ID<input disabled={disabled} value={result.toolCallId || ""} onChange={(event) => onResult(result.id, { toolCallId: event.target.value })} /></label><label className="check-label"><input disabled={disabled} type="checkbox" checked={!!result.isError} onChange={(event) => onResult(result.id, { isError: event.target.checked })} />错误结果</label><label className="wide">工具结果<textarea disabled={disabled} value={result.content} onChange={(event) => onResult(result.id, { content: event.target.value })} /></label></>}
+        </div>
+        {!result && <section className="manual-tool-result">
+          {!manualOpen ? <button type="button" className="manual-tool-result-button" disabled={disabled} onClick={() => { setManualOpen(true); requestAnimationFrame(() => manualEditor.current?.focus()); }}>补录工具结果</button> : <div className="manual-tool-result-editor">
+            <label htmlFor={`manual-tool-result-${assistant.id}-${call.id}`}>手动补录「{call.name}」的结果 <small>可输入普通文本或 JSON；不会重新执行工具。</small></label>
+            <textarea ref={manualEditor} id={`manual-tool-result-${assistant.id}-${call.id}`} aria-label="工具结果内容" maxLength={200_000} disabled={disabled} value={manualContent} onChange={(event) => setManualContent(event.target.value)} onKeyDown={onManualKeyDown} placeholder="输入工具返回内容…" />
+            <label className="manual-tool-result-error"><input type="checkbox" disabled={disabled} checked={manualIsError} onChange={(event) => setManualIsError(event.target.checked)} />标记为错误 (isError)</label>
+            <div className="manual-tool-result-actions"><button type="button" disabled={disabled} onClick={saveManualResult}>保存 <kbd>⌘/Ctrl+Enter</kbd></button><button type="button" className="cancel" disabled={disabled} onClick={cancelManualResult}>取消 <kbd>Esc</kbd></button></div>
+          </div>}
+        </section>}
+        <div className="tool-step-actions"><button className="raw-toggle danger" disabled={disabled} onClick={() => onDeleteCall(assistant.id, call.id)}>删除此步骤及配对结果</button></div>
+      </div>
+    </details>
   </div>;
-  const stepClassName = `tool-step tool-step-row ${result?.isError ? "failed" : ""}`;
-  const stepAttributes = { title: "工具调用及其结果不能直接更改角色，以免破坏工具配对。", "data-tool-name": call.name, "data-message-id": assistant.id, "data-result-id": result?.id, "data-has-report": hasGptReport ? "true" : undefined, "data-has-thinking": thinking ? "true" : undefined };
+  const stepState = running ? "running" : result ? result.isError ? "failed" : "complete" : "pending";
+  const stepClassName = `tool-step tool-step-row ${stepState}`;
+  const stepAttributes = { title: "工具调用及其结果不能直接更改角色，以免破坏工具配对。", "data-tool-name": call.name, "data-message-id": assistant.id, "data-result-id": result?.id, "data-status": stepState, "data-has-report": hasGptReport ? "true" : undefined, "data-has-thinking": thinking ? "true" : undefined };
   if (!showTitle) return <section className={stepClassName} {...stepAttributes}>{body}</section>;
   return <details className={stepClassName} {...stepAttributes} open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
-    <summary><strong>{title}</strong><span className={`tool-state ${result ? result.isError ? "error" : "complete" : "pending"}`}>{status}</span><ChevronDown size={14} /></summary>
+    <summary><strong title={title}>步骤 {stepNumber} · {title}</strong><span className={`tool-state ${stepState === "failed" ? "error" : stepState}`}>{status}</span><ChevronDown size={14} /></summary>
     {expanded && body}
   </details>;
 });
@@ -362,7 +346,7 @@ function collectToolGroups(messages: Message[], start: number, byCallId: Map<str
   return groups;
 }
 
-const ToolStepGroup = memo(function ToolStepGroup({ steps, assistantName = "Gemini", compact, onCall, onMessage, onImage, onDeleteCall, onAddToolResult, live = false, disabled, searchTerm, jumpedId }: { steps: { assistant: Message; call: ToolCall; callIndex: number; result?: Message }[]; assistantName?: string; compact: boolean; onCall: Props["onCall"]; onMessage: Props["onMessage"]; onImage: (file: string, name: string) => void; onDeleteCall: Props["onDeleteCall"]; onAddToolResult: Props["onAddToolResult"]; live?: boolean; disabled?: boolean; searchTerm?: string; jumpedId?: string }) {
+const ToolStepGroup = memo(function ToolStepGroup({ steps, assistantName = "Gemini", compact, onCall, onMessage, onImage, onDeleteCall, onAddToolResult, live = false, activeCallId, disabled, searchTerm, jumpedId }: { steps: ToolStepData[]; assistantName?: string; compact: boolean; onCall: Props["onCall"]; onMessage: Props["onMessage"]; onImage: (file: string, name: string) => void; onDeleteCall: Props["onDeleteCall"]; onAddToolResult: Props["onAddToolResult"]; live?: boolean; activeCallId?: string; disabled?: boolean; searchTerm?: string; jumpedId?: string }) {
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   const [hovered, setHovered] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
@@ -386,7 +370,6 @@ const ToolStepGroup = memo(function ToolStepGroup({ steps, assistantName = "Gemi
   const archived = groupMessages.length > 0 && groupMessages.every((message) => !message.enabled);
   const partialArchive = groupMessages.some((message) => !message.enabled) && !archived;
   const summaryText = modelSummary || toolGroupDehydrationSummary(steps, assistantName);
-  const groupTitle = toolGroupSummary(steps).replace(/\s+等$/, "");
   useEffect(() => { setSummaryDraft(modelSummary); setEditingSummary(false); }, [modelSummary]);
   useEffect(() => { if (!compacted) setSummaryOpen(false); }, [compacted]);
   const toggleArchive = (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -415,10 +398,11 @@ const ToolStepGroup = memo(function ToolStepGroup({ steps, assistantName = "Gemi
     border: "1px solid var(--border)", borderRadius: 99, color: "var(--text-subtle)", background: "var(--surface)",
     fontSize: 8, whiteSpace: "nowrap", cursor: "pointer", opacity: hovered ? 1 : 0, pointerEvents: hovered ? "auto" : "none", transition: "opacity .14s ease",
   };
-  return <section className={`tool-group tool-group--quiet ${live ? "is-live" : ""} ${archived ? "is-archived" : ""}`} data-step-count={steps.length} data-message-id={steps[0]?.assistant.id} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} onFocusCapture={() => setHovered(true)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setHovered(false); }} style={{ margin: "6px 0 13px", overflow: "visible", border: 0, borderRadius: 0, background: "transparent", boxShadow: "none" }}>
-    <details open={open} onToggle={(event) => { const nextOpen = event.currentTarget.open; if (live) { if (!nextOpen) event.currentTarget.open = true; return; } if (nextOpen !== open) setManualOpen(nextOpen); }} style={{ border: 0, background: "transparent" }}>
+  const groupState = pendingCount ? "pending" : hasError ? "failed" : "complete";
+  return <section className={`tool-group tool-group--quiet tool-group--${groupState} ${live ? "is-live" : ""} ${compacted ? "is-compacted" : ""} ${archived ? "is-archived" : ""}`} data-step-count={steps.length} data-message-id={steps[0]?.assistant.id} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} onFocusCapture={() => setHovered(true)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setHovered(false); }}>
+    <details open={open} onToggle={(event) => { const nextOpen = event.currentTarget.open; if (live) { if (!nextOpen) event.currentTarget.open = true; return; } if (nextOpen !== open) setManualOpen(nextOpen); }}>
       <summary className="tool-group-summary">
-        <strong>› {toolGroupSummary(steps)}</strong>
+        <strong title={toolGroupSummary(steps)}>› {toolGroupSummary(steps)}</strong>
         <span className={`tool-group-state ${pendingCount ? "pending" : hasError ? "error" : "complete"}`} title={pendingCount ? "待返回" : hasError ? "执行失败" : "已完成"}>· {groupStatus}</span>
         {partialArchive && <span className="tool-group-state">部分排除</span>}
         {archived && <span className="tool-group-state">已归档</span>}
@@ -426,7 +410,7 @@ const ToolStepGroup = memo(function ToolStepGroup({ steps, assistantName = "Gemi
         <button type="button" className="tool-group-archive" disabled={disabled || live || steps.some((step) => !step.result)} onClick={toggleArchive} style={{ ...actionStyle, marginLeft: "auto", opacity: hovered ? 1 : 0 }}>{archived ? "恢复" : compacted ? "还原" : "精简"}</button>
         <ChevronDown size={14} aria-hidden="true" className="tool-group-chevron" />
       </summary>
-      {open && <div className="tool-timeline-thread" style={{ margin: "2px 0 5px", padding: "2px 0 3px", border: 0, background: "transparent" }}>{steps.map((step) => <ToolStep key={`${step.call.id}-${step.assistant.id}`} {...step} showTitle={steps.length > 1 && toolActionTitle(step.call) !== groupTitle} onCall={onCall} onResult={onMessage} onImage={onImage} onDeleteCall={onDeleteCall} onAddToolResult={onAddToolResult} assistantName={assistantName} disabled={disabled} searchTerm={searchTerm} jumpedId={jumpedId} />)}</div>}
+      {open && <div className="tool-timeline-thread">{steps.map((step, index) => <ToolStep key={`${step.call.id}-${step.assistant.id}`} {...step} stepNumber={index + 1} showTitle={steps.length > 1} running={step.call.id === activeCallId} onCall={onCall} onResult={onMessage} onImage={onImage} onDeleteCall={onDeleteCall} onAddToolResult={onAddToolResult} assistantName={assistantName} disabled={disabled} searchTerm={searchTerm} jumpedId={jumpedId} />)}</div>}
     </details>
     {summaryOpen && <section className="tool-summary-card" style={{ margin: "3px 0 8px 21px", padding: "10px 12px", border: "1px solid color-mix(in srgb, var(--success) 22%, var(--border))", borderRadius: 10, background: "color-mix(in srgb, var(--success-soft) 40%, var(--surface))", boxShadow: "none" }}>
       <header style={{ display: "flex", minHeight: 24, alignItems: "center", gap: 8, marginBottom: 5 }}><strong style={{ color: "var(--text-muted)", fontSize: 9 }}>工具组摘要</strong><span style={{ color: "var(--text-subtle)", fontSize: 8 }}>保留在模型上下文中</span><div style={{ display: "flex", gap: 5, marginLeft: "auto" }}>{editingSummary ? <><button disabled={disabled} onClick={saveSummary}>保存</button><button disabled={disabled} onClick={() => { setSummaryDraft(summaryText); setEditingSummary(false); }}>取消</button></> : <button disabled={disabled} onClick={() => { setSummaryDraft(summaryText); setEditingSummary(true); }}>编辑</button>}<button disabled={disabled} aria-label="收起摘要" title="收起摘要" onClick={() => setSummaryOpen(false)}>×</button></div></header>
@@ -434,7 +418,7 @@ const ToolStepGroup = memo(function ToolStepGroup({ steps, assistantName = "Gemi
     </section>}
     {!!images.length && <div className="image-gallery group-image-gallery" style={{ display: "flex", flexWrap: "wrap", gap: 7, margin: "2px 0 8px 21px", padding: 0 }}>{images.map((image) => <button key={image.file} title={image.name} onClick={() => onImage(image.file, image.name)} style={{ overflow: "hidden", border: "1px solid var(--border)", borderRadius: 9, background: "var(--surface)" }}><img src={imageUrl(image.file)} alt={image.name} loading="lazy" style={{ display: "block", width: "auto", maxWidth: 150, maxHeight: 92, objectFit: "cover" }} /></button>)}</div>}
   </section>;
-}, (previous, next) => sameToolSteps(previous.steps, next.steps) && previous.assistantName === next.assistantName && previous.compact === next.compact && previous.onCall === next.onCall && previous.onMessage === next.onMessage && previous.onImage === next.onImage && previous.onDeleteCall === next.onDeleteCall && previous.onAddToolResult === next.onAddToolResult && previous.live === next.live && previous.disabled === next.disabled && previous.searchTerm === next.searchTerm && previous.jumpedId === next.jumpedId);
+}, (previous, next) => sameToolSteps(previous.steps, next.steps) && previous.assistantName === next.assistantName && previous.compact === next.compact && previous.onCall === next.onCall && previous.onMessage === next.onMessage && previous.onImage === next.onImage && previous.onDeleteCall === next.onDeleteCall && previous.onAddToolResult === next.onAddToolResult && previous.live === next.live && previous.activeCallId === next.activeCallId && previous.disabled === next.disabled && previous.searchTerm === next.searchTerm && previous.jumpedId === next.jumpedId);
 
 export function MessageStream(props: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -458,6 +442,7 @@ export function MessageStream(props: Props) {
   const followStream = useRef(true);
   const settlingAtBottom = useRef(false);
   const disabled = props.busy;
+  const streamingThinking = props.streamingThinking?.trim() || "";
   const byCallId = useMemo(() => new Map(props.messages.filter((message) => message.role === "tool" && message.toolCallId).map((message) => [wireToolCallId(message.toolCallId!), message])), [props.messages]);
   const matched = useMemo(() => new Set(props.messages.flatMap((message) => message.toolCalls?.map((call) => wireToolCallId(call.id)) || [])), [props.messages]);
   const leadCount = props.messages.findIndex((message) => message.role !== "system" && message.role !== "developer");
@@ -645,7 +630,7 @@ export function MessageStream(props: Props) {
   };
   const renderGroup = (steps: { assistant: Message; call: ToolCall; callIndex: number; result?: Message }[]) => {
     const live = props.busy && steps.some((step) => !step.result || step.assistant.id === props.streamingId);
-    return <ToolStepGroup key={`group-${steps[0].assistant.id}`} steps={steps} assistantName={props.assistantName || "Gemini"} compact={props.compactTools} onCall={props.onCall} onMessage={props.onMessage} onImage={openImage} onDeleteCall={props.onDeleteCall} onAddToolResult={props.onAddToolResult} live={live} disabled={disabled} searchTerm={visibleSearchTerm} jumpedId={jumpedId} />;
+    return <ToolStepGroup key={`group-${steps[0].assistant.id}`} steps={steps} assistantName={props.assistantName || "Gemini"} compact={props.compactTools} onCall={props.onCall} onMessage={props.onMessage} onImage={openImage} onDeleteCall={props.onDeleteCall} onAddToolResult={props.onAddToolResult} live={live} activeCallId={props.toolActivity?.id} disabled={disabled} searchTerm={visibleSearchTerm} jumpedId={jumpedId} />;
   };
   const toggleDirectory = () => setDirectoryOpenState(!directoryOpen);
   const content: React.ReactNode[] = [<div className="stream-tools" key="stream-tools" style={{ position: "sticky", top: 7, zIndex: 20, height: 0, margin: 0, padding: 0, overflow: "visible", background: "transparent", pointerEvents: "none" }}>
@@ -665,36 +650,31 @@ export function MessageStream(props: Props) {
     if (message.role === "tool" && message.toolCallId && matched.has(wireToolCallId(message.toolCallId))) { index++; continue; }
     if (message.role === "assistant" && message.toolCalls?.length) {
       const own = message.toolCalls.map((call, callIndex) => ({ assistant: message, call, callIndex, result: byCallId.get(wireToolCallId(call.id)) }));
-      // Keep assistant prose in a normal, always-visible message card. Tool collapsing
-      // applies only to tool details; it must never hide text emitted alongside calls.
-      if (!message.images?.length && message.content.trim()) {
-        const liveThinking = props.streamingThinking && props.busy && props.streamingId === message.id ? <div className="live-thinking" role="status"><details><summary><Brain size={14} />思考过程 · 实时</summary><pre>{props.streamingThinking}</pre></details></div> : null;
-        const callView = <div className="assistant-tool-steps">{own.map((step) => <ToolStep key={step.call.id} {...step} onCall={props.onCall} onResult={props.onMessage} onImage={openImage} onDeleteCall={props.onDeleteCall} onAddToolResult={props.onAddToolResult} assistantName={props.assistantName || "Gemini"} disabled={disabled} searchTerm={visibleSearchTerm} jumpedId={jumpedId} />)}{liveThinking}</div>;
-        content.push(renderCard(message, index, callView)); index++; continue;
-      }
-      if (!message.images?.length) {
-        const steps = [...own]; let cursor = index + 1;
-        while (cursor < props.messages.length) {
-          const next = props.messages[cursor];
-          if (next.role === "tool" && next.toolCallId && matched.has(wireToolCallId(next.toolCallId))) { cursor++; continue; }
-          if (next.role === "assistant" && next.toolCalls?.length && !next.images?.length && !next.content.trim()) {
-            next.toolCalls.forEach((call, callIndex) => steps.push({ assistant: next, call, callIndex, result: byCallId.get(wireToolCallId(call.id)) })); cursor++; continue;
-          }
-          break;
+      const hasVisibleMessage = !!message.content.trim() || !!message.images?.length;
+      const liveThinking = streamingThinking && props.busy && props.streamingId === message.id ? <div className="live-thinking" role="status"><details><summary><Brain size={14} />思考过程 · 实时</summary><pre>{streamingThinking}</pre></details></div> : null;
+      if (hasVisibleMessage || liveThinking) content.push(renderCard(message, index, liveThinking));
+      const steps = [...own]; let cursor = index + 1;
+      while (cursor < props.messages.length) {
+        const next = props.messages[cursor];
+        if (next.role === "tool" && next.toolCallId && matched.has(wireToolCallId(next.toolCallId))) { cursor++; continue; }
+        if (next.role === "assistant" && next.toolCalls?.length && !next.images?.length && !next.content.trim()) {
+          next.toolCalls.forEach((call, callIndex) => steps.push({ assistant: next, call, callIndex, result: byCallId.get(wireToolCallId(call.id)) })); cursor++; continue;
         }
-        content.push(renderGroup(steps)); index = cursor; continue;
+        break;
       }
-      const liveThinking = props.streamingThinking && props.busy && props.streamingId === message.id ? <div className="live-thinking" role="status"><details><summary><Brain size={14} />思考过程 · 实时</summary><pre>{props.streamingThinking}</pre></details></div> : null;
-      const callView = <div className="assistant-tool-steps">{own.map((step) => <ToolStep key={step.call.id} {...step} onCall={props.onCall} onResult={props.onMessage} onImage={openImage} onDeleteCall={props.onDeleteCall} onAddToolResult={props.onAddToolResult} assistantName={props.assistantName || "Gemini"} disabled={disabled} searchTerm={visibleSearchTerm} jumpedId={jumpedId} />)}{liveThinking}</div>;
-      content.push(renderCard(message, index, callView)); index++; continue;
+      content.push(renderGroup(steps)); index = cursor; continue;
     }
     if (message.role === "assistant" && props.busy && props.streamingId === message.id) {
-      const liveThinking = props.streamingThinking ? <div className="live-thinking" role="status"><details><summary><Brain size={14} />思考过程 · 实时</summary><pre>{props.streamingThinking}</pre></details></div> : null;
+      const liveThinking = streamingThinking ? <div className="live-thinking" role="status"><details><summary><Brain size={14} />思考过程 · 实时</summary><pre>{streamingThinking}</pre></details></div> : null;
       content.push(renderCard(message, index, liveThinking)); index++; continue;
     }
     content.push(renderCard(message, index)); index++;
   }
-  if (props.toolActivity) content.push(<div key="tool-live" className="live-tool-card"><strong><Wrench size={14} />正在执行 {props.toolActivity.name}</strong><pre>{JSON.stringify(props.toolActivity.arguments, null, 2)}</pre>{props.toolActivity.output && <pre>{props.toolActivity.output}</pre>}</div>);
+  if (props.toolActivity) content.push(<div key="tool-live" className="tool-live-call" role="status" aria-label={`正在执行 ${props.toolActivity.name}`} data-tool-name={props.toolActivity.name}>
+    <div className="tool-live-heading"><span className="tool-live-pulse" aria-hidden="true" /><strong>正在执行 <code>{props.toolActivity.name}</code></strong><small>{props.toolActivity.output ? "正在接收输出" : "运行中"}</small></div>
+    {props.toolActivity.output && <pre className="tool-live-output" aria-live="off">{props.toolActivity.output}</pre>}
+    <details className="tool-live-arguments"><summary>查看原始参数</summary><pre>{JSON.stringify(props.toolActivity.arguments, null, 2) || "无参数"}</pre></details>
+  </div>);
   if (props.busy && runningWorkers.length) content.push(<div key="worker-live" className="live-tool-card live-workers-card"><strong><Sparkles size={14} />GPT 工兵活动中 · {runningWorkers.length}</strong>{runningWorkers.map((worker) => <div className="live-worker-row" key={worker.id}><span className="live-worker-name">{worker.name}<small>{worker.status === "waiting_input" ? "等待输入" : worker.status === "starting" ? "启动中" : "运行中"}</small></span><div className="live-worker-tools">{worker.recentTools.length ? worker.recentTools.slice(0, 5).map((tool, index) => <span className={`live-worker-tool ${tool.status}`} key={`${tool.name}-${index}`}>{tool.name}</span>) : <small>等待工具活动</small>}</div></div>)}</div>);
   if (!props.messages.length) content.push(<div key="empty" className="conversation-empty"><span>✦</span><strong>从一条消息开始</strong><p>给 Gemini 一个目标，让它协调 GPT 工兵完成工作。</p></div>);
   return <>
