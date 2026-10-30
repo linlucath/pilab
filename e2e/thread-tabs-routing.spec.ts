@@ -10,6 +10,46 @@ async function seedTwoSessions(page: Page) {
   ], "route-first");
 }
 
+test("LAY-10 ThreadTabs stays singular when the application entry is initialized again", async ({ page }) => {
+  const ownerSessionId = "thread-tabs-singleton-owner";
+  await seedWorkspace(page, [{ id: ownerSessionId, title: "Thread tabs", messages: [firstMessage] }], ownerSessionId);
+  const worker = (id: string, name: string, status: string, owner: string) => ({ id, name, role: "implementer", status, model: "gpt-6", updatedAt: 1,
+    ownerSessionId: owner, hasUnreadReply: false, hasActiveWaiter: false, pendingQuestionCount: 0, recentTools: [], lastReplyPreview: status });
+  let exposeSecondSnapshot = false;
+  await page.route(/\/api\/gpt-sessions\?/, (route) => {
+    const owner = new URL(route.request().url()).searchParams.get("ownerSessionId") || ownerSessionId;
+    const sessions = owner === ownerSessionId
+      ? [worker("snapshot-worker", "snapshot-worker", exposeSecondSnapshot ? "idle" : "running", owner)]
+      : [worker(`worker-${owner}`, "new-session-worker", "idle", owner)];
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ sessions }) });
+  });
+
+  await page.goto(`/?session=${ownerSessionId}`);
+  await expect(page.locator(".thread-tabs-bar")).toHaveCount(1);
+  const workerTab = page.getByRole("tab", { name: /snapshot-worker/ });
+  await expect(workerTab).toBeVisible();
+  await workerTab.click();
+  await expect(workerTab).toHaveAttribute("aria-selected", "true");
+
+  // A repeated entry initialization must reuse the page's React root. Separate roots
+  // can each retain different worker snapshots and lose the active thread selection.
+  exposeSecondSnapshot = true;
+  await page.evaluate(async () => {
+    const moduleUrl = "/src/main.tsx?duplicate-initialization=1";
+    await import(/* @vite-ignore */ moduleUrl);
+  });
+  await expect(workerTab).toHaveAttribute("title", "snapshot-worker · idle", { timeout: 5_000 });
+  await expect(workerTab).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".thread-tabs-bar")).toHaveCount(1);
+  await expect(page.getByRole("tab", { name: "💬 主会话 (Gemini)" })).toHaveCount(1);
+
+  await page.getByRole("button", { name: "新建对话" }).click();
+  await expect(page.getByRole("textbox", { name: "会话标题" })).toHaveValue("新建对话");
+  await expect(page.locator(".thread-tabs-bar")).toHaveCount(1);
+  await expect(page.locator(".thread-worker-tab")).toContainText("new-session-worker");
+  await expect(page.getByRole("tab", { name: /snapshot-worker/ })).toHaveCount(0);
+});
+
 test("LAY-09 URL session routes remain independent across tabs and refresh", async ({ browser }) => {
   const context = await browser.newContext();
   const first = await context.newPage();
