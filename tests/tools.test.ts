@@ -81,7 +81,7 @@ async function provider(handler: (body: any, res: ServerResponse) => void) {
     },
   };
 }
-test("Agent exposes GPT and image tools, feeds tool results back, and replays edited history", async () => {
+test("Agent exposes GPT, image, and artifact tools, feeds results back, and replays edited history", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "pi-lab-tools-"));
   const sent: any[] = [];
   const mock = await provider((body, res) => {
@@ -109,11 +109,13 @@ test("Agent exposes GPT and image tools, feeds tool results back, and replays ed
       JSON.stringify(events),
     );
     assert.equal(sent.length, 2);
-    assert.deepEqual(sent[0].tools.map((t: any) => t.function.name).sort(), [
-      "subagent_control",
+    assert.deepEqual(sent[0].tools.map((t: any) => t.function.name), [
       "subagent_dispatch",
       "subagent_query",
+      "subagent_control",
       "view_image",
+      "read_artifact",
+      "write_artifact",
     ]);
     const descriptions = Object.fromEntries(sent[0].tools.map((tool: any) => [tool.function.name, tool.function.description]));
     for (const name of ["subagent_dispatch", "subagent_query", "subagent_control", "view_image"])
@@ -189,12 +191,14 @@ test("Agent tools are always enabled and expose the full tool set", async () => 
       { settings: { ...defaults, baseUrl: mock.baseUrl, workingDirectory: cwd }, messages: [user] },
       (event) => events.push(event),
     );
-    const names = sent[0].tools.map((tool: any) => tool.function.name).sort();
+    const names = sent[0].tools.map((tool: any) => tool.function.name);
     assert.deepEqual(names, [
-      "subagent_control",
       "subagent_dispatch",
       "subagent_query",
+      "subagent_control",
       "view_image",
+      "read_artifact",
+      "write_artifact",
     ]);
     assert.equal(events.some((event) => event.type === "error"), false, JSON.stringify(events));
     assert.equal(sent.length, 2);
