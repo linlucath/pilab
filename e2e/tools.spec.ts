@@ -95,7 +95,7 @@ test("TOOL-06 单步骤工具组使用单层折叠并显示克制文案", async 
   await expect(sameTitleSteps).toHaveCount(2);
   for (const [index, step] of (await sameTitleSteps.all()).entries()) {
     await expect(step.locator(":scope > summary")).toContainText(`步骤 ${index + 1}`);
-    await expect(step.locator(":scope > .tool-step-body")).toBeVisible();
+    await expect(step.locator(":scope > .tool-step-body")).toHaveCount(index === 1 ? 1 : 0);
     await expect(step.locator(".tool-readable-block a")).toHaveCount(0);
   }
 });
@@ -272,7 +272,7 @@ test("TOOL-07 多步骤工具统一成卡片，运行中参数收在可展开详
   await expect(steps.nth(0).locator(".tool-state.complete")).toHaveText("完成");
   await expect(steps.nth(1).locator(":scope > summary")).toContainText("步骤 2");
   await expect(steps.nth(1).locator(".tool-state.running")).toHaveText("执行中");
-  await expect(steps.nth(0).locator(":scope > .tool-step-body")).toBeVisible();
+  await expect(steps.nth(0).locator(":scope > .tool-step-body")).toHaveCount(0);
   await expect(steps.nth(1).locator(":scope > .tool-step-body")).toBeVisible();
 
   const live = page.locator(".tool-live-call");
@@ -286,9 +286,9 @@ test("TOOL-07 多步骤工具统一成卡片，运行中参数收在可展开详
   await expect(rawArguments.locator("pre")).toContainText("LIFECYCLE-STEP-TWO");
   await rawArguments.locator(":scope > summary").click();
   await expect(rawArguments).not.toHaveAttribute("open", "");
-  await expect(group.locator(".tool-raw-details")).toHaveCount(2);
-  for (const raw of await group.locator(".tool-raw-details").all())
-    await expect(raw).not.toHaveAttribute("open", "");
+  await expect(group.locator(".tool-raw-details")).toHaveCount(1);
+  await expect(steps.nth(0).locator(".tool-raw-details")).toHaveCount(0);
+  await expect(steps.nth(1).locator(".tool-raw-details")).toHaveCount(1);
   await expect(group.getByRole("button", { name: "添加结果" })).toHaveCount(0);
 
   await mkdir("artifacts/ui-verification", { recursive: true });

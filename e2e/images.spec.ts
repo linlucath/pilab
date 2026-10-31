@@ -135,7 +135,9 @@ test("IMG-05 粘贴、拖放、退格移除并发送图片引用", async ({ page
     transfer.items.add(new File(["not an image"], "not-image.txt", { type: "text/plain" }));
     element.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }));
   });
-  await expect(page.getByRole("alert").filter({ hasText: "不是支持的" })).toBeVisible();
+  const genericFile = page.getByRole("group", { name: "附件 not-image.txt" });
+  await expect(genericFile).toHaveAttribute("data-status", "ready");
+  await genericFile.getByRole("button", { name: "移除文件 not-image.txt" }).click();
   await composer.evaluate((element, value) => {
     const bytes = Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
     const transfer = new DataTransfer();
@@ -171,8 +173,7 @@ test("IMG-05 粘贴、拖放、退格移除并发送图片引用", async ({ page
   }, base64);
   await expect(tray.locator(".staged-image[data-status=uploading]")).toHaveCount(1);
   await expect(tray.locator(".staged-image-state.uploading .spin")).toBeVisible();
-  await page.getByRole("button", { name: "发送" }).click();
-  await expect(page.locator(".composer-image-error")).toContainText("仍在上传");
+  await expect(page.getByRole("button", { name: "发送" })).toBeDisabled();
   await expect(tray.locator(".staged-image[data-status=ready]")).toHaveCount(1);
   await page.getByRole("button", { name: "发送" }).click();
   await expect(page.locator(".message-row").filter({ hasText: "IMG-05-START" })).toBeVisible();

@@ -31,6 +31,7 @@ const thinkingSchema = z.object({
 export const MAX_MESSAGE_IMAGES = 8;
 export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 export const MAX_MESSAGE_IMAGE_BYTES = 40 * 1024 * 1024;
+export const MAX_WORKSPACE_FILE_BYTES = 50 * 1024 * 1024;
 export const imageReferenceSchema = z.object({
   file: z.string().regex(/^(files|previews)\/[a-f0-9]{64}\.(png|jpg|webp|gif|bmp)$/),
   id: z.string().regex(/^[a-f0-9]{64}$/).optional(),

@@ -142,7 +142,7 @@ test("VIS-04 三步组合明确区分已完成、执行中与待返回，并共�
   await expect(steps.nth(1).locator(".tool-state.running")).toHaveText("执行中");
   await expect(steps.nth(2).locator(":scope > summary")).toContainText("步骤 3");
   await expect(steps.nth(2).locator(".tool-state.pending")).toHaveText("待返回");
-  await expect(steps.nth(0).locator(":scope > .tool-step-body")).toBeVisible();
+  await expect(steps.nth(0).locator(":scope > .tool-step-body")).toHaveCount(0);
   await expect(steps.nth(1).locator(":scope > .tool-step-body")).toBeVisible();
   await expect(steps.nth(2).locator(":scope > .tool-step-body")).toBeVisible();
   await expect(group.locator(":scope > details")).toHaveCount(1);
