@@ -44,9 +44,6 @@ export function loadLegacyWorkspace(): Workspace {
           messages: messages.data,
           settings,
           runs: [],
-          ...(typeof item.parentSessionId === "string" ? { parentSessionId: item.parentSessionId } : {}),
-          ...(typeof item.parentSessionTitle === "string" ? { parentSessionTitle: item.parentSessionTitle } : {}),
-          ...(typeof item.forkSummary === "string" ? { forkSummary: item.forkSummary } : {}),
           ...(item.piSync && typeof item.piSync.id === "string" ? { piSync: item.piSync } : {}),
         }];
       });

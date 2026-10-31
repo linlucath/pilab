@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 import { openWorkspace, resetWorkspace, sendMessage, setMockScript, ui } from "./fixtures/index";
 
-type PersistedSession = { id: string; title: string; messages: { id: string; role: string; content: string; enabled: boolean; toolCalls?: { id: string }[]; toolCallId?: string }[]; settings: Record<string, unknown>; runs?: unknown[]; parentSessionId?: string; parentSessionTitle?: string };
+type PersistedSession = { id: string; title: string; messages: { id: string; role: string; content: string; enabled: boolean; toolCalls?: { id: string }[]; toolCallId?: string }[]; settings: Record<string, unknown>; runs?: unknown[] };
 type PersistedWorkspace = { sessions: PersistedSession[]; active: string; hiddenPiSessions: string[]; followPi: boolean; revision: number };
 
 async function prepare(page: Page) {
@@ -52,37 +52,25 @@ test("WSP-01 刷新后恢复工作区会话、消息和配置", async ({ page })
   });
   const source = (await savedWorkspace(page)).sessions.find((session) => session.title === "refresh-persist-title")!;
 
-  await page.getByRole("button", { name: /提纯分身/ }).click();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await page.locator(".session-fork-modal textarea").fill("persisted branch memory");
-  await page.getByLabel("新分身名称").fill("persisted-child");
-  await page.getByRole("button", { name: "即刻创建并切换" }).click();
-  await waitForWorkspace(page, (workspace) => workspace.sessions.some((session) => session.title === "persisted-child"));
-  await page.locator(`.session-row[data-session-id="${source.id}"] .session-main`).click();
-  await expect(page.locator(".right-panel")).toHaveCount(0);
   await page.getByRole("button", { name: "新建对话" }).click();
-  await waitForWorkspace(page, (workspace) => workspace.sessions.length === 3 && workspace.active !== source.id);
+  await waitForWorkspace(page, (workspace) => workspace.sessions.length === 2 && workspace.active !== source.id);
   await page.getByRole("textbox", { name: "会话标题" }).fill("secondary-session");
   await waitForWorkspace(page, (workspace) => workspace.sessions.some((session) => session.title === "secondary-session"));
 
   const beforeReload = await savedWorkspace(page);
   const persistedSource = beforeReload.sessions.find((session) => session.id === source.id)!;
-  const branch = beforeReload.sessions.find((session) => session.title === "persisted-child")!;
   const secondary = beforeReload.sessions.find((session) => session.title === "secondary-session")!;
   expect(persistedSource.title).toBe("refresh-persist-title");
   expect(persistedSource.settings.model).toBe("e2e-model-persisted");
   expect(persistedSource.messages.map((message) => message.content)).toEqual(expect.arrayContaining(["prompt-persisted", "reply-persisted"]));
   expect(persistedSource.settings.workingDirectory).toBeTruthy();
-  expect(branch.settings.workingDirectory).toBeTruthy();
   expect(secondary.settings.workingDirectory).toBeTruthy();
-  expect(new Set([persistedSource.settings.workingDirectory, branch.settings.workingDirectory, secondary.settings.workingDirectory]).size).toBe(3);
-  expect(branch.parentSessionId).toBe(source.id);
-  expect(branch.parentSessionTitle).toBe("refresh-persist-title");
+  expect(new Set([persistedSource.settings.workingDirectory, secondary.settings.workingDirectory]).size).toBe(2);
 
   await page.reload();
   await expect(ui(page).composer).toBeVisible();
   const reloaded = await savedWorkspace(page);
-  expect(reloaded.sessions).toHaveLength(3);
+  expect(reloaded.sessions).toHaveLength(2);
   const reloadedSource = reloaded.sessions.find((session) => session.id === source.id)!;
   expect(reloadedSource.title).toBe("refresh-persist-title");
   expect(reloadedSource.settings.model).toBe("e2e-model-persisted");

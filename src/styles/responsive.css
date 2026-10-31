@@ -75,8 +75,6 @@
   .background-task-bar > div { width: 100%; flex-wrap: wrap; }
   .worker-wake-banner { align-items: flex-start; flex-direction: column; }
   .worker-wake-banner > div { width: 100%; justify-content: flex-end; }
-  .session-fork-created-card { align-items: flex-start; flex-direction: column; }
-  .session-fork-created-card > button { width: 100%; }
 }
 @media (max-width: 680px) {
   .thread-tabs-bar { min-height: 38px; gap: 4px; padding: 4px 7px; }

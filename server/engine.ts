@@ -271,19 +271,12 @@ export async function generate(
     throw new Error(`模型 ${model.id} 不支持图片输入，请切换支持图片的模型。`);
   const generatedTranscript: Message[] = [];
   const history = () => [...active, ...generatedTranscript];
-  const onEvent = (event: Record<string, unknown>) => {
-    if (event.type === "session_forked") {
-      emit({ type: "session_forked", fork: event.fork });
-      return;
-    }
-    emit(event);
-  };
   const { cwd, tools } = e2e
     ? {
         cwd: await e2eWorkingDirectory(settings),
         tools: e2eMockTools(),
       }
-    : await agentTools(settings, history, onEvent, ownerSessionId);
+    : await agentTools(settings, history, ownerSessionId);
   emit({ type: "runtime", cwd, tools: tools.map((t) => t.name) });
   const transcript: AgentMessage[] = await restoreImageHistory(prepareMessagesForModel(active), model);
   // Agent continuation starts from an existing transcript. Declare the initial

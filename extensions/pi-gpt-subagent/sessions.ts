@@ -14,6 +14,12 @@ import type { RpcTransport } from "./rpc.ts";
 export type SessionStatus = "starting" | "running" | "idle" | "waiting_input" |
   "interrupted" | "suspended" | "closed" | "error";
 export type SendMode = "steer" | "followUp" | "interrupt";
+export const MAX_SESSION_REPLY_CHARS = 500_000;
+const replyTruncationNotice = "\n\n[工兵回复达到 500,000 字符安全上限，后续内容未保存。]";
+export function boundSessionReply(text: string, truncated = false) {
+  if (text.length <= MAX_SESSION_REPLY_CHARS && !truncated) return text;
+  return text.slice(0, MAX_SESSION_REPLY_CHARS - replyTruncationNotice.length) + replyTruncationNotice;
+}
 export const rolePresets = ["scout", "experimenter", "implementer"] as const;
 export type GptRolePreset = (typeof rolePresets)[number];
 export const rolePresetLabels: Record<GptRolePreset, string> = gptWorkerRoleLabels;
@@ -75,6 +81,8 @@ interface ManagedSession {
   active: boolean;
   lastPartialAt: number;
   roundTextSegments: string[];
+  roundTextLength: number;
+  roundTextTruncated: boolean;
   toolUpdateAt: Map<string, number>;
 }
 export interface SessionManagerOptions {
@@ -156,7 +164,8 @@ export class GptSessionManager {
   private makeEntry(info: SessionInfo): ManagedSession {
     return {
       info, events: [], ready: false, chain: Promise.resolve(), pendingOperations: 0, epoch: 0,
-      quiet: 0, active: false, lastPartialAt: 0, roundTextSegments: [], toolUpdateAt: new Map(),
+      quiet: 0, active: false, lastPartialAt: 0, roundTextSegments: [], roundTextLength: 0,
+      roundTextTruncated: false, toolUpdateAt: new Map(),
     };
   }
   private eventFile(id: string) { return path.join(this.options.storageDir, `${id}.events.jsonl`); }
@@ -600,6 +609,8 @@ export class GptSessionManager {
     if (event.type === "agent_start") {
       entry.active = true;
       entry.roundTextSegments = [];
+      entry.roundTextLength = 0;
+      entry.roundTextTruncated = false;
       entry.info.partialText = "";
       entry.info.status = "running";
       this.record(entry, "running", "GPT started working.");
@@ -619,7 +630,16 @@ export class GptSessionManager {
       if (message?.role === "assistant") {
         const text = contentText(message.content).trim();
         const previous = entry.roundTextSegments.at(-1);
-        if (text && text !== previous) entry.roundTextSegments.push(text);
+        if (text && text !== previous) {
+          const separatorLength = entry.roundTextSegments.length ? 2 : 0;
+          const remaining = MAX_SESSION_REPLY_CHARS - entry.roundTextLength - separatorLength;
+          const segment = text.slice(0, Math.max(0, remaining));
+          if (segment) {
+            entry.roundTextSegments.push(segment);
+            entry.roundTextLength += separatorLength + segment.length;
+          }
+          if (segment.length < text.length) entry.roundTextTruncated = true;
+        }
         entry.info.partialText = "";
         if (message.stopReason === "error") entry.info.error = message.errorMessage || "GPT provider error.";
       } else if (message?.role === "user") this.record(entry, "user", contentText(message.content));
@@ -642,9 +662,9 @@ export class GptSessionManager {
       const wasActive = entry.active;
       if (!wasActive && !entry.roundTextSegments.length) return;
       entry.active = false;
-      const aggregated = entry.roundTextSegments.join("\n\n");
+      const aggregated = boundSessionReply(entry.roundTextSegments.join("\n\n"), entry.roundTextTruncated);
       if (aggregated) {
-        entry.info.lastText = aggregated.slice(0, 64_000);
+        entry.info.lastText = aggregated;
         entry.info.replySequence = entry.info.cursor + 1;
         this.record(entry, "assistant", entry.info.lastText);
       }

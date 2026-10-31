@@ -59,19 +59,16 @@ test("LAY-02 收起与展开侧栏并在窄屏保持会话可切换且无横向�
   await expect(ui(page).composer).toBeVisible();
 });
 
-test("LAY-03 搜索标题、来源标题与工作目录，清空或无匹配不改变会话", async ({ page }) => {
+test("LAY-03 搜索标题与工作目录，清空或无匹配不改变会话", async ({ page }) => {
   await seedWorkspace(page, [
     e2eSession("lay-03-a", "Alpha", [msg("lay-03-a-system", "system", "system")], { workingDirectory: "/tmp/lab-alpha" }),
-    { ...e2eSession("lay-03-b", "Derived", [msg("lay-03-b-system", "system", "system")], { workingDirectory: "/tmp/lab-beta" }), parentSessionTitle: "Alpha Parent" },
+    e2eSession("lay-03-b", "Derived", [msg("lay-03-b-system", "system", "system")], { workingDirectory: "/tmp/lab-beta" }),
     e2eSession("lay-03-c", "Gamma", [msg("lay-03-c-system", "system", "system")], { workingDirectory: "/tmp/lab-gamma" }),
   ]);
   await openWorkspace(page);
   const side = sidebar(page);
   const search = side.getByRole("textbox", { name: "搜索会话" });
   await search.fill("derived");
-  await expect(sessionRows(page)).toHaveCount(1);
-  await expect(side.getByText("Derived")).toBeVisible();
-  await search.fill("alpha parent");
   await expect(sessionRows(page)).toHaveCount(1);
   await expect(side.getByText("Derived")).toBeVisible();
   await search.fill("lab-gamma");

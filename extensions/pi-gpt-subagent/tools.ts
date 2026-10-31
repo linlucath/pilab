@@ -6,7 +6,7 @@ import type { Static, TSchema } from "typebox";
 import { subagentToolUi, type SubagentToolUiMetadata } from "./tool-ui.ts";
 import { ToolRegistry } from "./registry.ts";
 import {
-  rolePresetLabels, type GptRolePreset, type GptSessionManager,
+  boundSessionReply, rolePresetLabels, type GptRolePreset, type GptSessionManager,
   type ProgressEvent, type SessionInfo, type SessionStatus,
 } from "./sessions.ts";
 
@@ -33,9 +33,6 @@ export interface SessionTool {
   ): Promise<AgentToolResult<unknown>>;
 }
 
-export const DEFAULT_REPLY_MAX_CHARS = 3_200;
-export const MIN_REPLY_MAX_CHARS = 500;
-export const MAX_REPLY_MAX_CHARS = 24_000;
 const sessionName = Type.String({ minLength: 1, maxLength: 160, description: "Unique conversation name or tracking handle returned by subagent_dispatch." });
 const message = Type.String({ minLength: 1, maxLength: 100_000 });
 const rolePreset = Type.Union([
@@ -51,12 +48,10 @@ const taskSchema = Type.Object({
   sendMode: Type.Optional(Type.Union([Type.Literal("steer"), Type.Literal("followUp"), Type.Literal("interrupt")])),
 }, { additionalProperties: false });
 type DispatchTask = Static<typeof taskSchema>;
-const maxChars = Type.Optional(Type.Integer({ minimum: MIN_REPLY_MAX_CHARS, maximum: MAX_REPLY_MAX_CHARS }));
 const dispatchSchema = Type.Object({
   task: Type.Optional(taskSchema),
   tasks: Type.Optional(Type.Array(taskSchema, { minItems: 1, maxItems: 8 })),
   mode: Type.Optional(Type.Union([Type.Literal("async"), Type.Literal("sync")])),
-  maxChars,
 }, { additionalProperties: false });
 type DispatchInput = Static<typeof dispatchSchema>;
 const querySchema = Type.Object({
@@ -65,7 +60,6 @@ const querySchema = Type.Object({
   repeat: Type.Optional(Type.Boolean({ description: "Deliberately reread the latest completed brief." })),
   diagnostics: Type.Optional(Type.Boolean({ description: "Include bounded failure diagnostics and recent tool details." })),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
-  maxChars,
 }, { additionalProperties: false });
 type QueryInput = Static<typeof querySchema>;
 const controlSchema = Type.Object({
@@ -81,13 +75,11 @@ const legacyCreateSchema = Type.Object({
   cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000 })),
   model: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
   wait: Type.Optional(Type.Boolean()),
-  maxChars,
 }, { additionalProperties: false });
 const legacySendSchema = Type.Object({
   name: sessionName, message, rolePreset: Type.Optional(rolePreset),
   mode: Type.Optional(Type.Union([Type.Literal("steer"), Type.Literal("followUp"), Type.Literal("interrupt")])),
   wait: Type.Optional(Type.Boolean()),
-  maxChars,
 }, { additionalProperties: false });
 const legacyBatchTaskSchema = Type.Object({
   name: sessionName, message, rolePreset: Type.Optional(rolePreset),
@@ -99,14 +91,12 @@ const legacyBatchTaskSchema = Type.Object({
 const legacyBatchSchema = Type.Object({
   tasks: Type.Array(legacyBatchTaskSchema, { minItems: 1, maxItems: 8 }),
   wait: Type.Optional(Type.Union([Type.Literal("none"), Type.Literal("any"), Type.Literal("all")])),
-  maxChars,
 }, { additionalProperties: false });
 const legacyListSchema = Type.Object({}, { additionalProperties: false });
-const legacyReadSchema = Type.Object({ name: sessionName, limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })), repeat: Type.Optional(Type.Boolean()), maxChars }, { additionalProperties: false });
+const legacyReadSchema = Type.Object({ name: sessionName, limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })), repeat: Type.Optional(Type.Boolean()) }, { additionalProperties: false });
 const legacyWaitSchema = Type.Object({
   names: Type.Array(sessionName, { minItems: 1, maxItems: 8 }),
   mode: Type.Optional(Type.Union([Type.Literal("any"), Type.Literal("all")])),
-  maxChars,
 }, { additionalProperties: false });
 const legacyLogsSchema = Type.Object({ name: sessionName, limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 5 })) }, { additionalProperties: false });
 const legacyRespondSchema = Type.Object({
@@ -125,14 +115,6 @@ export function withFeynmanReport(task: string, preset?: GptRolePreset) {
     : "涉及调研或排查时先解释根因与核心原理，再给出有证据的结论。";
   const protocol = "【费曼式探索与结构化汇报协议】回复主 Agent 时，禁止流水账和无证据的成功宣称，必须按四节汇报：1. 【核心直觉与本质】用直白语言说明任务本质或根因；2. 【尝试路径与成果】说明关键修改、验证结果和证据；3. 【碰壁与反例】说明失败路径及原因，没有则明确写“无”；4. 【下一步建议】给出可执行的决策建议。区分事实与猜测。";
   return `【本轮角色与要求】${role} ${behavior}\n\n${task}${task.includes("【费曼式探索与结构化汇报协议】") ? "" : `\n\n${protocol}`}`;
-}
-
-export function clipReply(text: string, maxChars = DEFAULT_REPLY_MAX_CHARS) {
-  if (!Number.isInteger(maxChars) || maxChars < MIN_REPLY_MAX_CHARS || maxChars > MAX_REPLY_MAX_CHARS)
-    throw new Error(`回复长度预算必须在 ${MIN_REPLY_MAX_CHARS}–${MAX_REPLY_MAX_CHARS} 字符之间。`);
-  if (text.length <= maxChars) return text;
-  const notice = `\n\n[上下文保护：回复已按 ${maxChars} 字符预算截断；如需更多细节，请向工兵追问。]`;
-  return text.slice(0, maxChars - notice.length) + notice;
 }
 
 interface Activity {
@@ -189,7 +171,7 @@ export function conversationSummary(session: SessionInfo) {
   };
 }
 
-export function readConversation(manager: GptSessionManager, name: string, limit = 5, details = false, maxChars = DEFAULT_REPLY_MAX_CHARS) {
+export function readConversation(manager: GptSessionManager, name: string, limit = 5, details = false) {
   const session = manager.read(name, 0, 1).session;
   const events = manager.recentEvents(name);
   let lastStart = -1;
@@ -202,7 +184,7 @@ export function readConversation(manager: GptSessionManager, name: string, limit
   }));
   return {
     ...conversationSummary(session),
-    ...(session.lastText ? { reply: details ? clip(session.lastText, 64_000) : clipReply(session.lastText, maxChars) } : {}),
+    ...(session.lastText ? { reply: boundSessionReply(session.lastText) } : {}),
     ...(session.partialText ? { writing: clip(session.partialText, details ? 16_000 : 6_000) } : {}),
     ...(activity.length && (details || session.status !== "idle" || !session.lastText || activity.some((item) => item.status === "error"))
       ? { activity } : {}),
@@ -334,10 +316,10 @@ function ownerSessionId(ctx: ExtensionToolContext | undefined, configured?: stri
   return id;
 }
 
-function queryStatus(context: ToolContext, name: string, args: Pick<QueryInput, "repeat" | "limit" | "maxChars" | "diagnostics">) {
+function queryStatus(context: ToolContext, name: string, args: Pick<QueryInput, "repeat" | "limit" | "diagnostics">) {
   const { manager, owner, history, extensionContext } = context;
   manager.assertOwner(name, owner);
-  const read = readConversation(manager, name, args.limit ?? 5, false, args.maxChars ?? DEFAULT_REPLY_MAX_CHARS);
+  const read = readConversation(manager, name, args.limit ?? 5);
   const { reply, writing: _draft, ...status } = read;
   const session = manager.read(name, 0, 1).session;
   const delivery = {
@@ -454,7 +436,7 @@ async function dispatch(input: DispatchInput, context: ToolContext, signal?: Abo
   const waiting = manager.wait(ready.map((item) => item.name), signal, context.waitMode ?? "all", startPromise);
   const [startedResults, waited] = await Promise.all([startPromise, waiting]);
   failures.push(...settledFailures(startedResults, ready.map((item) => item.name)));
-  const reports = waited.sessions.map((session) => queryStatus(context, session.id, { maxChars: input.maxChars }));
+  const reports = waited.sessions.map((session) => queryStatus(context, session.id, {}));
   const sessions = reports.map((report) => report.details);
   const reportText = reports.map((report) => report.content.map((part) => part.type === "text" ? part.text : "").filter(Boolean).join("\n")).join("\n\n---\n\n");
   const note = !waited.completed && waited.session
@@ -496,7 +478,7 @@ async function legacyCreate(input: LegacyCreateInput, context: ToolContext) {
     name: input.name, message: input.message, rolePreset: input.rolePreset,
     action: "create", cwd: input.cwd, model: input.model,
   };
-  const result = await dispatch({ task, mode: input.wait ? "sync" : "async", maxChars: input.maxChars },
+  const result = await dispatch({ task, mode: input.wait ? "sync" : "async" },
     { ...context, waitMode: "any" }, context.signal);
   const details = asRecord(result.details);
   const session = context.manager.read(input.name, 0, 1).session;
@@ -507,7 +489,7 @@ async function legacySend(input: LegacySendInput, context: ToolContext) {
   context.manager.assertOwner(input.name, context.owner);
   const result = await dispatch({
     task: { name: input.name, message: input.message, rolePreset: input.rolePreset, action: "send", sendMode: input.mode ?? "steer" },
-    mode: input.wait ? "sync" : "async", maxChars: input.maxChars,
+    mode: input.wait ? "sync" : "async",
   }, { ...context, waitMode: "any" }, context.signal);
   const details = asRecord(result.details);
   if (input.wait) return response(details, result.content.map((part) => part.type === "text" ? part.text : "").join("\n"));
@@ -524,7 +506,6 @@ async function legacyBatch(input: LegacyBatchInput, context: ToolContext) {
       model: task.model, cwd: task.cwd, sendMode: task.mode,
     })),
     mode: wait === "none" ? "async" : "sync",
-    maxChars: input.maxChars,
   }, { ...context, waitMode: wait === "any" ? "any" : "all" }, context.signal);
   const details = asRecord(result.details);
   if (wait === "none") return response({ ...details, wait }, result.content.map((part) => part.type === "text" ? part.text : "").join("\n"));
@@ -536,7 +517,7 @@ async function legacyWait(input: LegacyWaitInput, context: ToolContext) {
   const waited = await context.manager.wait(
     input.names, context.signal, input.mode ?? "any",
   );
-  const reports = waited.sessions.map((session) => queryStatus(context, session.id, { maxChars: input.maxChars }));
+  const reports = waited.sessions.map((session) => queryStatus(context, session.id, {}));
   const details = {
     mode: input.mode ?? "any", completed: waited.completed,
     ...(waited.session ? { trigger: conversationSummary(waited.session) } : {}),

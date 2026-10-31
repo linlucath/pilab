@@ -3,8 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { GptSessionManager } from "../extensions/pi-gpt-subagent/sessions";
-import { createSessionTools, clipReply, DEFAULT_REPLY_MAX_CHARS } from "../extensions/pi-gpt-subagent/tools";
+import { boundSessionReply, GptSessionManager, MAX_SESSION_REPLY_CHARS } from "../extensions/pi-gpt-subagent/sessions";
+import { createSessionTools } from "../extensions/pi-gpt-subagent/tools";
 import type { RpcTransport } from "../extensions/pi-gpt-subagent/rpc";
 
 const model = "wait-fixture";
@@ -66,11 +66,13 @@ test("session waits have no deadline and AbortSignal cancels the wait without st
   }
 });
 
-test("reply budgets include a context-protection note", () => {
-  const clipped = clipReply("x".repeat(DEFAULT_REPLY_MAX_CHARS + 100), DEFAULT_REPLY_MAX_CHARS);
-  assert.equal(clipped.length, DEFAULT_REPLY_MAX_CHARS);
-  assert.match(clipped, /上下文保护/);
-  assert.throws(() => clipReply("reply", 200), /预算必须/);
+test("worker replies remain complete until the extreme memory-safety limit", () => {
+  const ordinaryLongReply = "x".repeat(100_000);
+  assert.equal(boundSessionReply(ordinaryLongReply), ordinaryLongReply);
+
+  const oversizedReply = boundSessionReply("x".repeat(MAX_SESSION_REPLY_CHARS + 1));
+  assert.equal(oversizedReply.length, MAX_SESSION_REPLY_CHARS);
+  assert.match(oversizedReply, /500,000 字符安全上限/);
 });
 
 test("GPT tool ownership failures return an error result instead of escaping execute", async () => {
@@ -94,6 +96,7 @@ test("GPT tool ownership failures return an error result instead of escaping exe
 
 test("gpt_session_send(wait=true) registers its waiter before a fast prompt can notify the parent", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "pilab-send-wait-race-"));
+  const completedReply = `finished immediately ${"x".repeat(100_000)}`;
   let notices = 0;
   let promptSawWaiter = false;
   let manager!: GptSessionManager;
@@ -106,7 +109,7 @@ test("gpt_session_send(wait=true) registers its waiter before a fast prompt can 
         if (type === "prompt") {
           promptSawWaiter = manager.hasActiveWaiter(spec.id);
           onEvent({ type: "agent_start" });
-          onEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "finished immediately" }] } });
+          onEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: completedReply }] } });
           onEvent({ type: "agent_settled" });
           result = { disposition: "accepted" };
         }
@@ -125,7 +128,8 @@ test("gpt_session_send(wait=true) registers its waiter before a fast prompt can 
     assert.equal(promptSawWaiter, true, "waitAndReport must claim the session before prompt dispatch begins");
     assert.equal(notices, 0, "a waited reply must not also queue a parent notification");
     assert.equal(details.completed, true);
-    assert.equal(details.sessions[0].reply, "finished immediately");
+    assert.equal(details.sessions[0].reply, completedReply);
+    assert.ok(result.content.some((item) => item.type === "text" && item.text.includes(completedReply)));
     assert.equal(manager.hasActiveWaiter("fast-worker"), false);
     assert.equal(manager.read("fast-worker").session.lastDeliveredReplySequence, manager.read("fast-worker").session.replySequence);
   } finally {

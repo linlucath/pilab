@@ -12,10 +12,6 @@ type Props = {
   messages: Message[]; busy: boolean; compactTools: boolean; streamingId?: string;
   streamingThinking?: string; toolActivity?: { id?: string; name: string; arguments: unknown; output: string } | null;
   gptWorkers?: GptSessionSummary[];
-  lineage?: { parentSessionId: string; parentSessionTitle?: string; forkSummary?: string };
-  forkNotice?: { forkId: string; title: string };
-  onSwitchFork?: (id: string) => void;
-  onJumpToSession?: (id: string) => void;
   onMessage: (id: string, patch: Partial<Message>) => void; onCopy: (text: string) => void;
   onCall: (message: Message, index: number, patch: Partial<ToolCall>) => void;
   onAdd: (after?: number, role?: Message["role"]) => void;
@@ -550,7 +546,6 @@ export function MessageStream(props: Props) {
       </div>
   </div>];
   if (initialMessages.length) content.push(<SystemPromptBanner key="system-banner" messages={initialMessages} startIndex={0} onMessage={props.onMessage} onAdd={props.onAdd} onDelete={props.onDelete} disabled={disabled} />);
-  if (props.lineage) content.push(<section className="session-lineage-card" key="session-lineage"><header><span>🧬 派生自「{props.lineage.parentSessionTitle || "上一个会话"}」</span>{props.onJumpToSession && <button disabled={disabled} onClick={() => props.onJumpToSession?.(props.lineage!.parentSessionId)}>查看原会话</button>}</header>{props.lineage.forkSummary && <div className="session-lineage-summary"><Markdown content={props.lineage.forkSummary} /></div>}</section>);
   for (let index = initialEnd; index < props.messages.length;) {
     const message = props.messages[index];
     const wakeNotice = message.role === "user" ? systemWakeNotice(message.content) : undefined;
@@ -586,7 +581,6 @@ export function MessageStream(props: Props) {
     {props.toolActivity.output && <pre className="tool-live-output" aria-live="off">{props.toolActivity.output}</pre>}
     <details className="tool-live-arguments"><summary>查看原始参数</summary><pre>{JSON.stringify(props.toolActivity.arguments, null, 2) || "无参数"}</pre></details>
   </div>);
-  if (props.forkNotice) content.push(<section key={`fork-created-${props.forkNotice.forkId}`} className="session-fork-created-card" role="status"><div><strong>✨ 已生成提纯分身「{props.forkNotice.title}」</strong><small>携带核心记忆轻装上阵，原会话保持不变。</small></div><button disabled={props.busy} onClick={() => props.onSwitchFork?.(props.forkNotice!.forkId)}>立即切换到新分身</button></section>);
   if (props.busy && runningWorkers.length) content.push(<div key="worker-live" className="live-tool-card live-workers-card"><strong><Sparkles size={14} />GPT 工兵活动中 · {runningWorkers.length}</strong>{runningWorkers.map((worker) => <div className="live-worker-row" key={worker.id}><span className="live-worker-name">{worker.name}<small>{worker.status === "waiting_input" ? "等待输入" : worker.status === "starting" ? "启动中" : "运行中"}</small></span><div className="live-worker-tools">{worker.recentTools.length ? worker.recentTools.slice(0, 5).map((tool, index) => <span className={`live-worker-tool ${tool.status}`} key={`${tool.name}-${index}`}>{tool.name}</span>) : <small>等待工具活动</small>}</div></div>)}</div>);
   if (!props.messages.length) content.push(<div key="empty" className="conversation-empty"><span>✦</span><strong>从一条消息开始</strong><p>给 Gemini 一个目标，让它协调 GPT 工兵完成工作。</p></div>);
   return <>
