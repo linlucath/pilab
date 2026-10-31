@@ -609,7 +609,7 @@
 .tool-dispatch-result,
 .tool-readable-block { min-width: 0; margin: 3px 0 8px; padding: 9px 11px 9px 12px; overflow: visible; border: 1px solid color-mix(in srgb, var(--text) 7%, var(--border)); border-left: 2px solid color-mix(in srgb, var(--text) 12%, transparent); border-radius: 0 8px 8px 0; color: var(--text); background: color-mix(in srgb, var(--surface-soft) 72%, var(--surface)); }
 .tool-dispatch-result .markdown-body,
-.tool-readable-block .markdown-body { max-height: none; overflow: visible; color: var(--text-primary); font-size: 14px; line-height: 1.6; }
+.tool-readable-block .markdown-body { max-height: 320px; overflow: auto; color: var(--text-primary); font-size: 14px; line-height: 1.6; scrollbar-width: thin; }
 .tool-step-body .markdown-body h1 { font-size: 16px; font-weight: 600; }
 .tool-step-body .markdown-body h2 { font-size: 15px; font-weight: 600; }
 .tool-dispatch-result .markdown-body p,

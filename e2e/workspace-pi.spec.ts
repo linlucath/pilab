@@ -1,8 +1,7 @@
-import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
-import { openWorkspace, resetWorkspace, sendMessage, setMockScript, ui } from "./fixtures/index";
+import { inspectTestState, latestInspectedRun, openWorkspace, resetWorkspace, sendMessage, setMockScript, ui } from "./fixtures/index";
 
-type PersistedSession = { id: string; title: string; messages: { id: string; role: string; content: string; enabled: boolean; toolCalls?: { id: string }[]; toolCallId?: string }[]; settings: Record<string, unknown>; runs?: unknown[] };
+type PersistedSession = { id: string; title: string; messages: { id: string; role: string; content: string; enabled: boolean; toolCalls?: { id: string }[]; toolCallId?: string }[]; settings: Record<string, unknown> };
 type PersistedWorkspace = { sessions: PersistedSession[]; active: string; hiddenPiSessions: string[]; followPi: boolean; revision: number };
 
 async function prepare(page: Page) {
@@ -94,7 +93,6 @@ test("WSP-01 保存失败提示且草稿保留并自动重试", async ({ page })
     } else await route.continue();
   });
   await page.getByRole("textbox", { name: "会话标题" }).fill("retry-after-save-error");
-  await expect(page.locator(".save-state")).toHaveText("保存失败");
   await expect(page.locator(".toast")).toContainText("mock disk failure");
   await waitForWorkspace(page, (workspace) => workspace.sessions.find((session) => session.id === workspace.active)?.title === "retry-after-save-error");
   expect(rejected).toBe(true);
@@ -107,11 +105,9 @@ test("WSP-02 两个标签页并发时合并消息重排与另一字段修改", a
   await expect(page.getByText("REPLY-B", { exact: true })).toBeVisible();
   await waitForWorkspace(page, (workspace) => workspace.sessions[0]?.messages.some((message) => message.content === "PROMPT-B"));
 
-  await expect(page.locator(".save-state")).toHaveText("已保存");
   const secondPage = await context.newPage();
   await openWorkspace(secondPage);
   await expect(ui(secondPage).composer).toBeVisible();
-  await expect(secondPage.locator(".save-state")).toHaveText("已保存");
   const original = await savedWorkspace(page);
   const active = original.sessions.find((session) => session.id === original.active)!;
   const promptB = active.messages.find((message) => message.content === "PROMPT-B")!;
@@ -165,8 +161,6 @@ test("WSP-02 同字段冲突采用后写入，新增与删除保留另一标签�
   const secondPage = await context.newPage();
   await openWorkspace(secondPage);
   await expect(ui(secondPage).composer).toBeVisible();
-  await expect(page.locator(".save-state")).toHaveText("已保存");
-  await expect(secondPage.locator(".save-state")).toHaveText("已保存");
 
   let release!: () => void;
   let intercepted!: () => void;
@@ -226,64 +220,19 @@ test("WSP-02 同字段冲突采用后写入，新增与删除保留另一标签�
   await secondPage.close();
 });
 
-test("WSP-03 刷新清空页面运行记录但保留会话上下文", async ({ page }) => {
+test("WSP-03 刷新清空页内运行快照但保留已保存的会话上下文", async ({ page }) => {
   await runWithReply(page, "lifecycle-prompt", "lifecycle-reply");
-  await page.locator(".debug-menu summary").click();
-  await page.getByRole("button", { name: "运行记录" }).click();
-  await expect(page.getByText("运行 1")).toBeVisible();
+  await waitForWorkspace(page, (workspace) => workspace.sessions.some((session) => session.messages.some((message) => message.content === "lifecycle-reply")));
+  expect((await latestInspectedRun(page))?.output).toContain("lifecycle-reply");
   await page.reload();
   await expect(ui(page).composer).toBeVisible();
-  await page.locator(".debug-menu summary").click();
-  await page.getByRole("button", { name: "运行记录" }).click();
-  await expect(page.getByText("还没有运行记录")).toBeVisible();
-  await page.getByRole("button", { name: "关闭调试面板" }).click();
+  expect((await inspectTestState(page)).runs).toHaveLength(0);
+  const persisted = await savedWorkspace(page);
+  const active = persisted.sessions.find((session) => session.id === persisted.active)!;
+  expect(active.messages.map((message) => message.content)).toEqual(expect.arrayContaining(["lifecycle-prompt", "lifecycle-reply"]));
+  expect(active).not.toHaveProperty("runs");
   await expect(page.locator(".message-row").filter({ hasText: "lifecycle-prompt" })).toBeVisible();
   await expect(page.locator(".message-row").filter({ hasText: "lifecycle-reply" })).toBeVisible();
-});
-
-test("WSP-04 导出再导入会话生成独立副本并分配新消息 ID", async ({ page }) => {
-  await page.getByRole("textbox", { name: "会话标题" }).fill("export-import-source");
-  await runWithReply(page, "exported-prompt", "exported-reply");
-  await page.locator(".session-data-menu > summary").click();
-  const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出当前会话" }).click();
-  const download = await downloadPromise;
-  const sourcePath = await download.path();
-  expect(sourcePath).toBeTruthy();
-  const sourceJson = JSON.parse(await readFile(sourcePath!, "utf8")) as { title: string; settings: { workingDirectory?: string }; messages: { id: string; content: string }[] };
-  const sourceIds = sourceJson.messages.map((message) => message.id);
-  await page.locator('input[type="file"][accept=".json,application/json"]').setInputFiles(sourcePath!);
-  await expect(page.getByText("会话已导入。", { exact: false })).toBeVisible();
-  await waitForWorkspace(page, (workspace) => workspace.sessions.length === 2);
-  const workspace = await savedWorkspace(page);
-  const imported = workspace.sessions.find((session) => session.id === workspace.active)!;
-  expect(imported.title).toBe("export-import-source");
-  expect(imported.messages.map((message) => message.content)).toEqual(expect.arrayContaining(["exported-prompt", "exported-reply"]));
-  expect(imported.messages.map((message) => message.id)).not.toEqual(sourceIds);
-  expect(imported.settings.workingDirectory).toBeTruthy();
-  expect(imported.settings.workingDirectory).not.toBe(sourceJson.settings.workingDirectory);
-  expect(imported.runs || []).toHaveLength(0);
-});
-
-test("WSP-05 拒绝过大、损坏和结构错误导入且恢复后可再次选择合法文件", async ({ page }) => {
-  const file = page.locator('input[type="file"][accept=".json,application/json"]');
-  const before = (await savedWorkspace(page)).sessions.length;
-  for (const [name, buffer] of [
-    ["too-large.json", Buffer.alloc(5_000_001, 32)],
-    ["broken.json", Buffer.from("{broken")],
-    ["wrong-shape.json", Buffer.from(JSON.stringify({ title: "bad", messages: [] }))],
-  ] as const) {
-    await file.setInputFiles({ name, mimeType: "application/json", buffer });
-    await expect(page.getByText(/导入失败：/)).toBeVisible();
-    expect((await savedWorkspace(page)).sessions).toHaveLength(before);
-  }
-  const valid = Buffer.from(JSON.stringify({ version: 1, title: "valid-import", settings: (await savedWorkspace(page)).sessions[0].settings, messages: [{ id: "old-id", role: "user", content: "valid-content", enabled: true }] }));
-  await file.setInputFiles({ name: "valid.json", mimeType: "application/json", buffer: valid });
-  await expect(page.getByText("会话已导入。", { exact: false })).toBeVisible();
-  await waitForWorkspace(page, (workspace) => workspace.sessions.length === before + 1);
-  await file.setInputFiles({ name: "valid.json", mimeType: "application/json", buffer: valid });
-  await expect(page.getByText("会话已导入。", { exact: false })).toBeVisible();
-  await waitForWorkspace(page, (workspace) => workspace.sessions.length === before + 2);
 });
 
 test("WSP-06 Composer 模型与浏览器偏好刷新后恢复，设置面板与工具开关不可见", async ({ page }) => {
@@ -294,27 +243,22 @@ test("WSP-06 Composer 模型与浏览器偏好刷新后恢复，设置面板与�
     await route.continue();
   });
   await setSetting(page, "main-model", "composer-persisted-model");
-  await page.getByRole("button", { name: "切换深色模式" }).click();
-  await page.getByRole("button", { name: "展开工具" }).click();
+  await page.evaluate(() => {
+    localStorage.setItem("pilab-theme-v2", "dark");
+    localStorage.setItem("pilab-tools-compact-v1", "false");
+  });
   await waitForWorkspace(page, (workspace) => workspace.sessions[0]?.settings.model === "composer-persisted-model");
   expect(bodies.join("\n")).not.toContain("toolMode");
   const locals = await page.evaluate(() => Object.values(localStorage).join("\n"));
   expect(locals).not.toContain("API Key");
   await expect.poll(() => page.evaluate(() => ({ theme: localStorage.getItem("pilab-theme-v2"), compact: localStorage.getItem("pilab-tools-compact-v1") }))).toEqual({ theme: "dark", compact: "false" });
-
-  await page.locator(".session-data-menu > summary").click();
-  const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出当前会话" }).click();
-  const download = await downloadPromise;
-  const exported = await readFile((await download.path())!, "utf8");
-  expect(exported).not.toContain("toolMode");
   await page.reload();
   await expect(ui(page).composer).toBeVisible();
   await expect(page.getByRole("button", { name: /选择模型，当前 composer-persisted-model/ })).toBeVisible();
   await expect(page.locator(".right-panel")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /显示工作台|隐藏工作台/ })).toHaveCount(0);
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect(page.getByRole("button", { name: "收起工具" })).toBeVisible();
+  await expect.poll(() => inspectTestState(page)).toMatchObject({ theme: "dark", compactTools: false });
 });
 
 test("PI-01 模型选择器显示 Pi 连接状态且不会暴露凭据", async ({ page }) => {

@@ -259,8 +259,7 @@ test("MSG-04 排除和恢复消息影响请求，工具调用与结果成组切�
   await expect(page.getByText("MSG-04-CONTEXT-OK")).toBeVisible();
   expect(submitted?.messages.map((message) => message.id)).toEqual(["msg-04-system", "msg-04-user-excluded", "msg-04-owner", "msg-04-result", "msg-04-last"]);
   expect(submitted?.messages.find((message) => message.id === "msg-04-owner")?.enabled).toBe(false);
-  await openRequestInspector(page);
-  const modelPayload = await page.locator(".request-turn pre").innerText();
+  const modelPayload = await openRequestInspector(page);
   expect(modelPayload).toContain("remaining context");
   expect(modelPayload).not.toContain("temporarily hidden context");
   expect(modelPayload).not.toContain("tool pair owner");

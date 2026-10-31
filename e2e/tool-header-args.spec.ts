@@ -14,7 +14,7 @@ async function ready(page: import("@playwright/test").Page) {
 
 test.beforeEach(async ({ page }) => ready(page));
 
-test("TOOL-09 tool headers show concise arguments and dispatch instructions above the result", async ({ page }) => {
+test("TOOL-09 tool headers show core arguments, prioritized results, and expandable dispatch instructions", async ({ page }) => {
   const sessionId = "header-args-refined";
   const prompt = `请梳理主应用的关键交互与工具调用边界，并汇报验证结果。\n\n${Array.from({ length: 18 }, (_, index) => `检查项 ${index + 1}：核对实现调用、参数来源、失败处理和可访问性，避免改变现有行为。`).join("\n\n")}`;
   const calls = [
@@ -68,7 +68,7 @@ test("TOOL-09 tool headers show concise arguments and dispatch instructions abov
   await expect(instruction).toContainText("检查项 1");
   await expect.poll(() => instruction.locator(".tool-task-instruction-content").evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
   await expect(dispatch.locator(".tool-dispatch-result")).toContainText("交付结果");
-  const order = await instruction.evaluate((element) => element.compareDocumentPosition(element.parentElement!.querySelector(".tool-dispatch-result")!) & Node.DOCUMENT_POSITION_FOLLOWING);
+  const order = await dispatch.locator(".tool-dispatch-result").evaluate((element) => element.compareDocumentPosition(element.parentElement!.querySelector(".tool-task-instruction")!) & Node.DOCUMENT_POSITION_FOLLOWING);
   expect(order).toBeTruthy();
 
   for (let index = 0; index < 4; index++)

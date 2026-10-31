@@ -87,10 +87,52 @@ export async function addMessage(page: Page, role: "user" | "assistant" | "syste
   await expect(page.locator(".message-row").filter({ hasText: text })).toBeVisible();
 }
 
-export async function openRequestInspector(page: Page) {
-  await page.locator(".debug-menu > summary").click();
-  await page.getByRole("button", { name: "请求检查" }).click();
-  await expect(page.getByRole("dialog", { name: "请求检查" })).toBeVisible();
+export type TestInspectableRun = {
+  sessionId: string;
+  id: string;
+  at: number;
+  status: string;
+  output: string;
+  thinking: string;
+  request?: unknown;
+  requests?: unknown[];
+  trace?: Message[];
+  turns?: number;
+  usage?: { input: number; output: number };
+  elapsed: number;
+  error?: string;
+  snapshot: { settings: Settings; messages: Message[] };
+};
+export type TestInspectorSnapshot = {
+  activeSessionId: string;
+  theme: string;
+  compactTools: boolean;
+  runs: TestInspectableRun[];
+};
+
+export async function inspectTestState(page: Page): Promise<TestInspectorSnapshot> {
+  const snapshot = await page.evaluate(() =>
+    (window as Window & { __PI_LAB_TEST_INSPECT__?: TestInspectorSnapshot }).__PI_LAB_TEST_INSPECT__);
+  if (!snapshot) throw new Error("开发环境未提供 Pi Lab 测试检查契约。");
+  return snapshot;
 }
 
-export function toolSummary(tool: Locator) { return tool.locator("summary"); }
+export async function latestInspectedRun(page: Page, sessionId?: string) {
+  const snapshot = await inspectTestState(page);
+  return snapshot.runs
+    .filter((run) => !sessionId || run.sessionId === sessionId)
+    .sort((left, right) => right.at - left.at)[0];
+}
+
+export async function openRequestInspector(page: Page) {
+  await expect.poll(async () => {
+    const snapshot = await inspectTestState(page);
+    const latest = snapshot.runs.filter((run) => run.sessionId === snapshot.activeSessionId).sort((left, right) => right.at - left.at)[0];
+    return latest?.requests?.length || (latest?.request ? 1 : 0);
+  }).toBeGreaterThan(0);
+  const latest = await latestInspectedRun(page, (await inspectTestState(page)).activeSessionId);
+  const requests = latest?.requests || (latest?.request ? [latest.request] : []);
+  return JSON.stringify(requests, null, 2);
+}
+
+export function toolSummary(tool: Locator) { return tool.locator(":scope > summary"); }

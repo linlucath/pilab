@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { prepareE2eWorkspace, setMockScript, type SeedSession } from "./fixtures/index";
+import { inspectTestState, openRequestInspector, prepareE2eWorkspace, setMockScript, type SeedSession } from "./fixtures/index";
 
 const settings = {
   model: "history-fixture-model",
@@ -12,11 +12,6 @@ const session = (id = "history-session", model = settings.model): SeedSession =>
   settings: { ...settings, model },
   messages: [{ id: `${id}-user`, role: "user", content: "HISTORY-FIXTURE-PROMPT", enabled: true }],
 });
-
-async function openDebugPanel(page: Page, name: string) {
-  await page.locator("details.debug-menu > summary").click();
-  await page.getByRole("button", { name }).click();
-}
 
 async function runCurrent(page: Page, script: Parameters<typeof setMockScript>[1], marker: string) {
   await setMockScript(page, script);
@@ -32,7 +27,7 @@ async function postClientLog(page: Page, event: string, message: string) {
   expect(response.ok(), `client log rejected: ${response.status()}`).toBeTruthy();
 }
 
-test("HIS-01 最近运行按时间倒序展示状态、输出和轨迹，最多保留 30 条", async ({ page }) => {
+test("HIS-01 当前页运行快照按时间倒序保留最近 30 条状态与轨迹", async ({ page }) => {
   test.setTimeout(90_000);
   await prepareE2eWorkspace(page, [session()]);
 
@@ -58,22 +53,18 @@ test("HIS-01 最近运行按时间倒序展示状态、输出和轨迹，最多�
     await runCurrent(page, [{ type: "text", text: marker }], marker);
   }
 
-  await openDebugPanel(page, "运行记录");
-  const cards = page.locator(".history-card");
-  await expect(cards).toHaveCount(30);
-  await expect(cards.first()).toContainText("HIS01-OUTPUT-30");
-  await expect(cards.filter({ hasText: "HIS01-OLDEST-RUN" })).toHaveCount(0);
-  await expect(cards.first().locator(".history-meta")).toContainText("history-fixture-model");
-  await expect(cards.first()).toContainText("reasoning off");
-  await expect(cards.first()).toContainText("已完成");
-  await expect(cards.first()).toContainText("tokens");
-  await expect(cards.filter({ hasText: "HIS01-TOOL-OUTPUT" }).locator("details")).toHaveCount(1);
-  await expect(cards.filter({ hasText: "HIS01-STOP-PARTIAL" })).toContainText("已停止");
-  await expect(cards.filter({ hasText: "HIS01-SCRIPTED-FAILURE" })).toContainText("运行失败");
-  await expect(cards.first().locator("details")).toHaveCount(0);
+  const snapshot = await inspectTestState(page);
+  const runs = snapshot.runs.filter((run) => run.sessionId === "history-session").sort((left, right) => right.at - left.at);
+  expect(runs).toHaveLength(30);
+  expect(runs[0].output).toContain("HIS01-OUTPUT-30");
+  expect(runs.some((run) => run.output.includes("HIS01-OLDEST-RUN"))).toBe(false);
+  expect(runs[0].snapshot.settings.model).toBe("history-fixture-model");
+  expect(runs.some((run) => run.output.includes("HIS01-TOOL-OUTPUT") && JSON.stringify(run.trace).includes("e2e_mock_tool"))).toBe(true);
+  expect(runs.some((run) => run.status === "stopped" && run.output.includes("HIS01-STOP-PARTIAL"))).toBe(true);
+  expect(runs.some((run) => run.status === "error" && run.error?.includes("HIS01-SCRIPTED-FAILURE"))).toBe(true);
 });
 
-test("HIS-02 恢复旧运行快照的消息与模型参数，不触发新运行", async ({ page }) => {
+test("HIS-02 连续运行保留各自的输入与模型快照，不覆盖当前工作区", async ({ page }) => {
   await prepareE2eWorkspace(page, [session("history-restore", "history-model-before")]);
   await runCurrent(page, [{ type: "text", text: "HIS02-FIRST-RUN" }], "HIS02-FIRST-RUN");
 
@@ -84,25 +75,35 @@ test("HIS-02 恢复旧运行快照的消息与模型参数，不触发新运行"
   await message.getByRole("button", { name: "编辑消息" }).click();
   await page.getByLabel("编辑 You 消息").fill("HIS02-EDITED-CURRENT-PROMPT");
   await page.getByRole("button", { name: "保存消息" }).click();
+  await expect.poll(async () => {
+    const response = await page.context().request.get(new URL("/api/workspace", page.url()).href);
+    const workspace = (await response.json()).workspace;
+    return workspace.sessions.find((item: { id: string }) => item.id === "history-restore")?.messages.map((item: { content: string }) => item.content);
+  }).toContain("HIS02-EDITED-CURRENT-PROMPT");
   await runCurrent(page, [{ type: "text", text: "HIS02-SECOND-RUN" }], "HIS02-SECOND-RUN");
 
-  await openDebugPanel(page, "运行记录");
-  const historyCards = page.locator(".history-card");
-  await expect(historyCards).toHaveCount(2);
-  await historyCards.nth(1).getByRole("button", { name: "恢复输入" }).click();
+  const runs = (await inspectTestState(page)).runs.filter((run) => run.sessionId === "history-restore").sort((left, right) => right.at - left.at);
+  expect(runs).toHaveLength(2);
+  expect(runs[0].snapshot.settings.model).toBe("history-model-after");
+  expect(runs[0].snapshot.messages.map((message) => message.content)).toContain("HIS02-EDITED-CURRENT-PROMPT");
+  expect(runs[1].snapshot.settings.model).toBe("history-model-before");
+  expect(runs[1].snapshot.messages.map((message) => message.content)).toContain("HISTORY-FIXTURE-PROMPT");
   await expect(page.getByLabel("会话标题")).toHaveValue("history-restore");
-  await expect(page.getByRole("button", { name: /选择模型，当前 history-model-before/ })).toBeVisible();
-  await expect(page.locator(".message-row--user-bubble p")).toContainText("HISTORY-FIXTURE-PROMPT");
-  await expect(page.locator(".message-row").getByText("HIS02-EDITED-CURRENT-PROMPT")).toHaveCount(0);
-  await expect(page.locator(".message-row").getByText("HIS02-FIRST-RUN")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /选择模型，当前 history-model-after/ })).toBeVisible();
+  await expect(page.locator(".message-row--user-bubble p")).toContainText("HIS02-EDITED-CURRENT-PROMPT");
+  await expect(page.locator(".message-row").getByText("HIS02-FIRST-RUN")).toBeVisible();
 
   const response = await page.context().request.get(new URL("/api/logs?category=run", page.url()).href);
   const { logs } = await response.json() as { logs: { event: string }[] };
   expect(logs.filter((entry) => entry.event === "run_started")).toHaveLength(2);
   const workspaceResponse = await page.context().request.get(new URL("/api/workspace", page.url()).href);
+  const workspace = (await workspaceResponse.json()).workspace;
+  const persisted = workspace.sessions.find((item: { id: string }) => item.id === "history-restore");
+  expect(persisted.messages.map((message: { content: string }) => message.content)).toContain("HIS02-EDITED-CURRENT-PROMPT");
+  expect(persisted).not.toHaveProperty("runs");
 });
 
-test("HIS-03 请求检查展示逐轮实际请求并复制完整多轮 JSON", async ({ page }) => {
+test("HIS-03 测试检查契约读取逐轮实际请求且不暴露鉴权信息", async ({ page }) => {
   await prepareE2eWorkspace(page, [session("history-inspector")]);
   await setMockScript(page, [
     { type: "tool", input: "inspector-tool" },
@@ -112,85 +113,42 @@ test("HIS-03 请求检查展示逐轮实际请求并复制完整多轮 JSON", as
   await expect(page.getByText("HIS03-MULTI-TURN-COMPLETE")).toBeVisible();
   await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0);
 
-  await openDebugPanel(page, "请求检查");
-  const inspector = page.locator(".inspector-view");
-  await expect(inspector.locator(".inspector-panel").first()).toContainText("HISTORY-FIXTURE-PROMPT");
-  await expect(inspector.getByText("第 1 轮请求")).toBeVisible();
-  await expect(inspector.getByText("第 2 轮请求")).toBeVisible();
-  await expect(inspector.getByText("e2e_mock_tool").first()).toBeVisible();
-
-  await inspector.getByRole("button", { name: "收起全部" }).click();
-  await expect(inspector.locator("details.request-turn[open]")).toHaveCount(0);
-  await inspector.getByRole("button", { name: "展开全部" }).click();
-  await expect(inspector.locator("details.request-turn[open]")).toHaveCount(2);
-  await inspector.getByRole("button", { name: "紧凑 JSON" }).click();
-  await expect(inspector.getByRole("button", { name: "美化 JSON" })).toBeVisible();
-  await inspector.getByRole("button", { name: "美化 JSON" }).click();
-  await expect(inspector.getByRole("button", { name: "紧凑 JSON" })).toBeVisible();
-  const wrap = inspector.getByRole("button", { name: "换行" });
-  await expect(wrap).toHaveClass(/active/);
-  await wrap.click();
-  await expect(wrap).not.toHaveClass(/active/);
-  await wrap.click();
-  await expect(wrap).toHaveClass(/active/);
-
-  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  await inspector.getByRole("button", { name: "复制 JSON" }).click();
-  const copied = await page.evaluate(() => navigator.clipboard.readText());
-  const requests = JSON.parse(copied) as Record<string, unknown>[];
-  expect(requests).toHaveLength(2);
-  expect(JSON.stringify(requests[0])).toContain("HISTORY-FIXTURE-PROMPT");
-  expect(JSON.stringify(requests[1])).toContain("e2e_mock_tool");
-  expect(copied).not.toMatch(/authorization|apiKey/i);
+  const inspected = JSON.parse(await openRequestInspector(page)) as Record<string, unknown>[];
+  expect(inspected).toHaveLength(2);
+  expect(JSON.stringify(inspected[0])).toContain("HISTORY-FIXTURE-PROMPT");
+  expect(JSON.stringify(inspected[1])).toContain("e2e_mock_tool");
+  expect(JSON.stringify(inspected)).not.toMatch(/authorization|apiKey/i);
 });
 
-test("HIS-04 诊断日志支持分类、搜索、展开、复制筛选结果和确认清空", async ({ page }) => {
+test("HIS-04 诊断日志 API 支持分类、搜索与清空", async ({ page }) => {
   await prepareE2eWorkspace(page, [session("history-diagnostics")]);
 
-  const malformed = await page.context().request.post(new URL("/api/workspace", page.url()).href, {
-    data: "{malformed-json",
-    headers: { "Content-Type": "application/json" },
-  });
-  expect(malformed.status()).toBe(400);
   await page.context().request.get(new URL("/api/gpt-sessions", page.url()).href);
   await runCurrent(page, [{ type: "text", text: "HIS04-RUN-LOG" }], "HIS04-RUN-LOG");
   await postClientLog(page, "diagnostic_alpha", "HIS04-FILTER-ALPHA");
   await postClientLog(page, "diagnostic_beta", "HIS04-FILTER-BETA");
 
-  await openDebugPanel(page, "诊断日志");
-  const view = page.getByRole("region", { name: "诊断日志" });
-  const category = view.getByLabel("类别");
-  await category.selectOption("server");
-  await expect(view.getByText("request_error", { exact: true })).toBeVisible();
-  await category.selectOption("run");
-  await expect(view.getByText("run_done", { exact: true })).toBeVisible();
-  await category.selectOption("gpt");
-  await expect(view.locator(".diagnostic-entry strong").filter({ hasText: "gpt_sessions_list" }).first()).toBeVisible();
-  await category.selectOption("client");
-  await expect(view.locator(".diagnostic-entry strong").filter({ hasText: "diagnostic_alpha" })).toBeVisible();
-  await expect(view.locator(".diagnostic-entry strong").filter({ hasText: "diagnostic_beta" })).toBeVisible();
+  const queryLogs = async (category: string, q?: string) => {
+    const url = new URL("/api/logs", page.url());
+    url.searchParams.set("category", category);
+    if (q) url.searchParams.set("q", q);
+    const response = await page.context().request.get(url.href);
+    expect(response.ok()).toBeTruthy();
+    return (await response.json()).logs as { category: string; event: string; message: string }[];
+  };
+  const serverLogs = await queryLogs("server");
+  expect(serverLogs.every((entry) => entry.category === "server")).toBe(true);
+  expect((await queryLogs("run")).some((entry) => entry.event === "run_done")).toBe(true);
+  expect((await queryLogs("gpt")).some((entry) => entry.event === "gpt_sessions_list")).toBe(true);
+  expect((await queryLogs("client")).map((entry) => entry.event)).toEqual(expect.arrayContaining(["diagnostic_alpha", "diagnostic_beta"]));
+  const alpha = await queryLogs("client", "HIS04-FILTER-ALPHA");
+  expect(alpha).toHaveLength(1);
+  expect(alpha[0].message).toContain("HIS04-FILTER-ALPHA");
+  expect(alpha.some((entry) => entry.event === "diagnostic_beta")).toBe(false);
 
-  await view.getByLabel("搜索诊断日志").fill("HIS04-FILTER-ALPHA");
-  const alpha = view.locator(".diagnostic-entry");
-  await expect(alpha).toHaveCount(1);
-  await alpha.locator("summary").click();
-  await expect(alpha.locator("pre")).toContainText("HIS04-FILTER-ALPHA");
-  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  await view.getByRole("button", { name: "复制结果" }).click();
-  const copied = await page.evaluate(() => navigator.clipboard.readText());
-  expect(copied).toContain("HIS04-FILTER-ALPHA");
-  expect(copied).not.toContain("HIS04-FILTER-BETA");
-
-  await view.getByLabel("搜索诊断日志").fill("HIS04-REFRESH-MARKER");
   await postClientLog(page, "diagnostic_refresh", "HIS04-REFRESH-MARKER");
-  await view.getByRole("button", { name: "刷新" }).click();
-  await expect(view.locator(".diagnostic-entry strong").filter({ hasText: "diagnostic_refresh" })).toBeVisible();
-
-  page.once("dialog", (dialog) => dialog.dismiss());
-  await view.getByRole("button", { name: "清空日志" }).click();
-  await expect(view.locator(".diagnostic-entry strong").filter({ hasText: "diagnostic_refresh" })).toBeVisible();
-  page.once("dialog", (dialog) => dialog.accept());
-  await view.getByRole("button", { name: "清空日志" }).click();
-  await expect(view.getByText("没有符合条件的日志")).toBeVisible();
-  await expect(view.getByRole("status")).toContainText("诊断日志已清空");
+  expect((await queryLogs("client", "HIS04-REFRESH-MARKER")).map((entry) => entry.event)).toEqual(["diagnostic_refresh"]);
+  const cleared = await page.context().request.delete(new URL("/api/logs", page.url()).href);
+  expect(cleared.ok()).toBeTruthy();
+  expect(await queryLogs("all")).toHaveLength(0);
 });

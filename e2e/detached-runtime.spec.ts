@@ -14,6 +14,14 @@ async function selectedSessionId(page: Page) {
   return id!;
 }
 
+async function createSessionAndWait(page: Page, previousId: string) {
+  await page.locator(".new-conversation").click();
+  await expect.poll(() => page.locator(".session-row.selected").getAttribute("data-session-id")).not.toBe(previousId);
+  const createdId = await selectedSessionId(page);
+  await expect.poll(async () => Boolean(await workspaceSession(page, createdId))).toBe(true);
+  return createdId;
+}
+
 async function workspaceSession(page: Page, id: string) {
   const response = await page.request.get(new URL("/api/workspace", page.url()).href);
   expect(response.ok()).toBeTruthy();
@@ -37,8 +45,7 @@ test("B: detach from A, keep B interactive, then attach with afterSeq and replay
   await expect(page.locator(".composer-running")).toBeVisible();
   await expect(page.locator(`[data-session-id="${sessionA}"] .session-running-indicator`)).toBeVisible();
 
-  await page.locator(".new-conversation").click();
-  const sessionB = await selectedSessionId(page);
+  const sessionB = await createSessionAndWait(page, sessionA);
   expect(sessionB).not.toBe(sessionA);
   await expect(ui(page).composer).toBeEnabled();
   await setMockScript(page, [{ type: "text", text: "B-INDEPENDENT-REPLY" }]);
@@ -116,8 +123,7 @@ test("E: two sessions keep independent running and ComposerBar state", async ({ 
   await ui(page).send.click();
   await expect(page.locator("article.chat-message.assistant").filter({ hasText: "E-A-OUTPUT" })).toBeVisible();
 
-  await page.locator(".new-conversation").click();
-  const sessionB = await selectedSessionId(page);
+  const sessionB = await createSessionAndWait(page, sessionA);
   await setMockScript(page, [{ type: "slow", text: `E-B-OUTPUT ${"long ".repeat(240)}`, chunkSize: 2, delayMs: 35 }]);
   await ui(page).composer.fill("E-B-PROMPT");
   await ui(page).send.click();

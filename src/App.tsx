@@ -24,6 +24,9 @@ type WorkerReview = Pick<WorkerWakeNotice, "sessionId" | "cwd" | "names">;
 type SearchJump = { sessionId: string; messageId: string; query: string; token: number };
 type SessionStreamView = { streamingId: string; thinking: string; toolActivity: ToolActivity | null };
 type RunControl = { sessionId: string; runId: string; lastSeq: number; shouldSubscribe: boolean; readerController?: AbortController; resume?: () => void };
+type TestInspectableRun = Pick<Run, "id" | "at" | "status" | "output" | "thinking" | "request" | "requests" | "trace" | "turns" | "usage" | "elapsed" | "error" | "snapshot"> & { sessionId: string };
+type TestInspectorSnapshot = { activeSessionId: string; theme: string; compactTools: boolean; runs: TestInspectableRun[] };
+type TestInspectableWindow = Window & { __PI_LAB_TEST_INSPECT__?: TestInspectorSnapshot };
 const emptyStreamView: SessionStreamView = { streamingId: "", thinking: "", toolActivity: null };
 const activeWorkerStatuses = new Set(["starting", "running", "waiting_input"]);
 const pretty = (value: unknown) => JSON.stringify(value, null, 2);
@@ -1066,6 +1069,14 @@ export default function App() {
   const onAddToolResult = useCallback((...args: Parameters<typeof addManualToolResult>) => messageStreamHandlersRef.current.addManualToolResult(...args), []);
   const onBranch = useCallback((...args: Parameters<typeof branchAt>) => messageStreamHandlersRef.current.branchAt(...args), []);
   const onCopyMessage = useCallback((text: string) => messageStreamHandlersRef.current.copyMessage(text), []);
+  if (import.meta.env.DEV) {
+    (window as TestInspectableWindow).__PI_LAB_TEST_INSPECT__ = {
+      activeSessionId: workspace.active,
+      theme,
+      compactTools,
+      runs: workspace.sessions.flatMap((item) => item.runs.map((run) => ({ ...run, sessionId: item.id }))),
+    };
+  }
   if (!ready) return <div className="app-loading" role="status">{storageError || "正在打开本地工作区…"}{storageError && <button onClick={() => location.reload()}>重试</button>}</div>;
   return <div className={`app-shell ${sidebarCollapsed ? "sidebar-compact" : ""}`}>
     <Sidebar sessions={workspace.sessions} folders={workspace.folders} rootSessionIds={workspace.rootSessionIds} active={session.id} collapsed={sidebarCollapsed} activeRuns={activeRuns} onToggle={() => setSidebarCollapsed((value) => !value)} onOpenSearch={() => setSearchModalOpen(true)} onCreate={() => createSession()} onCreateFolder={createFolder} onSelect={selectSession} onRename={renameSession} onDuplicate={duplicateSession} onDelete={deleteSession} onRenameFolder={renameFolder} onDeleteFolder={deleteFolder} onToggleFolder={toggleFolder} onMoveSession={moveSession} />

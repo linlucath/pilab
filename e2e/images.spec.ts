@@ -189,38 +189,12 @@ test("IMG-05 粘贴、拖放、退格移除并发送图片引用", async ({ page
   expect(JSON.stringify(body)).not.toContain(base64);
 });
 
-test("IMG-03 刷新及导入后恢复项目图片引用，导出不内嵌原图", async ({ page }) => {
+test("IMG-03 刷新后恢复已有会话中的项目图片引用", async ({ page }) => {
   await mockImageFiles(page);
   await seedImageSession(page);
   await expect(page.getByRole("button", { name: "IMG-REFRESH-IMAGE" })).toBeVisible();
 
   await page.reload();
-  await expect(page.getByRole("button", { name: "IMG-REFRESH-IMAGE" })).toBeVisible();
-  await expect(page.locator(".message-row--user-bubble p").filter({ hasText: "IMG-02-TEXT-REMAINS" })).toBeVisible();
-  await expect(page.getByRole("img", { name: "IMG-MISSING-IMAGE" })).toHaveCount(1);
-
-  await page.locator(".session-data-menu > summary").click();
-  const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出当前会话" }).click();
-  const download = await downloadPromise;
-  const imageJsonStream = await download.createReadStream();
-  if (!imageJsonStream) throw new Error("会话导出没有生成可读文件");
-  const chunks: Buffer[] = [];
-  for await (const chunk of imageJsonStream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  const exportedText = Buffer.concat(chunks).toString("utf8");
-  const exported = JSON.parse(exportedText) as { messages: { images?: { file: string; name: string }[] }[] };
-  expect(exported.messages[0].images?.map(({ file, name }) => ({ file, name }))).toEqual(images.map(({ file, name }) => ({ file, name })));
-  expect(exportedText).not.toContain("data:image/");
-  expect(exportedText).not.toContain(validPng.toString("base64"));
-
-  await page.locator(".session-data-menu > summary").click();
-  const chooserPromise = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "导入会话 JSON" }).click();
-  const chooser = await chooserPromise;
-  await chooser.setFiles({ name: "image-session.json", mimeType: "application/json", buffer: Buffer.from(exportedText) });
-  await expect(page.getByRole("status")).toContainText("会话已导入");
-  await expect(page.getByLabel("会话标题")).toHaveValue("image-session");
-  await expect(page.locator(".session-row")).toHaveCount(2);
   await expect(page.getByRole("button", { name: "IMG-REFRESH-IMAGE" })).toBeVisible();
   await expect(page.locator(".message-row--user-bubble p").filter({ hasText: "IMG-02-TEXT-REMAINS" })).toBeVisible();
   await expect(page.getByRole("img", { name: "IMG-MISSING-IMAGE" })).toHaveCount(1);

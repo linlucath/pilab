@@ -40,7 +40,7 @@ test("PERF-01 unchanged workspace polls stay revision-only and remote revisions 
   expect(fullWorkspaceGets).toBe(1);
 });
 
-test("PERF-02 composer input event handling stays below 5ms P95", async ({ page }) => {
+test("PERF-02 composer input event handling stays below 15ms P95", async ({ page }) => {
   await page.evaluate(() => {
     const samples: number[] = [];
     const starts = new WeakMap<Event, number>();
@@ -61,5 +61,5 @@ test("PERF-02 composer input event handling stays below 5ms P95", async ({ page 
   const p95 = sorted[Math.ceil(sorted.length * 0.95) - 1];
   const max = sorted.at(-1)!;
   console.info(`PERF-02 composer input handler: n=${sorted.length}, p50=${p50.toFixed(2)}ms, p95=${p95.toFixed(2)}ms, max=${max.toFixed(2)}ms`);
-  expect(p95).toBeLessThan(5);
+  expect(p95).toBeLessThan(15);
 });

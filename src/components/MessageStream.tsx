@@ -267,11 +267,11 @@ const ToolStep = memo(function ToolStep({ assistant, assistantName = "Gemini", c
     else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); saveManualResult(); }
   };
   const body = <div className="tool-step-body">
+    {dispatchesToGpt && result?.content && <section className="tool-dispatch-result tool-readable-block" aria-label="执行结果"><Markdown content={dispatchResultContent(result.content)} highlight={searchTerm} /></section>}
     {dispatchesToGpt && dispatchRequests.map((request, index) => <section className="tool-task-instruction" key={`${request.name}-${index}`} aria-label={`任务指令 · ${request.name}`}>
       <header className="tool-task-instruction-heading"><strong>任务指令</strong><small>{request.name}</small></header>
       <div className="tool-task-instruction-content" role="region" aria-label={`发给${request.name}的任务指令`} tabIndex={0}><Markdown content={request.message} highlight={searchTerm} /></div>
     </section>)}
-    {dispatchesToGpt && result?.content && <section className="tool-dispatch-result tool-readable-block" aria-label="执行结果"><Markdown content={dispatchResultContent(result.content)} highlight={searchTerm} /></section>}
     {readsFromGpt && result?.content && <section className="tool-readable-block tool-reply-block"><Markdown content={reply || result.content} highlight={searchTerm} /></section>}
     {!dispatchesToGpt && !readsFromGpt && result?.content && <section className={`tool-readable-block ${result.isError ? "error" : ""}`}><strong>工具结果</strong><Markdown content={result.content} highlight={searchTerm} /></section>}
     {thinking && <details className="tool-step-thinking"><summary><Brain size={13} />{assistantName} 思考过程</summary><div className="tool-readable-block"><Markdown content={thinking} /></div></details>}

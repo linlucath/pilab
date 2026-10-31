@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import type { Message } from "../shared/schema";
-import { e2eSession, openWorkspace, seedWorkspace, setMockScript, ui } from "./fixtures/index";
+import { e2eSession, inspectTestState, latestInspectedRun, openWorkspace, seedWorkspace, setMockScript, ui } from "./fixtures/index";
 
 const msg = (id: string, role: Message["role"], content: string, extra: Partial<Message> = {}): Message => ({ id, role, content, enabled: true, ...extra });
 const sidebar = (page: import("@playwright/test").Page) => page.getByRole("complementary", { name: "会话列表" });
@@ -209,15 +209,16 @@ test("LAY-04 新建、快捷键新建、改名复制及确认删除会话", asyn
   ], { model: "layout-test-model", temperature: 0.31 })]);
   await openWorkspace(page);
   const createButton = sidebar(page).getByRole("button", { name: "新建对话" });
-  await expect(createButton).toHaveText("新建对话⌘N");
-  await expect(createButton.locator("kbd")).toHaveCount(1);
-  await expect(createButton).toHaveAttribute("title", "新建对话 (⌘N)");
+  await expect(createButton).toBeVisible();
+  await expect(createButton).toHaveAccessibleName("新建对话");
+  await expect(createButton).toBeEnabled();
   await createButton.click();
   await expect(sessionRows(page)).toHaveCount(2);
-  await expect(page.locator(".system-banner")).toContainText("你是 Gemini");
+  await expect(page.locator(".system-banner strong")).toHaveText("系统人设 · 智能协作模式");
+  await expect(page.locator(".system-banner")).toContainText("Pi Lab 的高级产品设计与软件工程伙伴");
   await page.keyboard.press("Meta+n");
   await expect(sessionRows(page)).toHaveCount(3);
-  await expect(page.locator(".system-banner")).toContainText("你是 Gemini");
+  await expect(page.locator(".system-banner strong")).toHaveText("系统人设 · 智能协作模式");
 
   await sidebar(page).locator('[data-session-id="lay-04-source"] .session-main').click();
   await page.getByRole("textbox", { name: "会话标题" }).fill("Alpha Renamed");
@@ -225,20 +226,18 @@ test("LAY-04 新建、快捷键新建、改名复制及确认删除会话", asyn
   await setMockScript(page, [{ type: "text", text: "SOURCE-RUN-RECORD" }]);
   await page.getByRole("button", { name: "重新运行" }).click();
   await expect(page.getByText("SOURCE-RUN-RECORD")).toBeVisible();
-  await page.locator(".debug-menu > summary").click();
-  await page.getByRole("button", { name: "运行记录" }).click();
-  await expect(page.locator(".history-card")).toContainText("SOURCE-RUN-RECORD");
-  await page.getByRole("button", { name: "关闭调试面板" }).click();
+  expect((await latestInspectedRun(page, "lay-04-source"))?.output).toContain("SOURCE-RUN-RECORD");
   const sourceRow = sidebar(page).locator('.session-row[data-session-id="lay-04-source"]');
   await sourceRow.hover();
   await sourceRow.getByRole("button", { name: "复制 Alpha Renamed" }).click();
   await expect(page.getByRole("textbox", { name: "会话标题" })).toHaveValue("Alpha Renamed · 副本");
   await expect(page.locator('[data-message-id="lay-04-user"]')).toContainText("seeded conversation");
   await expect(page.getByRole("button", { name: /选择模型，当前 layout-test-model/ })).toBeVisible();
-  await page.locator(".debug-menu > summary").click();
-  await page.getByRole("button", { name: "运行记录" }).click();
-  await expect(page.getByRole("heading", { name: "还没有运行记录" })).toBeVisible();
-  await page.getByRole("button", { name: "关闭调试面板" }).click();
+  const duplicateId = await sidebar(page).locator(".session-row.selected").getAttribute("data-session-id");
+  expect(duplicateId).toBeTruthy();
+  const inspectedRuns = (await inspectTestState(page)).runs;
+  expect(inspectedRuns.filter((run) => run.sessionId === duplicateId)).toHaveLength(0);
+  expect(inspectedRuns.filter((run) => run.sessionId === "lay-04-source").map((run) => run.output)).toContain("SOURCE-RUN-RECORD");
 
   page.once("dialog", (dialog) => dialog.dismiss());
   const duplicateRow = sessionRows(page).filter({ hasText: "Alpha Renamed · 副本" });
@@ -465,7 +464,7 @@ test("LAY-10 窄栏下无需原生弹窗即可创建并保存文件夹", async (
   await expect(side.locator(".sidebar-folder")).toHaveCount(1);
 });
 
-test("LAY-05 设置面板已移除，主题、工具折叠和 Composer 模型选择刷新后保留", async ({ page }) => {
+test("LAY-05 旧工作台开关已移除，浏览器偏好及工具组折叠状态按存储恢复", async ({ page }) => {
   const call = { id: "lay-05-call", name: "e2e_mock_tool", arguments: "{}" };
   await seedWorkspace(page, [e2eSession("lay-05-session", "Workspace toggles", [
     msg("lay-05-system", "system", "system"),
@@ -477,15 +476,19 @@ test("LAY-05 设置面板已移除，主题、工具折叠和 Composer 模型选
   await expect(page.locator(".tool-group > details")).not.toHaveAttribute("open", "");
   await expect(page.locator(".right-panel, .right-panel-backdrop")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /显示工作台|隐藏工作台/ })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "展开工具" })).toBeVisible();
-  await page.getByRole("button", { name: "切换深色模式" }).click();
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await page.getByRole("button", { name: "展开工具" }).click();
-  await expect(page.locator(".tool-group > details")).toHaveAttribute("open", "");
+  await page.evaluate(() => {
+    localStorage.setItem("pilab-theme-v2", "dark");
+    localStorage.setItem("pilab-tools-compact-v1", "false");
+  });
   await page.reload();
   await expect(ui(page).composer).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect(page.getByRole("button", { name: "收起工具" })).toBeVisible();
-  await expect(page.locator(".right-panel")).toHaveCount(0);
+  await expect(page.locator(".tool-group > details")).toHaveAttribute("open", "");
   await expect(page.getByRole("button", { name: /选择模型，当前 toggle-test-model/ })).toBeVisible();
+  await expect.poll(() => inspectTestState(page)).toMatchObject({ theme: "dark", compactTools: false });
+  await page.locator(".tool-group > details > summary").click();
+  await expect(page.locator(".tool-group > details")).not.toHaveAttribute("open", "");
+  await page.reload();
+  await expect(ui(page).composer).toBeVisible();
+  await expect(page.locator(".tool-group > details")).toHaveAttribute("open", "");
 });

@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { e2eSession, openRequestInspector, openWorkspace, resetWorkspace, seedWorkspace, setMockScript, ui } from "./fixtures/index";
+import { e2eSession, latestInspectedRun, openRequestInspector, openWorkspace, resetWorkspace, seedWorkspace, setMockScript, ui } from "./fixtures/index";
 import type { Message } from "../shared/schema";
 
 async function ready(page: Page) {
@@ -12,9 +12,9 @@ async function ready(page: Page) {
 async function runCurrent(page: Page) {
   await page.locator("button.run-current").click();
 }
-async function openHistory(page: Page) {
-  await page.locator(".debug-menu > summary").click();
-  await page.getByRole("button", { name: "运行记录" }).click();
+async function latestRun(page: Page) {
+  await expect.poll(async () => (await latestInspectedRun(page))?.status).not.toBe("running");
+  return latestInspectedRun(page);
 }
 async function openToolGroups(page: Page) {
   for (const group of await page.locator(".tool-group").all()) {
@@ -23,14 +23,15 @@ async function openToolGroups(page: Page) {
   }
 }
 async function openToolBody(tool: Locator) {
-  const summary = tool.locator(":scope > summary");
-  const body = tool.locator(".tool-step-body");
-  const groupDetails = tool.locator("xpath=ancestor::details[1]");
+  const body = tool.locator(":scope > .tool-step-body");
+  const group = tool.locator("xpath=ancestor::section[contains(concat(' ', normalize-space(@class), ' '), ' tool-group ')][1]");
+  const groupDetails = group.locator(":scope > details");
   if (await groupDetails.count() && !(await groupDetails.evaluate((element) => (element as HTMLDetailsElement).open)))
     await groupDetails.locator(":scope > summary").click();
-  if (await summary.count()) {
-    if (!(await tool.evaluate((element) => element instanceof HTMLDetailsElement && element.open))) await summary.click();
-    await expect.poll(() => tool.evaluate((element) => element instanceof HTMLDetailsElement && element.open)).toBe(true);
+  const isDetails = await tool.evaluate((element) => element instanceof HTMLDetailsElement);
+  if (isDetails && !(await tool.evaluate((element) => (element as HTMLDetailsElement).open))) {
+    await tool.locator(":scope > summary").click();
+    await expect.poll(() => tool.evaluate((element) => (element as HTMLDetailsElement).open)).toBe(true);
   }
   await expect(body).toBeVisible();
 }
@@ -90,6 +91,8 @@ test("TOOL-06 单步骤工具组使用单层折叠并显示克制文案", async 
   const sameTitleGroup = page.locator('.tool-group[data-message-id="same-title-assistant"]');
   const sameTitleDetails = sameTitleGroup.locator(":scope > details");
   await expect(sameTitleDetails.locator(":scope > summary")).toContainText("查阅文件");
+  await expect(sameTitleDetails.locator(":scope > summary")).toContainText("src/one.ts");
+  await expect(sameTitleDetails.locator(":scope > summary")).toContainText("src/two.ts");
   await sameTitleDetails.locator(":scope > summary").click();
   const sameTitleSteps = sameTitleGroup.locator(".tool-step");
   await expect(sameTitleSteps).toHaveCount(2);
@@ -100,11 +103,11 @@ test("TOOL-06 单步骤工具组使用单层折叠并显示克制文案", async 
   }
 });
 
-test("TOOL-01 工兵任务指令与交付正文相邻呈现，长指令可滚动阅读", async ({ page }) => {
+test("TOOL-01 交付结果优先呈现，展开区保留可滚动的工兵任务指令", async ({ page }) => {
   const sessionId = "subagent-result-first-session";
   const promptLead = "请查阅并更新工具展示组件，隐藏原始 RPC 参数并改善 Markdown 排版。";
   const prompt = `${promptLead}\n\n${Array.from({ length: 20 }, (_, index) => `第 ${index + 1} 项：核对相关组件的调用方式、验证边界行为，并在交付中简洁记录实现结果。`).join("\n\n")}`;
-  const delivered = "# 工具展示组件已更新\n\n交付正文完整显示，段落间距舒适。\n\n- 工具标题保持克制\n- 任务指令在交付正文上方呈现";
+  const delivered = "# 工具展示组件已更新\n\n交付正文完整显示，段落间距舒适。\n\n- 工具标题保持克制\n- 交付结果优先呈现，任务指令仍可展开查看";
   const callId = "subagent-result-first-call";
   const messages: Message[] = [
     { id: "subagent-result-system", role: "system", content: "You are a test assistant.", enabled: true },
@@ -133,8 +136,8 @@ test("TOOL-01 工兵任务指令与交付正文相邻呈现，长指令可滚动
   await expect(instruction).toContainText(promptLead);
   await expect(instruction.locator(".tool-task-instruction-content")).toHaveCSS("max-height", "190px");
   await expect.poll(() => instruction.locator(".tool-task-instruction-content").evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
-  const instructionBeforeResult = await instruction.evaluate((element) => element.compareDocumentPosition(element.parentElement!.querySelector(".tool-dispatch-result")!) & Node.DOCUMENT_POSITION_FOLLOWING);
-  expect(instructionBeforeResult).toBeTruthy();
+  const resultBeforeInstruction = await result.evaluate((element) => element.compareDocumentPosition(element.parentElement!.querySelector(".tool-task-instruction")!) & Node.DOCUMENT_POSITION_FOLLOWING);
+  expect(resultBeforeInstruction).toBeTruthy();
   await expect(tool.locator(".tool-step-body")).toBeVisible();
 });
 
@@ -343,8 +346,7 @@ test("TOOL-02 原始工具名、Call ID、参数、结果及错误标记编辑�
   await setMockScript(page, [{ type: "text", text: "TOOL02-EDITED-CONTEXT-RUN" }]);
   await runCurrent(page);
   await expect(page.getByText("TOOL02-EDITED-CONTEXT-RUN", { exact: true })).toBeVisible();
-  await openRequestInspector(page);
-  const requestText = await page.locator(".request-turn pre").innerText();
+  const requestText = await openRequestInspector(page);
   expect(requestText).toContain("edited_tool");
   expect(requestText).toContain("edited-call-id");
   expect(requestText).toContain("edited-arguments");
@@ -398,19 +400,16 @@ test("TOOL-03 精简整组只保留可编辑摘要在上下文中，恢复后重
   await setMockScript(page, [{ type: "text", text: "TOOL03-COMPACTED-RUN" }]);
   await runCurrent(page);
   await expect(page.getByText("TOOL03-COMPACTED-RUN", { exact: true })).toBeVisible();
-  await openRequestInspector(page);
-  let requestText = await page.locator(".request-turn pre").innerText();
+  let requestText = await openRequestInspector(page);
   expect(requestText).toContain("TOOL03-CUSTOM-SUMMARY");
   expect(requestText).not.toContain("TOOL03-ORIGINAL-RESULT");
-  await page.getByRole("button", { name: "关闭调试面板" }).click();
 
   await group.hover();
   await group.getByRole("button", { name: "还原" }).click();
   await setMockScript(page, [{ type: "text", text: "TOOL03-RESTORED-RUN" }]);
   await runCurrent(page);
   await expect(page.getByText("TOOL03-RESTORED-RUN", { exact: true })).toBeVisible();
-  await openRequestInspector(page);
-  requestText = await page.locator(".request-turn pre").innerText();
+  requestText = await openRequestInspector(page);
   expect(requestText).toContain("TOOL03-CALL-ARGUMENT");
   expect(requestText).toContain("TOOL03-ORIGINAL-RESULT");
 });
@@ -440,9 +439,9 @@ test("TOOL-04 停止执行中的工具会记录执行状态未知的错误结果
   await openToolBody(ui(page).tool().first());
   await expect(page.locator(".tool-readable-block.error")).toContainText("Mock tool execution interrupted.");
   await expect(page.locator(".tool-group-state.error")).toHaveText("· 失败");
-  await openHistory(page);
-  await expect(page.locator(".history-card").first()).toContainText("已停止");
-  await expect(page.locator(".history-card").first()).toContainText("TOOL04-WORK-IN-PROGRESS");
+  const run = await latestRun(page);
+  expect(run?.status).toBe("stopped");
+  expect(JSON.stringify(run?.trace)).toContain("TOOL04-WORK-IN-PROGRESS");
 });
 
 test("TOOL-05 长工具轨迹保留完整输出、只精简较旧工具组并显示活动输出", async ({ page }) => {
@@ -466,17 +465,18 @@ test("TOOL-05 长工具轨迹保留完整输出、只精简较旧工具组并显
   await expect(ui(page).stop).toBeVisible();
   await expect(liveTool).toContainText("TOOL05-LONG-RESULT-START");
   await expect(page.getByText("TOOL05-TRAJECTORY-DONE", { exact: true })).toBeVisible();
+  await expect(ui(page).stop).toHaveCount(0);
   await expect(page.locator(".tool-group")).toHaveCount(2);
   const firstGroup = page.locator(".tool-group").nth(0);
   const recentGroup = page.locator(".tool-group").nth(1);
-  const topCompact = page.getByRole("button", { name: "精简 1 个较旧的工具组" });
-  await expect(topCompact).toBeEnabled();
-  await topCompact.click();
+  await firstGroup.hover();
+  const compactOldGroup = firstGroup.getByRole("button", { name: "精简" });
+  await expect(compactOldGroup).toBeEnabled();
+  await compactOldGroup.click();
   await expect(firstGroup).toHaveClass(/is-compacted/);
   await expect(recentGroup).not.toHaveClass(/is-compacted/);
   await expect(recentGroup.getByRole("button", { name: /精简/ })).toBeEnabled();
   await expect(page.getByRole("button", { name: /精简 \d+ 个较旧的工具组/ })).toHaveCount(0);
-  await recentGroup.locator(":scope > details > summary").click();
   await openToolBody(ui(page).tool().last());
   const resultBlock = ui(page).tool().last().locator(".tool-readable-block");
   await expect(resultBlock).toContainText("TOOL05-LONG-RESULT-END");

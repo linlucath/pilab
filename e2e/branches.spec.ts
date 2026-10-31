@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { prepareE2eWorkspace, setMockScript } from "./fixtures/index";
+import { inspectTestState, latestInspectedRun, prepareE2eWorkspace, setMockScript } from "./fixtures/index";
 
 const sessionSettings = {
   model: "branch-fixture-model",
@@ -10,11 +10,6 @@ const sessionSettings = {
 
 const userMessage = (id: string, content: string) => ({ id, role: "user" as const, content, enabled: true });
 const assistantMessage = (id: string, content: string) => ({ id, role: "assistant" as const, content, enabled: true });
-
-async function openDebugPanel(page: import("@playwright/test").Page, name: string) {
-  await page.locator("details.debug-menu > summary").click();
-  await page.getByRole("button", { name }).click();
-}
 
 test("BRN-01 从历史消息分支只保留前缀、继承配置且不继承运行记录", async ({ page }) => {
   await prepareE2eWorkspace(page, [{
@@ -32,6 +27,7 @@ test("BRN-01 从历史消息分支只保留前缀、继承配置且不继承运�
   await setMockScript(page, [{ type: "text", text: "BRN01-RUN-ONLY-ON-SOURCE" }]);
   await page.getByRole("button", { name: "重新运行" }).click();
   await expect(page.getByText("BRN01-RUN-ONLY-ON-SOURCE")).toBeVisible();
+  expect((await latestInspectedRun(page, "branch-source"))?.output).toContain("BRN01-RUN-ONLY-ON-SOURCE");
 
   const branchPoint = page.locator('.message-row[data-message-id="branch-user-2"]');
   await branchPoint.locator("article.chat-message").hover();
@@ -41,10 +37,11 @@ test("BRN-01 从历史消息分支只保留前缀、继承配置且不继承运�
   await expect(page.locator(".message-row").getByText("BRN01-BRANCH-HERE")).toBeVisible();
   await expect(page.getByText("BRN01-RUN-ONLY-ON-SOURCE")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /选择模型，当前 branch-fixture-model/ })).toBeVisible();
-
-  await openDebugPanel(page, "运行记录");
-  await expect(page.getByText("还没有运行记录")).toBeVisible();
-  await page.getByRole("button", { name: "关闭调试面板" }).click();
+  const branchId = await page.locator(".session-row.selected").getAttribute("data-session-id");
+  expect(branchId).toBeTruthy();
+  const inspectedRuns = (await inspectTestState(page)).runs;
+  expect(inspectedRuns.filter((run) => run.sessionId === branchId)).toHaveLength(0);
+  expect(inspectedRuns.filter((run) => run.sessionId === "branch-source")).toHaveLength(1);
   await page.locator('.session-row[data-session-id="branch-source"] .session-main').click();
   await expect(page.getByText("BRN01-RUN-ONLY-ON-SOURCE")).toBeVisible();
   await expect(page.locator(".message-row").getByText("BRN01-BRANCH-HERE")).toBeVisible();

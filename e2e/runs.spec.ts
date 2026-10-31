@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { addMessage, e2eSession, openRequestInspector, openWorkspace, resetWorkspace, seedWorkspace, setMockScript, ui } from "./fixtures/index";
+import { addMessage, e2eSession, inspectTestState, latestInspectedRun, openRequestInspector, openWorkspace, resetWorkspace, seedWorkspace, setMockScript, ui } from "./fixtures/index";
 
 async function ready(page: Page) {
   await openWorkspace(page);
@@ -15,10 +15,8 @@ async function expectNoToast(page: Page) {
 async function runCurrent(page: Page) {
   await page.locator("button.run-current").click();
 }
-async function openHistory(page: Page) {
-  await page.locator(".debug-menu > summary").click();
-  await page.getByRole("button", { name: "运行记录" }).click();
-  await expect(page.getByRole("dialog", { name: "运行记录" })).toBeVisible();
+async function expectNoRuns(page: Page) {
+  await expect.poll(async () => (await inspectTestState(page)).runs.length).toBe(0);
 }
 async function excludeMessage(page: Page, snippet: string) {
   const row = page.locator(".message-row").filter({ hasText: snippet });
@@ -37,8 +35,7 @@ test("RUN-01 请求严格使用已启用的可见历史顺序，不合成隐藏 
   await setMockScript(page, [{ type: "text", text: "RUN01-RESPONSE" }]);
   await runCurrent(page);
   await expect(page.getByText("RUN01-RESPONSE", { exact: true })).toBeVisible();
-  await openRequestInspector(page);
-  const requestText = await page.locator(".request-turn pre").innerText();
+  const requestText = await openRequestInspector(page);
   expect(requestText).toContain("RUN01-KEEP-USER");
   expect(requestText).toContain("RUN01-KEEP-ASSISTANT");
   expect(requestText).not.toContain("RUN01-EXCLUDED-USER");
@@ -55,8 +52,7 @@ test("RUN-01 空或全部排除的上下文被拒绝且不创建运行", async (
   await runCurrent(page);
   await expect(ui(page).alerts).toContainText("请先添加至少一条有内容且已启用的消息");
   await expect(ui(page).assistantMessages).toHaveCount(0);
-  await openHistory(page);
-  await expect(page.getByText("还没有运行记录")).toBeVisible();
+  await expectNoRuns(page);
 });
 
 test("RUN-02 Enter 发送、Shift+Enter 换行，IME 组字确认不触发运行", async ({ page }) => {
@@ -86,8 +82,7 @@ test("RUN-02 消息编辑器的 Ctrl+Enter 保存，不冒泡运行会话", asyn
   await page.getByRole("textbox", { name: "编辑 You 消息" }).press("Control+Enter");
   await expect(page.locator(".message-row").filter({ hasText: "RUN02-EDIT-SAVED" })).toBeVisible();
   await expect(ui(page).stop).toHaveCount(0);
-  await openHistory(page);
-  await expect(page.getByText("还没有运行记录")).toBeVisible();
+  await expectNoRuns(page);
 });
 
 test("RUN-03 正文、思考与多条助手消息分别呈现，结束后可编辑", async ({ page }) => {
@@ -157,8 +152,7 @@ test("RUN-04 停止流式生成后保留可编辑的部分正文并记录已停�
   await partialRow.getByRole("button", { name: "编辑消息" }).click();
   await expect(partialRow.getByRole("textbox", { name: "编辑 Gemini 消息" })).toHaveValue(/RUN04-PARTIAL-/);
   await partialRow.getByRole("button", { name: "取消编辑" }).click();
-  await openHistory(page);
-  await expect(page.locator(".history-card").first()).toContainText("已停止");
+  await expect.poll(async () => (await latestInspectedRun(page))?.status).toBe("stopped");
 });
 
 test("RUN-04 在首段正文到达前停止会移除空助手占位", async ({ page }) => {
@@ -195,9 +189,7 @@ test("RUN-06 达到输出长度上限时保留正文、状态并允许再次运�
   await expect(page.getByText("RUN06-LENGTH-PARTIAL", { exact: true })).toBeVisible();
   await expect(ui(page).stop).toHaveCount(0);
   await expect(page.locator(".toast")).toContainText("已达到输出上限");
-  await openHistory(page);
-  await expect(page.locator(".history-card").first()).toContainText("达到长度上限");
-  await page.getByRole("button", { name: "关闭调试面板" }).click();
+  await expect.poll(async () => (await latestInspectedRun(page))?.status).toBe("length");
   await setMockScript(page, [{ type: "text", text: "RUN06-CONTINUE-AGAIN" }]);
   await runCurrent(page);
   await expect(page.getByText("RUN06-CONTINUE-AGAIN", { exact: true })).toBeVisible();
@@ -216,9 +208,9 @@ test("RUN-06 达到 Agent 轮数上限保留已完成工具结果", async ({ pag
   await expect(ui(page).tool().locator(":scope > .tool-step-body")).toBeVisible();
   await expect(ui(page).tool().locator(".tool-readable-block")).toContainText("Mock tool result: RUN06-TOOL-RESULT");
   await expect(page.locator(".toast")).toContainText("已达到 Agent 最大轮数");
-  await openHistory(page);
-  await expect(page.locator(".history-card").first()).toContainText("达到 Agent 轮次上限");
-  await expect(page.locator(".history-card").first()).toContainText("RUN06-TOOL-RESULT");
+  const run = await latestInspectedRun(page, "run06-turn-limit");
+  expect(run?.status).toBe("turn_limit");
+  expect(JSON.stringify(run?.trace)).toContain("RUN06-TOOL-RESULT");
 });
 
 test("RUN-07 Assistant 结尾续写沿用原历史，不插入合成 user 消息", async ({ page }) => {
@@ -227,8 +219,8 @@ test("RUN-07 Assistant 结尾续写沿用原历史，不插入合成 user 消息
   await runCurrent(page);
   await expect(page.getByText("RUN07-CONTINUED", { exact: true })).toBeVisible();
   await expect(ui(page).stop).toHaveCount(0);
-  await openRequestInspector(page);
-  const request = JSON.parse(await page.locator(".request-turn pre").innerText()) as { messages?: Array<{ role?: string; content?: unknown }>; input?: Array<{ type?: string; role?: string; content?: unknown }> };
+  const inspectedRequests = JSON.parse(await openRequestInspector(page)) as { messages?: Array<{ role?: string; content?: unknown }>; input?: Array<{ type?: string; role?: string; content?: unknown }> }[];
+  const request = inspectedRequests[0];
   const transcript = request.messages || request.input;
   expect(transcript?.at(-1)?.role).toBe("assistant");
   expect(JSON.stringify(transcript)).toContain("RUN07-ASSISTANT-TAIL");

@@ -154,8 +154,15 @@ test("worker tool history and steering share the main conversation layout while 
   const stream = page.locator(".message-stream");
   await expect(stream).toContainText("History 36");
   await expect(stream).toContainText("gpt-6 · steer-worker");
-  const tool = page.locator(".tool-step-row").first();
-  await tool.locator(":scope > summary").click();
+  const toolGroup = page.locator('.tool-group[data-message-id="stream-tool-assistant"]');
+  const groupDetails = toolGroup.locator(":scope > details");
+  const groupTitle = groupDetails.locator(":scope > summary > strong");
+  await expect(groupTitle).toContainText("README.md");
+  if (!(await groupDetails.evaluate((element) => (element as HTMLDetailsElement).open)))
+    await groupDetails.locator(":scope > summary").click();
+  const tool = toolGroup.locator('.tool-step[data-tool-name="read"]');
+  await expect(tool.locator(":scope > summary")).toHaveCount(0);
+  await expect(tool.locator(":scope > .tool-step-body")).toBeVisible();
   await expect(tool).toContainText("README contents are available.");
   await expect(tool.getByText("gpt-6 · steer-worker 思考过程")).toBeVisible();
   await expect(page.getByRole("textbox", { name: "给工兵发送指导" })).toHaveAttribute("placeholder", "给工兵发送直接指导 (Steer)…");

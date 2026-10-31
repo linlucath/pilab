@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openWorkspace, resetWorkspace, sendMessage, setMockScript, ui } from "./fixtures/index";
+import { latestInspectedRun, openWorkspace, resetWorkspace, sendMessage, setMockScript, ui } from "./fixtures/index";
 
 function streamBody(events: Record<string, unknown>[], firstSequence = 1) {
   return `${events.map((event, index) => JSON.stringify({ seq: firstSequence + index, event })).join("\n")}\n`;
@@ -18,49 +18,21 @@ test.beforeEach(async ({ page }) => {
   await page.reload();
 });
 
-test("RUN-05 后台运行在工具等待期间发送合法 NDJSON 心跳", async ({ page }) => {
+test("RUN-05 后台运行跨多轮工具等待保持订阅并保留结果", async ({ page }) => {
   await setMockScript(page, [
     { type: "tool", input: "one", delayMs: 4_500 },
     { type: "tool", input: "two", delayMs: 4_500 },
     { type: "tool", input: "three", delayMs: 4_500 },
     { type: "text", text: "工具等待后继续完成" },
   ]);
-  await page.evaluate(() => {
-    const nativeFetch = window.fetch.bind(window);
-    (window as Window & { __runHeartbeatCount?: number }).__runHeartbeatCount = 0;
-    window.fetch = async (input, init) => {
-      const target = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      const pathname = new URL(target, location.href).pathname;
-      if (!pathname.startsWith("/api/runs/") || !pathname.endsWith("/stream")) return nativeFetch(input, init);
-      const response = await nativeFetch(input, init);
-      if (!response.body) return response;
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      const chunks: Uint8Array[] = [];
-      let totalBytes = 0;
-      let pending = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (value) {
-          chunks.push(value);
-          totalBytes += value.length;
-          pending += decoder.decode(value, { stream: true });
-          const lines = pending.split("\n");
-          pending = lines.pop() || "";
-          for (const line of lines) if (line.trim() && JSON.parse(line).event?.type === "heartbeat")
-            (window as Window & { __runHeartbeatCount?: number }).__runHeartbeatCount!++;
-        }
-        if (done) break;
-      }
-      const bytes = new Uint8Array(totalBytes);
-      let offset = 0;
-      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-      return new Response(bytes, { status: response.status, statusText: response.statusText, headers: response.headers });
-    };
-  });
-  await sendMessage(page, "心跳保活测试");
+  await sendMessage(page, "长时间工具等待测试");
   await expect(ui(page).assistantMessages).toContainText("工具等待后继续完成", { timeout: 25_000 });
-  await expect.poll(() => page.evaluate(() => (window as Window & { __runHeartbeatCount?: number }).__runHeartbeatCount || 0), { timeout: 25_000 }).toBeGreaterThan(0);
+  await expect(ui(page).tool()).toHaveCount(3);
+  await expect.poll(async () => (await latestInspectedRun(page))?.status).toBe("done");
+  const trace = JSON.stringify((await latestInspectedRun(page))?.trace);
+  expect(trace).toContain("Mock tool result: one");
+  expect(trace).toContain("Mock tool result: two");
+  expect(trace).toContain("Mock tool result: three");
   await expect(ui(page).stop).toHaveCount(0);
 });
 
@@ -72,9 +44,7 @@ test("RUN-05 上游流停滞时说明等待超时并保留原始错误和日志"
   await expect(ui(page).alerts).toContainText(reason);
   await expect(ui(page).stop).toHaveCount(0);
   await expect(page.locator(".message-row--user-bubble")).toContainText("超时诊断测试");
-  await page.getByLabel("打开调试工具", { exact: true }).click();
-  await page.getByRole("button", { name: "运行记录", exact: true }).click();
-  await expect(page.locator(".run-history")).toContainText(reason);
+  await expect.poll(async () => (await latestInspectedRun(page))?.error).toContain(reason);
   const response = await page.request.get("/api/logs?category=run&q=stream%20stalled");
   const { logs } = await response.json();
   expect(logs.some((entry: any) => entry.event === "run_error" && entry.data.reason.includes(reason))).toBe(true);

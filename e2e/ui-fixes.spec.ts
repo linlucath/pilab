@@ -7,17 +7,20 @@ async function loadFresh(page: import("@playwright/test").Page) {
 }
 
 async function expectOneLineTopbar(page: import("@playwright/test").Page) {
-  const topbar = page.locator(".topbar");
-  const [bar, leading, trailing] = await Promise.all([
+  const topbar = page.locator("header.topbar");
+  const leading = topbar.locator(":scope > .topbar-leading");
+  const [bar, leadingBox, titleBox] = await Promise.all([
     topbar.boundingBox(),
-    page.locator(".topbar-leading").boundingBox(),
-    page.locator(".topbar-trailing").boundingBox(),
+    leading.boundingBox(),
+    topbar.getByRole("textbox", { name: "会话标题" }).boundingBox(),
   ]);
   expect(bar).not.toBeNull();
-  expect(leading).not.toBeNull();
-  expect(trailing).not.toBeNull();
-  expect(Math.abs(leading!.y - trailing!.y)).toBeLessThanOrEqual(1);
-  expect(trailing!.x + trailing!.width).toBeLessThanOrEqual(bar!.x + bar!.width + 1);
+  expect(leadingBox).not.toBeNull();
+  expect(titleBox).not.toBeNull();
+  await expect(topbar.getByRole("textbox", { name: "会话标题" })).toBeVisible();
+  expect(leadingBox!.x).toBeGreaterThanOrEqual(bar!.x);
+  expect(leadingBox!.x + leadingBox!.width).toBeLessThanOrEqual(bar!.x + bar!.width + 1);
+  expect(Math.abs((leadingBox!.y + leadingBox!.height / 2) - (titleBox!.y + titleBox!.height / 2))).toBeLessThanOrEqual(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 }
 
