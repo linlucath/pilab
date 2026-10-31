@@ -3,13 +3,14 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { generate, validateTranscript } from "./engine";
-import { runSchema } from "../shared/schema";
+import { MAX_WORKSPACE_FILE_BYTES, runSchema } from "../shared/schema";
 import { piStatus } from "./pi-subscription";
 import { cleanupIdleGptSessions, closeGptSession, interruptGptSession, listGptSessions, readGptSessionMessages, readGptSessionTranscript, sendGptSessionGuidance, shutdownGptSessions } from "./gpt-subagent";
 import { ProjectWorkspaceStore } from "./workspace";
 import { ensureSessionWorkspace } from "./session-workspaces";
 import { ActiveRunError, RunManager } from "./runs";
 import { projectImages } from "./images";
+import { resolveWorkspaceUploadDirectory, saveWorkspaceFile, WorkspaceFileUploadError } from "./files";
 import {
   syncList, syncDetail, syncApply, syncCancel,
   piSnapshotReader, streamPiSnapshots,
@@ -54,6 +55,31 @@ app.post("/api/images/upload", express.raw({ type: "application/octet-stream", l
     res.status(201).set("Cache-Control", "no-store").json({ image });
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "图片上传失败。" });
+  }
+});
+app.post("/api/workspaces/upload-file", express.raw({ type: "application/octet-stream", limit: MAX_WORKSPACE_FILE_BYTES }), async (req, res) => {
+  try {
+    const scalar = (value: unknown) => typeof value === "string" ? value : undefined;
+    const sessionId = scalar(req.query.sessionId);
+    if (!sessionId) throw new WorkspaceFileUploadError("sessionId 必须是 1 到 200 个字符。");
+    if (req.query.workingDirectory !== undefined && scalar(req.query.workingDirectory) === undefined)
+      throw new WorkspaceFileUploadError("工作目录参数无效。");
+    if ((req.query.name !== undefined && scalar(req.query.name) === undefined) ||
+        (req.query.fileName !== undefined && scalar(req.query.fileName) === undefined))
+      throw new WorkspaceFileUploadError("文件名参数无效。");
+
+    let workingDirectory = scalar(req.query.workingDirectory);
+    if (workingDirectory === undefined) {
+      const workspace = await workspaceStore.get();
+      workingDirectory = workspace?.sessions.find((session) => session.id === sessionId)?.settings.workingDirectory.trim() || undefined;
+    }
+    const directory = await resolveWorkspaceUploadDirectory(sessionId, workingDirectory);
+    const fileName = scalar(req.query.fileName) ?? scalar(req.query.name);
+    const result = await saveWorkspaceFile(directory, fileName, req.body);
+    res.status(201).set("Cache-Control", "no-store").json(result);
+  } catch (error) {
+    const status = error instanceof WorkspaceFileUploadError ? error.status : 500;
+    res.status(status).json({ error: error instanceof Error ? error.message : "文件上传失败。" });
   }
 });
 app.get("/api/images/file", (req, res) => {
@@ -567,8 +593,10 @@ app.use(
     logEvent("server", "error", "request_error", "请求处理失败。", {
       method: req.method, path: req.path, reason: error.message || "请求解析失败",
     });
-    if (!res.headersSent)
-      res.status(400).json({ error: error.message || "请求解析失败" });
+    if (!res.headersSent) {
+      const tooLarge = req.path === "/api/workspaces/upload-file" && (error as Error & { type?: string }).type === "entity.too.large";
+      res.status(tooLarge ? 413 : 400).json({ error: tooLarge ? "单个文件不能超过 50 MiB。" : error.message || "请求解析失败" });
+    }
   },
 );
 const port = Number(process.env.PORT || 3000);

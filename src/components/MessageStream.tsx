@@ -235,14 +235,15 @@ function dispatchResultContent(content: string) {
   return content;
 }
 
-const ToolStep = memo(function ToolStep({ assistant, assistantName = "Gemini", call, callIndex, result, onCall, onResult, onImage, onDeleteCall, onAddToolResult, disabled, searchTerm, jumpedId, showTitle = true, stepNumber = 1, running = false }: { assistant: Message; assistantName?: string; call: ToolCall; callIndex: number; result?: Message; onCall: Props["onCall"]; onResult: Props["onMessage"]; onImage: (file: string, name: string) => void; onDeleteCall: Props["onDeleteCall"]; onAddToolResult: Props["onAddToolResult"]; disabled?: boolean; searchTerm?: string; jumpedId?: string; showTitle?: boolean; stepNumber?: number; running?: boolean }) {
+const ToolStep = memo(function ToolStep({ assistant, assistantName = "Gemini", call, callIndex, result, onCall, onResult, onImage, onDeleteCall, onAddToolResult, disabled, searchTerm, jumpedId, showTitle = true, stepNumber = 1, running = false, defaultExpanded = true }: { assistant: Message; assistantName?: string; call: ToolCall; callIndex: number; result?: Message; onCall: Props["onCall"]; onResult: Props["onMessage"]; onImage: (file: string, name: string) => void; onDeleteCall: Props["onDeleteCall"]; onAddToolResult: Props["onAddToolResult"]; disabled?: boolean; searchTerm?: string; jumpedId?: string; showTitle?: boolean; stepNumber?: number; running?: boolean; defaultExpanded?: boolean }) {
   const dispatchesToGpt = dispatchToolNames.has(call.name);
-  const [expanded, setExpanded] = useState(true);
+  const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
+  const expanded = expandedOverride ?? defaultExpanded;
   const [manualOpen, setManualOpen] = useState(false);
   const [manualContent, setManualContent] = useState("");
   const [manualIsError, setManualIsError] = useState(false);
   const manualEditor = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => { if (jumpedId && jumpedId === result?.id) setExpanded(true); }, [jumpedId, result?.id]);
+  useEffect(() => { if (jumpedId && jumpedId === result?.id) setExpandedOverride(true); }, [jumpedId, result?.id]);
   useEffect(() => { if (result) setManualOpen(false); }, [result?.id]);
   const args = parseToolArguments(call.arguments);
   const readsFromGpt = ["subagent_query", "gpt_session_wait", "gpt_session_read", "gpt_session_list", "gpt_session_logs"].includes(call.name);
@@ -300,17 +301,36 @@ const ToolStep = memo(function ToolStep({ assistant, assistantName = "Gemini", c
   const stepClassName = `tool-step tool-step-row ${stepState}`;
   const stepAttributes = { title: "工具调用及其结果不能直接更改角色，以免破坏工具配对。", "data-tool-name": call.name, "data-message-id": assistant.id, "data-result-id": result?.id, "data-status": stepState, "data-has-report": hasGptReport ? "true" : undefined, "data-has-thinking": thinking ? "true" : undefined };
   if (!showTitle) return <section className={stepClassName} {...stepAttributes}>{body}</section>;
-  return <details className={stepClassName} {...stepAttributes} open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
-    <summary><strong title={title}>步骤 {stepNumber} · {title}</strong><span className={`tool-state ${stepState === "failed" ? "error" : stepState}`}>{status}</span><ChevronDown size={14} /></summary>
+  return <details className={stepClassName} {...stepAttributes} open={expanded} onToggle={(event) => { const nextOpen = event.currentTarget.open; if (nextOpen !== expanded) setExpandedOverride(nextOpen); }}>
+    <summary><span className={`tool-step-indicator ${stepState}`} aria-hidden="true">{stepState === "complete" ? "✓" : stepState === "failed" ? "!" : ""}</span><strong title={title}>步骤 {stepNumber} · {title}</strong><span className={`tool-state ${stepState === "failed" ? "error" : stepState}`}>{status}</span><ChevronDown size={14} /></summary>
     {expanded && body}
   </details>;
 });
 
+function toolGroupOperation(call: ToolCall): { kind: string; summarize: (count: number) => string } | undefined {
+  switch (call.name) {
+    case "read": case "read_file": return { kind: "read", summarize: (count) => `查阅了 ${count} 个相关文件` };
+    case "view_image": return { kind: "image", summarize: (count) => `查看了 ${count} 张相关图片` };
+    case "write": case "write_file": case "edit": case "edit_file": return { kind: "update", summarize: (count) => `更新了 ${count} 个相关文件` };
+    case "bash": return { kind: "command", summarize: (count) => `执行了 ${count} 条命令` };
+    case "grep": return { kind: "search", summarize: (count) => `搜索了 ${count} 项内容` };
+    case "find": return { kind: "find", summarize: (count) => `查找了 ${count} 组文件` };
+    case "ls": return { kind: "directory", summarize: (count) => `查看了 ${count} 个目录` };
+    default: return undefined;
+  }
+}
+
 function toolGroupSummary(steps: { call: ToolCall }[]) {
+  if (steps.length > 2) {
+    const operation = toolGroupOperation(steps[0].call);
+    if (operation && steps.every(({ call }) => toolGroupOperation(call)?.kind === operation.kind))
+      return operation.summarize(steps.length);
+    return `执行了 ${steps.length} 个操作步骤`;
+  }
   const dispatch = steps.find((step) => dispatchToolNames.has(step.call.name));
   if (dispatch) return `${toolActionTitle(dispatch.call)}${steps.length > 1 ? " 等" : ""}`;
-  const titles = [...new Set(steps.slice(0, 3).map((step) => toolActionTitle(step.call)))];
-  return `${titles.join(" · ")}${steps.length > titles.length ? " 等" : ""}`;
+  const titles = [...new Set(steps.map((step) => toolActionTitle(step.call)))];
+  return titles.join(" · ");
 }
 
 function toolGroupDehydrationSummary(steps: { assistant: Message; call: ToolCall; result?: Message }[], assistantName = "Gemini") {
@@ -410,7 +430,10 @@ const ToolStepGroup = memo(function ToolStepGroup({ steps, assistantName = "Gemi
         <button type="button" className="tool-group-archive" disabled={disabled || live || steps.some((step) => !step.result)} onClick={toggleArchive} style={{ ...actionStyle, marginLeft: "auto", opacity: hovered ? 1 : 0 }}>{archived ? "恢复" : compacted ? "还原" : "精简"}</button>
         <ChevronDown size={14} aria-hidden="true" className="tool-group-chevron" />
       </summary>
-      {open && <div className="tool-timeline-thread">{steps.map((step, index) => <ToolStep key={`${step.call.id}-${step.assistant.id}`} {...step} stepNumber={index + 1} showTitle={steps.length > 1} running={step.call.id === activeCallId} onCall={onCall} onResult={onMessage} onImage={onImage} onDeleteCall={onDeleteCall} onAddToolResult={onAddToolResult} assistantName={assistantName} disabled={disabled} searchTerm={searchTerm} jumpedId={jumpedId} />)}</div>}
+      {open && <div className={`tool-timeline-thread ${steps.length > 1 ? "is-multistep" : ""}`}>{steps.map((step, index) => {
+        const running = step.call.id === activeCallId;
+        return <ToolStep key={`${step.call.id}-${step.assistant.id}`} {...step} stepNumber={index + 1} showTitle={steps.length > 1} running={running} defaultExpanded={index === steps.length - 1 || running} onCall={onCall} onResult={onMessage} onImage={onImage} onDeleteCall={onDeleteCall} onAddToolResult={onAddToolResult} assistantName={assistantName} disabled={disabled} searchTerm={searchTerm} jumpedId={jumpedId} />;
+      })}</div>}
     </details>
     {summaryOpen && <section className="tool-summary-card" style={{ margin: "3px 0 8px 21px", padding: "10px 12px", border: "1px solid color-mix(in srgb, var(--success) 22%, var(--border))", borderRadius: 10, background: "color-mix(in srgb, var(--success-soft) 40%, var(--surface))", boxShadow: "none" }}>
       <header style={{ display: "flex", minHeight: 24, alignItems: "center", gap: 8, marginBottom: 5 }}><strong style={{ color: "var(--text-muted)", fontSize: 9 }}>工具组摘要</strong><span style={{ color: "var(--text-subtle)", fontSize: 8 }}>保留在模型上下文中</span><div style={{ display: "flex", gap: 5, marginLeft: "auto" }}>{editingSummary ? <><button disabled={disabled} onClick={saveSummary}>保存</button><button disabled={disabled} onClick={() => { setSummaryDraft(summaryText); setEditingSummary(false); }}>取消</button></> : <button disabled={disabled} onClick={() => { setSummaryDraft(summaryText); setEditingSummary(true); }}>编辑</button>}<button disabled={disabled} aria-label="收起摘要" title="收起摘要" onClick={() => setSummaryOpen(false)}>×</button></div></header>

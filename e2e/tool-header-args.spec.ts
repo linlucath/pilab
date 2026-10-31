@@ -47,7 +47,7 @@ test("TOOL-09 tool headers show concise arguments and dispatch instructions abov
 
   const steps = group.locator(".tool-step");
   await expect(steps).toHaveCount(5);
-  await expect(group.locator(":scope > details > summary")).toContainText("派发任务 · quiet-wait-worker");
+  await expect(group.locator(":scope > details > summary > strong")).toHaveText("› 执行了 5 个操作步骤");
   const expected = [
     "步骤 1 · 查阅文件 · src/App.tsx",
     "步骤 2 · 执行命令 · npm run test",
