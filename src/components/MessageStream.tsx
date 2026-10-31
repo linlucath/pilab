@@ -51,6 +51,82 @@ function systemWakeNotice(content: string) {
   return match ? `📬 系统通知：工兵${match[1]}已交卷` : undefined;
 }
 function roleIcon(role: Message["role"]) { return role === "system" ? <Cpu size={14} /> : role === "assistant" ? <Sparkles size={14} /> : role === "tool" ? <Terminal size={14} /> : <UserRound size={14} />; }
+const thinkingTranslationCache = new Map<string, string>();
+const thinkingTranslationInFlight = new Map<string, Promise<string>>();
+function cachedThinkingTranslation(text: string) {
+  const translation = thinkingTranslationCache.get(text);
+  if (translation !== undefined) {
+    thinkingTranslationCache.delete(text);
+    thinkingTranslationCache.set(text, translation);
+  }
+  return translation;
+}
+async function requestThinkingTranslations(texts: string[]) {
+  const unique = [...new Set(texts)];
+  const missing = unique.filter((text) => cachedThinkingTranslation(text) === undefined && !thinkingTranslationInFlight.has(text));
+  if (missing.length) {
+    const request = fetch("/api/translate", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ texts: missing, targetLanguage: "zh-CN" }),
+    }).then(async (response) => {
+      if (!response.ok) return [] as string[];
+      const payload = await response.json() as { translations?: unknown };
+      return Array.isArray(payload.translations) ? payload.translations.map((value) => typeof value === "string" ? value : "") : [];
+    }).catch(() => [] as string[]);
+    missing.forEach((text, index) => {
+      const translation = request.then((translations) => {
+        const result = translations[index] || "";
+        if (result.trim()) {
+          thinkingTranslationCache.delete(text);
+          thinkingTranslationCache.set(text, result);
+          while (thinkingTranslationCache.size > 500) thinkingTranslationCache.delete(thinkingTranslationCache.keys().next().value!);
+        }
+        return result;
+      }).finally(() => thinkingTranslationInFlight.delete(text));
+      thinkingTranslationInFlight.set(text, translation);
+    });
+  }
+  const translations = await Promise.all(unique.map((text) =>
+    cachedThinkingTranslation(text) ?? thinkingTranslationInFlight.get(text) ?? Promise.resolve(""),
+  ));
+  return new Map(unique.map((text, index) => [text, translations[index]]));
+}
+function ThinkingParagraphs({ text, translateEnabled }: { text: string; translateEnabled: boolean }) {
+  const paragraphs = useMemo(() => text.split(/\n[ \t]*\n+/).map((paragraph) => paragraph.trim()).filter(Boolean), [text]);
+  const [translations, setTranslations] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    let active = true;
+    const translatable = paragraphs.filter((paragraph) => /[A-Za-z]/.test(paragraph));
+    setLoading(false);
+    if (!translateEnabled || !translatable.length) return () => { active = false; };
+    const timer = window.setTimeout(() => {
+      setLoading(true);
+      void requestThinkingTranslations(translatable).then((result) => {
+        if (!active) return;
+        setTranslations(Object.fromEntries(result));
+        setLoading(false);
+      });
+    }, 250);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [paragraphs, translateEnabled]);
+  return <div className="thinking-translation-content">{paragraphs.map((paragraph, index) => {
+    const english = /[A-Za-z]/.test(paragraph);
+    const translation = translations[paragraph] || cachedThinkingTranslation(paragraph) || "";
+    return <div className="thinking-paragraph" data-thinking-paragraph key={`${index}-${paragraph}`}>
+      <div className="thinking-original">{paragraph}</div>
+      {translation && <div className="thinking-translation-cn" lang="zh-CN"><span aria-hidden="true">↳</span><span>{translation}</span></div>}
+      {!translation && english && loading && <div className="thinking-translation-pending" role="status"><span aria-hidden="true">↳</span>翻译中…</div>}
+    </div>;
+  })}</div>;
+}
+function ThinkingDisclosure({ className, text, summary }: { className: string; text: string; summary: React.ReactNode }) {
+  const [expanded, setExpanded] = useState(false);
+  return <details className={className} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+    {summary}
+    <ThinkingParagraphs text={text} translateEnabled={expanded} />
+  </details>;
+}
 function toolIcon(name: string) {
   const metadata = subagentToolMetadata(name);
   if (metadata?.icon === "dispatch") return <Sparkles size={13} />;
@@ -173,7 +249,7 @@ const MessageCard = memo(function MessageCard({ message, index, total, busy, str
       </header>}
       {(editing || !!message.content.trim() || streaming) && <div className="message-content" style={{ padding: isUser ? 0 : "5px 0 10px", maxHeight: "none", overflow: "visible" }}>{editing ? <textarea ref={editor} aria-label={`编辑 ${roleName(message.role, assistantName)} 消息`} disabled={busy} value={draftContent} onChange={(event) => setDraftContent(event.target.value)} onKeyDown={onEditorKeyDown} /> : message.content.trim() ? <Markdown content={message.content} highlight={searchTerm} trailing={streaming ? <span className="streaming-cursor" aria-hidden="true" /> : undefined} /> : streaming ? <span className="streaming-cursor" aria-hidden="true" /> : null}{isUser && editing && <div className="message-editor-actions"><button type="button" className="text-button message-editor-cancel" disabled={busy} aria-label="取消编辑" title="Esc 取消" onClick={cancelEdit}>取消</button><button type="button" className="text-button message-editor-save" disabled={busy} aria-label="保存消息" title="⌘/Ctrl + Enter 保存" onClick={saveEdit}>保存</button></div>}</div>}
       {!!message.images?.length && <div className="image-gallery message-images" style={{ padding: isUser ? "0 14px 12px" : "0 0 12px" }}>{message.images.map((image) => <button key={image.file} title={image.name} onClick={() => onImage(image.file, image.name)}><img src={imageUrl(image.file)} alt={image.name} loading="lazy" /></button>)}</div>}
-      {message.role === "assistant" && thoughtContents.length > 0 && <details className="thinking-accordion" style={{ display: "inline-block", width: "fit-content", maxWidth: "100%", margin: "0 0 8px", border: 0, borderRadius: 0, background: "transparent" }}><summary style={{ display: "flex", width: "max-content", maxWidth: "100%", alignItems: "center", gap: 7, padding: "4px 9px", color: "var(--text-subtle)", fontSize: 9 }}><Brain size={13} />思考过程 <small>{thoughtContents.reduce((n, item) => n + item.length, 0).toLocaleString()} 字符</small></summary><pre>{thoughtContents.join("\n")}</pre></details>}
+      {message.role === "assistant" && thoughtContents.length > 0 && <ThinkingDisclosure className="thinking-accordion" text={thoughtContents.join("\n\n")} summary={<summary style={{ display: "flex", width: "max-content", maxWidth: "100%", alignItems: "center", gap: 7, padding: "4px 9px", color: "var(--text-subtle)", fontSize: 9 }}><Brain size={13} />思考过程 <small>{thoughtContents.reduce((n, item) => n + item.length, 0).toLocaleString()} 字符</small></summary>} />}
       {children}
     </article>
     <button className="insert-after" disabled={busy || editing} title="在此处插入消息" onClick={() => onAdd(index, "user")}><Plus size={13} /></button>
@@ -248,7 +324,7 @@ const ToolStep = memo(function ToolStep({ assistant, assistantName = "Gemini", c
   const args = parseToolArguments(call.arguments);
   const readsFromGpt = ["subagent_query", "gpt_session_wait", "gpt_session_read", "gpt_session_list", "gpt_session_logs"].includes(call.name);
   const dispatchRequests = subagentRequests(args);
-  const thinking = assistant.providerState?.thinking.map((item) => item.thinking.trim()).filter(Boolean).join("\n") || "";
+  const thinking = assistant.providerState?.thinking.map((item) => item.thinking.trim()).filter(Boolean).join("\n\n") || "";
   const status = running ? "执行中" : result ? result.isError ? "失败" : "完成" : "待返回";
   const title = toolActionTitle(call);
   const reply = result?.content ? readGptReply(result.content) : "";
@@ -274,7 +350,7 @@ const ToolStep = memo(function ToolStep({ assistant, assistantName = "Gemini", c
     </section>)}
     {readsFromGpt && result?.content && <section className="tool-readable-block tool-reply-block"><Markdown content={reply || result.content} highlight={searchTerm} /></section>}
     {!dispatchesToGpt && !readsFromGpt && result?.content && <section className={`tool-readable-block ${result.isError ? "error" : ""}`}><strong>工具结果</strong><Markdown content={result.content} highlight={searchTerm} /></section>}
-    {thinking && <details className="tool-step-thinking"><summary><Brain size={13} />{assistantName} 思考过程</summary><div className="tool-readable-block"><Markdown content={thinking} /></div></details>}
+    {thinking && <ThinkingDisclosure className="tool-step-thinking" text={thinking} summary={<summary><Brain size={13} />{assistantName} 思考过程</summary>} />}
     {!!result?.images?.length && <div className="image-gallery tool-image-gallery">{result.images.map((image) => <button key={image.file} title={image.name} onClick={() => onImage(image.file, image.name)}><img src={imageUrl(image.file)} alt={image.name} loading="lazy" /></button>)}</div>}
     <details className="tool-raw-details">
       <summary>原始参数与调用数据</summary>
@@ -674,7 +750,7 @@ export function MessageStream(props: Props) {
     if (message.role === "assistant" && message.toolCalls?.length) {
       const own = message.toolCalls.map((call, callIndex) => ({ assistant: message, call, callIndex, result: byCallId.get(wireToolCallId(call.id)) }));
       const hasVisibleMessage = !!message.content.trim() || !!message.images?.length;
-      const liveThinking = streamingThinking && props.busy && props.streamingId === message.id ? <div className="live-thinking" role="status"><details><summary><Brain size={14} />思考过程 · 实时</summary><pre>{streamingThinking}</pre></details></div> : null;
+      const liveThinking = streamingThinking && props.busy && props.streamingId === message.id ? <div className="live-thinking" role="status"><ThinkingDisclosure className="live-thinking-disclosure" text={streamingThinking} summary={<summary><Brain size={14} />思考过程 · 实时</summary>} /></div> : null;
       if (hasVisibleMessage || liveThinking) content.push(renderCard(message, index, liveThinking));
       const steps = [...own]; let cursor = index + 1;
       while (cursor < props.messages.length) {
@@ -688,7 +764,7 @@ export function MessageStream(props: Props) {
       content.push(renderGroup(steps)); index = cursor; continue;
     }
     if (message.role === "assistant" && props.busy && props.streamingId === message.id) {
-      const liveThinking = streamingThinking ? <div className="live-thinking" role="status"><details><summary><Brain size={14} />思考过程 · 实时</summary><pre>{streamingThinking}</pre></details></div> : null;
+      const liveThinking = streamingThinking ? <div className="live-thinking" role="status"><ThinkingDisclosure className="live-thinking-disclosure" text={streamingThinking} summary={<summary><Brain size={14} />思考过程 · 实时</summary>} /></div> : null;
       content.push(renderCard(message, index, liveThinking)); index++; continue;
     }
     content.push(renderCard(message, index)); index++;

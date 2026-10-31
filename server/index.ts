@@ -17,6 +17,7 @@ import {
 } from "./pi-sync";
 import { clearLogs, logEvent, queryLogs, type LogCategory, type LogLevel } from "./logger";
 import { isE2eMode, resetE2eMockScript, setE2eMockScript } from "./e2e-mock";
+import { createTranslationRouter } from "./translation";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataRoot = path.resolve(process.env.PI_LAB_DATA_DIR || root);
 const app = express();
@@ -47,6 +48,7 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json({ limit: "5mb" }));
+app.use("/api/translate", createTranslationRouter());
 app.post("/api/images/upload", express.raw({ type: "application/octet-stream", limit: "20mb" }), async (req, res) => {
   try {
     if (!Buffer.isBuffer(req.body) || !req.body.length) throw new Error("图片上传内容为空。");
