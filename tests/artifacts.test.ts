@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import {
   listArtifacts,
   MAX_ARTIFACT_BYTES,
@@ -115,6 +116,59 @@ test("artifact reads and writes reject symlinks that point outside the session",
   }
 });
 
+test("read_artifact numbers lines, supports pagination, and uses Pi truncation limits", async () => {
+  const { temp, root } = await tempArtifactsRoot();
+  try {
+    await writeArtifact("session-a", "pages.txt", "one\ntwo\nthree\nfour", root);
+    const readTool = createArtifactTools("session-a", root).find((tool) => tool.name === "read_artifact")!;
+    const page = await readTool.execute("page", { path: "pages.txt", offset: 2, limit: 1 });
+    assert.equal(page.content[0].type === "text" ? page.content[0].text : "", "2 | two\n\n[2 more lines in file. Use offset=3 to continue.]");
+    const lastPage = await readTool.execute("last-page", { path: "pages.txt", offset: 3, limit: 2 });
+    assert.equal(lastPage.content[0].type === "text" ? lastPage.content[0].text : "", "3 | three\n4 | four");
+    await assert.rejects(readTool.execute("bad-offset", { path: "pages.txt", offset: 5 }), /beyond end of file/);
+
+    const manyLines = Array.from({ length: DEFAULT_MAX_LINES + 5 }, (_, index) => `line-${index + 1}`).join("\n");
+    await writeArtifact("session-a", "many-lines.txt", manyLines, root);
+    const lineResult = await readTool.execute("many-lines", { path: "many-lines.txt" });
+    const lineText = lineResult.content[0].type === "text" ? lineResult.content[0].text : "";
+    assert.match(lineText, new RegExp(`\\[Showing lines 1-${DEFAULT_MAX_LINES} of ${DEFAULT_MAX_LINES + 5}\\.`));
+    assert.doesNotMatch(lineText, new RegExp(`${DEFAULT_MAX_LINES + 1} \\| line-${DEFAULT_MAX_LINES + 1}`));
+
+    const manyBytes = Array.from({ length: 8 }, (_, index) => `${index}-${"x".repeat(9_000)}`).join("\n");
+    await writeArtifact("session-a", "many-bytes.txt", manyBytes, root);
+    const byteResult = await readTool.execute("many-bytes", { path: "many-bytes.txt" });
+    const byteText = byteResult.content[0].type === "text" ? byteResult.content[0].text : "";
+    const body = byteText.split("\n\n[Showing lines", 1)[0];
+    assert.ok(Buffer.byteLength(body, "utf8") <= DEFAULT_MAX_BYTES);
+    assert.match(byteText, /50\.0KB limit/);
+
+    await writeArtifact("session-a", "huge-line.txt", `${"x".repeat(DEFAULT_MAX_BYTES + 10)}\nnext`, root);
+    const hugeResult = await readTool.execute("huge-line", { path: "huge-line.txt" });
+    const hugeText = hugeResult.content[0].type === "text" ? hugeResult.content[0].text : "";
+    assert.match(hugeText, /^\[Line 1 is .* exceeds 50\.0KB limit\.\]$/);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("read_artifact handles empty files and rejects invalid page bounds", async () => {
+  const { temp, root } = await tempArtifactsRoot();
+  try {
+    const readTool = createArtifactTools("session-a", root).find((tool) => tool.name === "read_artifact")!;
+    await writeArtifact("session-a", "empty.txt", "", root);
+    const empty = await readTool.execute("empty", { path: "empty.txt", offset: 1 });
+    assert.equal(empty.content[0].type === "text" ? empty.content[0].text : "", "");
+    await assert.rejects(readTool.execute("empty-oob", { path: "empty.txt", offset: 2 }), /beyond end of file/);
+
+    await writeArtifact("session-a", "one-line.txt", "line", root);
+    await assert.rejects(readTool.execute("zero-offset", { path: "one-line.txt", offset: 0 }), /Offset must be a positive integer/);
+    await assert.rejects(readTool.execute("zero-limit", { path: "one-line.txt", limit: 0 }), /Limit must be a positive integer/);
+    await assert.rejects(readTool.execute("fractional-offset", { path: "one-line.txt", offset: 1.5 }), /Offset must be a positive integer/);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
 test("read_artifact and write_artifact tools are bound to their owning session", async () => {
   const { temp, root } = await tempArtifactsRoot();
   try {
@@ -125,7 +179,7 @@ test("read_artifact and write_artifact tools are bound to their owning session",
     const writeResult = await writeTool.execute("write-call", { path: "research/summary.md", content: "Owner-only finding" });
     assert.match(writeResult.content[0].type === "text" ? writeResult.content[0].text : "", /18 bytes/);
     const readResult = await readTool.execute("read-call", { path: "research/summary.md" });
-    assert.equal(readResult.content[0].type === "text" ? readResult.content[0].text : "", "Owner-only finding");
+    assert.equal(readResult.content[0].type === "text" ? readResult.content[0].text : "", "1 | Owner-only finding");
 
     const otherSessionRead = createArtifactTools("other-session", root).find((tool) => tool.name === "read_artifact")!;
     await assert.rejects(otherSessionRead.execute("other-call", { path: "research/summary.md" }), /Artifact file not found/);
@@ -136,7 +190,7 @@ test("read_artifact and write_artifact tools are bound to their owning session",
       const fallbackRead = fallbackTools.find((tool) => tool.name === "read_artifact")!;
       await fallbackWrite.execute("default-write", { path: "fallback.md", content: "Default-isolated result" });
       const fallbackResult = await fallbackRead.execute("default-read", { path: "fallback.md" });
-      assert.equal(fallbackResult.content[0].type === "text" ? fallbackResult.content[0].text : "", "Default-isolated result");
+      assert.equal(fallbackResult.content[0].type === "text" ? fallbackResult.content[0].text : "", "1 | Default-isolated result");
     }
     const namedSessionRead = createArtifactTools("owner-session", root).find((tool) => tool.name === "read_artifact")!;
     await assert.rejects(namedSessionRead.execute("named-read", { path: "fallback.md" }), /Artifact file not found/);

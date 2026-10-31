@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { Type } from "typebox";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Settings } from "../shared/schema";
@@ -8,7 +9,7 @@ import type { ConversationHistory } from "../extensions/pi-gpt-subagent/tools";
 import { createGptSessionTools } from "./gpt-subagent";
 import { createViewImageTool } from "../extensions/pi-gpt-subagent/images";
 import { projectImages } from "./images";
-import { readArtifact, writeArtifact } from "./artifacts";
+import { formatArtifactRead, readArtifact, writeArtifact } from "./artifacts";
 
 export function createArtifactTools(ownerSessionId?: string, artifactsRoot?: string): AgentTool<TSchema, unknown>[] {
   const root = artifactsRoot;
@@ -16,15 +17,20 @@ export function createArtifactTools(ownerSessionId?: string, artifactsRoot?: str
     {
       name: "read_artifact",
       label: "读取会话成果",
-      description: "读取当前会话专属 artifacts 成果目录中的文本文件内容（用于查阅工兵写入的调研报告、架构文档等）",
+      description: `读取当前会话专属 artifacts 成果目录中的文本文件；结果带行号，最多输出 ${DEFAULT_MAX_LINES} 行或 ${DEFAULT_MAX_BYTES / 1024}KB。可用 offset 和 limit 分页读取。`,
       parameters: Type.Object({
         path: Type.String({ minLength: 1, maxLength: 1024, description: "相对于当前会话 artifacts 目录的文件路径，例如 research/summary.md。" }),
+        offset: Type.Optional(Type.Integer({ minimum: 1, description: "起始行号（从 1 开始）" })),
+        limit: Type.Optional(Type.Integer({ minimum: 1, description: "最多读取的行数" })),
       }, { additionalProperties: false }),
       execute: async (_id: string, rawArgs: unknown, signal?: AbortSignal) => {
         if (signal?.aborted) throw new Error("读取会话成果已取消。");
-        const args = rawArgs as { path: string };
+        const args = rawArgs as { path: string; offset?: number; limit?: number };
         const content = await readArtifact(ownerSessionId, args.path, root);
-        return { content: [{ type: "text", text: content }], details: { path: args.path } };
+        return {
+          content: [{ type: "text", text: formatArtifactRead(content, args.offset, args.limit) }],
+          details: { path: args.path, ...(args.offset !== undefined ? { offset: args.offset } : {}), ...(args.limit !== undefined ? { limit: args.limit } : {}) },
+        };
       },
     },
     {

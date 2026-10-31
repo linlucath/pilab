@@ -3,6 +3,7 @@ import { lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_ARTIFACTS_ROOT = path.join(projectRoot, "artifacts");
@@ -172,6 +173,47 @@ export async function readArtifact(
 }
 
 /** Write a UTF-8 text artifact, creating safe parent directories as needed. */
+function splitArtifactLines(content: string) {
+  if (content.length === 0) return [];
+  const lines = content.split("\n");
+  if (content.endsWith("\n")) lines.pop();
+  return lines;
+}
+
+/** Number and bound text returned by the read_artifact tool, using Pi's native truncation limits. */
+export function formatArtifactRead(content: string, offset?: number, limit?: number): string {
+  if (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 1))
+    throw new Error("Offset must be a positive integer.");
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1))
+    throw new Error("Limit must be a positive integer.");
+
+  const lines = splitArtifactLines(content);
+  const start = (offset ?? 1) - 1;
+  if (start >= Math.max(lines.length, 1))
+    throw new Error(`Offset ${offset} is beyond end of file (${lines.length} lines total).`);
+
+  const selected = lines.slice(start, limit === undefined ? undefined : start + limit);
+  const numbered = selected.map((line, index) => `${start + index + 1} | ${line}`).join("\n");
+  const truncation = truncateHead(numbered);
+  const totalLines = lines.length;
+  let output = truncation.content;
+
+  if (truncation.firstLineExceedsLimit) {
+    const size = Buffer.byteLength(numbered.split("\n", 1)[0] ?? "", "utf8");
+    output = `[Line ${start + 1} is ${formatSize(size)}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit.]`;
+  } else if (truncation.truncated) {
+    const end = start + truncation.outputLines;
+    const nextOffset = end + 1;
+    output += truncation.truncatedBy === "lines"
+      ? `\n\n[Showing lines ${start + 1}-${end} of ${totalLines}. Use offset=${nextOffset} to continue.]`
+      : `\n\n[Showing lines ${start + 1}-${end} of ${totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Use offset=${nextOffset} to continue.]`;
+  } else if (limit !== undefined && start + selected.length < totalLines) {
+    const remaining = totalLines - (start + selected.length);
+    output += `\n\n[${remaining} more lines in file. Use offset=${start + selected.length + 1} to continue.]`;
+  }
+  return output;
+}
+
 export async function writeArtifact(
   sessionId: string | undefined,
   relativePath: string,
