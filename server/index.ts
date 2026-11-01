@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { generate, validateTranscript } from "./engine";
 import { MAX_WORKSPACE_FILE_BYTES, runSchema } from "../shared/schema";
 import { piStatus } from "./pi-subscription";
+import { DEFAULT_SUBAGENT_MODELS } from "../shared/subagent-models";
 import { cleanupIdleGptSessions, closeGptSession, interruptGptSession, listGptSessions, readGptSessionMessages, readGptSessionTranscript, sendGptSessionGuidance, shutdownGptSessions } from "./gpt-subagent";
 import { ProjectWorkspaceStore } from "./workspace";
 import { ensureSessionWorkspace } from "./session-workspaces";
@@ -319,6 +320,9 @@ app.get("/api/pi-status", async (_req, res) => {
   } catch {
     res.status(503).json({
       connected: false,
+      subagentConnected: false,
+      models: [],
+      subagentModels: DEFAULT_SUBAGENT_MODELS,
       error: "无法读取 Pi 登录状态，请检查本机 Pi 配置。",
     });
   }

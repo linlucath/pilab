@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CircleHelp, X } from "lucide-react";
 import { type Message, type ReasoningEffort, type Settings, type ToolCall } from "../shared/schema";
 import type { GptSessionSummary } from "../shared/gpt-sessions";
+import { DEFAULT_SUBAGENT_MODELS, type SubagentModelOption } from "../shared/subagent-models";
 import { addToolResult as createToolResult, completeToolBranchEnd, deleteMessageWithToolPairs, deleteToolCallWithResult, patchMessageWithToolPairs, patchToolCallWithResult, toolHistoryError } from "../shared/tool-history";
 import { useProjectWorkspace, type Run, type Session, type Workspace } from "./workspace-store";
 import { newSession, uid, loadLegacyWorkspace } from "./utils/session";
@@ -15,8 +16,9 @@ import { ThreadTabs } from "./components/ThreadTabs";
 import { installGlobalErrorLogging, reportClientDiagnostic } from "./utils/logger";
 
 type PiConnection = {
-  connected: boolean; provider: string; defaultModel?: string;
+  connected: boolean; subagentConnected?: boolean; provider: string; defaultModel?: string;
   models: { id: string; name: string; reasoningEfforts: ReasoningEffort[]; reasoningEffortMap?: Partial<Record<ReasoningEffort, string | null>> }[];
+  subagentModels?: SubagentModelOption[];
 };
 type ToolActivity = { id?: string; name: string; arguments: unknown; output: string };
 type WorkerWakeNotice = { sessionId: string; cwd: string; names: string[] };
@@ -1089,7 +1091,7 @@ export default function App() {
           {selectedWorker && workerMessagesError && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>工兵对话失败</strong><span>{workerMessagesError}</span></div><button onClick={() => setWorkerMessagesError("")} aria-label="关闭工兵对话错误">关闭<X size={14} /></button></div>}
           <MessageStream sessionId={`${session.id}:${selectedWorker?.id || "main"}`} scrollRequest={scrollRequest} searchJump={!selectedWorker && searchJump?.sessionId === session.id ? { ...searchJump, sessionId: `${session.id}:main` } : undefined} messages={currentMessages} assistantName={selectedWorker ? `${selectedWorker.model} · ${selectedWorker.name}` : "Gemini"} busy={selectedWorker ? false : busy} compactTools={compactTools} streamingId={selectedWorker ? undefined : streamingId} streamingThinking={selectedWorker ? undefined : streamingThinking} toolActivity={selectedWorker ? undefined : toolActivity} gptWorkers={selectedWorker ? [] : visibleGptSessions} onMessage={onMessage} onCall={onCall} onAdd={onAdd} onMove={onMove} onDelete={onDelete} onDeleteCall={onDeleteCall} onAddToolResult={onAddToolResult} onBranch={onBranch} onCopy={onCopyMessage} />
           {!selectedWorker && runErrors[session.id] && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>本次运行失败</strong><span>{runErrors[session.id]}</span></div><button onClick={() => setSessionRunError(session.id)} aria-label="关闭运行错误">关闭<X size={14} /></button></div>}
-          <ComposerBar key={session.id} busy={selectedWorker ? false : busy} workerMode={!!selectedWorker} placeholder={selectedWorker ? `给工兵发送直接指导 (Steer)…` : undefined} sessionId={session.id} workingDirectory={session.settings.workingDirectory} toolName={selectedWorker ? undefined : toolActivity?.name} messageCount={currentMessages.length} contextTokens={currentContextMetrics.context} savedPercent={currentContextMetrics.savedPercent} settings={session.settings} models={piConnection?.models || []} defaultModel={piConnection?.defaultModel} piConnected={piConnection?.connected} onSetting={updateSetting} onNotice={setNotice} onRefreshModels={() => void refreshPiStatus()} backgroundWorkers={selectedWorker ? [] : visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={selectedWorker ? undefined : workerWakeNotice} onDismissWake={() => dismissSessionWorkerWake(session.id)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={selectedWorker ? sendWorkerGuidance : sendMessage} onRun={() => { if (!selectedWorker) void run(); }} onStop={() => { if (!selectedWorker) void abortRun(); }} />
+          <ComposerBar key={session.id} busy={selectedWorker ? false : busy} workerMode={!!selectedWorker} placeholder={selectedWorker ? `给工兵发送直接指导 (Steer)…` : undefined} sessionId={session.id} workingDirectory={session.settings.workingDirectory} toolName={selectedWorker ? undefined : toolActivity?.name} messageCount={currentMessages.length} contextTokens={currentContextMetrics.context} savedPercent={currentContextMetrics.savedPercent} settings={session.settings} models={piConnection?.models || []} subagentModels={piConnection?.subagentModels || DEFAULT_SUBAGENT_MODELS} subagentConnected={piConnection?.subagentConnected ?? false} defaultModel={piConnection?.defaultModel} piConnected={piConnection?.connected} onSetting={updateSetting} onNotice={setNotice} onRefreshModels={() => void refreshPiStatus()} backgroundWorkers={selectedWorker ? [] : visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={selectedWorker ? undefined : workerWakeNotice} onDismissWake={() => dismissSessionWorkerWake(session.id)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={selectedWorker ? sendWorkerGuidance : sendMessage} onRun={() => { if (!selectedWorker) void run(); }} onStop={() => { if (!selectedWorker) void abortRun(); }} />
         </section>
       </div>
     </main>

@@ -63,7 +63,7 @@ export async function agentTools(
   if (!path.isAbsolute(cwd) || !(await stat(cwd)).isDirectory())
     throw new Error("工具工作目录必须是存在的绝对路径目录。");
   const tools: AgentTool<any>[] = [
-    ...createGptSessionTools(cwd, getHistory, ownerSessionId),
+    ...createGptSessionTools(cwd, getHistory, ownerSessionId, settings.defaultSubagentModel, settings.defaultSubagentThinkingLevel),
     createViewImageTool(() => projectImages, () => cwd) as unknown as AgentTool<TSchema, unknown>,
     ...createArtifactTools(ownerSessionId),
   ];

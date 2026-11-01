@@ -1,18 +1,26 @@
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import type { TSchema } from "typebox";
-import { GptSessionManager, type SessionInfo } from "./sessions.ts";
+import { formatWorkerModelId, GptSessionManager, parseWorkerModelId, type SessionInfo } from "./sessions.ts";
 import { nativeTransportFactory, sessionStorageDir } from "./native.ts";
 import { answerConversation, conversationSummary, createSessionTools, formatConversationRead, readConversation, type SessionAccess } from "./tools.ts";
 import { createViewImageTool, latestImageContext, LocalImageStore, retainToolImages } from "./images.ts";
 
+export function resolveTerminalSubagentModel(
+  modelRegistry: Pick<ExtensionContext["modelRegistry"], "find" | "hasConfiguredAuth">,
+  requested?: string,
+) {
+  const selection = requested?.trim() || process.env.PI_LAB_GPT_SUBAGENT_MODEL?.trim() || "gpt-6-luna";
+  const { provider, id } = parseWorkerModelId(selection);
+  const model = modelRegistry.find(provider, id);
+  if (!model) throw new Error(`Pi 中找不到工兵模型：${selection || "模型目录为空"}`);
+  if (!modelRegistry.hasConfiguredAuth(model))
+    throw new Error(`请先在 Pi 中为 ${model.provider} 配置认证。`);
+  return formatWorkerModelId(model);
+}
+
 function resolveModel(ctx: ExtensionContext, requested?: string) {
-  const id = requested || process.env.PI_LAB_GPT_SUBAGENT_MODEL?.trim() || "gpt-6-luna";
-  const model = id ? ctx.modelRegistry.find("openai-codex", id) : undefined;
-  if (!model) throw new Error(`Pi 中找不到 GPT 模型：${id || "模型目录为空"}`);
-  if (!ctx.modelRegistry.getProviderAuthStatus("openai-codex").configured)
-    throw new Error("请先在 Pi 中通过 /login 登录 OpenAI Codex。");
-  return model.id;
+  return resolveTerminalSubagentModel(ctx.modelRegistry, requested);
 }
 
 export default function piGptSessions(pi: ExtensionAPI) {

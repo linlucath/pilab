@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, RefreshCw, RotateCcw, Search, Sparkles, Zap } from "lucide-react";
-import { getReasoningEffort, reasoningEfforts, type ReasoningEffort, type Settings } from "../../shared/schema";
+import { getReasoningEffort, nearestSupportedReasoningEffort, reasoningEfforts, type ReasoningEffort, type Settings } from "../../shared/schema";
 
 export type ModelOption = {
   id: string;
@@ -82,10 +82,7 @@ export function ComposerModelControls({ settings, models, defaultModel, piConnec
     onSetting("model", model.id);
     const allowed = model.reasoningEfforts;
     if (allowed.length && !allowed.includes(currentEffort)) {
-      const supported = new Set(allowed);
-      const currentIndex = effortOrder.indexOf(currentEffort);
-      const adjusted = effortOrder.filter((effort) => supported.has(effort))
-        .sort((left, right) => Math.abs(effortOrder.indexOf(left) - currentIndex) - Math.abs(effortOrder.indexOf(right) - currentIndex))[0] || "off";
+      const adjusted = nearestSupportedReasoningEffort(currentEffort, allowed);
       onSetting("reasoningEffort", adjusted);
       onSetting("reasoning", adjusted !== "off");
       onNotice(`${model.name} 不支持 ${effortLabels[currentEffort]} 推理强度，已自动调整为 ${effortLabels[adjusted]}。`);

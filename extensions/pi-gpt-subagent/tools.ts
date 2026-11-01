@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AgentToolResult, AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
 import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
+import type { ReasoningEffort } from "../../shared/schema";
 import { Type } from "typebox";
 import type { Static, TSchema } from "typebox";
 import { subagentToolUi, type SubagentToolUiMetadata } from "./tool-ui.ts";
@@ -13,6 +14,8 @@ import {
 export interface SessionAccess {
   manager: GptSessionManager;
   resolveModel(requested?: string): Promise<string> | string;
+  thinkingLevel?: ReasoningEffort;
+  resolveThinkingLevel?(model: string, requested: ReasoningEffort): Promise<ReasoningEffort> | ReasoningEffort;
 }
 export type ConversationHistory = () => readonly ConversationHistoryMessage[];
 /** Pi-native tool shape shared with extension tools, without erasing inputs to `any`. */
@@ -378,31 +381,30 @@ async function dispatch(input: DispatchInput, context: ToolContext, signal?: Abo
     const name = dispatchTaskName(task);
     const existing = current.get(name);
     const action = !task.action || task.action === "auto" ? (existing ? "send" : "create") : task.action;
-    if (action === "create") {
-      if (existing) throw new Error(`工兵「${name}」已存在；请用 action=send 继续任务，或换一个名称。`);
-      const session = await manager.create({
-        name,
-        ownerSessionId: owner,
-        rolePreset: task.rolePreset,
-        cwd: task.cwd,
-        model: await resolveModel(task.model),
-      });
-      return { task, name, action, session };
-    }
-    if (!existing) throw new Error(`找不到工兵「${name}」；请先以 action=create 派发。`);
-    manager.assertOwner(existing.id, owner);
-    return { task, name, action, session: existing };
+    if (action === "create" && existing)
+      throw new Error(`工兵「${name}」已存在；请用 action=send 继续任务，或换一个名称。`);
+    if (action !== "create" && !existing)
+      throw new Error(`找不到工兵「${name}」；请先以 action=create 派发。`);
+    if (existing && action !== "create") manager.assertOwner(existing.id, owner);
+    const model = action === "create" ? await resolveModel(task.model) : existing!.model;
+    const requestedLevel = context.thinkingLevel ?? "max";
+    const thinkingLevel = await context.resolveThinkingLevel?.(model, requestedLevel) ?? requestedLevel;
+    const session = action === "create" ? await manager.create({
+      name, ownerSessionId: owner, rolePreset: task.rolePreset, cwd: task.cwd, model, thinkingLevel,
+    }) : existing!;
+    return { task, name, action, session, thinkingLevel };
   }));
   const ready = settledValues(prepared);
   const failures = settledFailures(prepared, tasks.map(dispatchTaskName));
   if (!ready.length) return response({ mode, started: [], failures }, failures.map((item) => `${item.name} · 失败：${item.error}`).join("\n") || "没有启动任何工兵。");
 
-  const startPromise = Promise.allSettled(ready.map(({ task, name }) => manager.send(
+  const startPromise = Promise.allSettled(ready.map(({ task, name, thinkingLevel }) => manager.send(
     name,
     task.message,
     task.sendMode ?? "steer",
     task.rolePreset,
     owner,
+    thinkingLevel,
   )));
   if (mode === "async") {
     const startedResults = await startPromise;
@@ -453,9 +455,12 @@ type LegacyRespondInput = Static<typeof legacyRespondSchema>;
 
 async function legacyCreate(input: LegacyCreateInput, context: ToolContext) {
   if (!input.message) {
+    const model = await context.resolveModel(input.model);
+    const requestedLevel = context.thinkingLevel ?? "max";
+    const thinkingLevel = await context.resolveThinkingLevel?.(model, requestedLevel) ?? requestedLevel;
     const session = await context.manager.create({
       name: input.name, rolePreset: input.rolePreset, ownerSessionId: context.owner,
-      cwd: input.cwd, model: await context.resolveModel(input.model),
+      cwd: input.cwd, model, thinkingLevel,
     });
     if (input.wait) {
       const waited = await context.manager.wait([session.name], context.signal, "any");

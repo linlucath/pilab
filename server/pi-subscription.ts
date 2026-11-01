@@ -3,6 +3,8 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { DEFAULT_SUBAGENT_MODELS, formatSubagentModelId } from "../shared/subagent-models";
+import type { ReasoningEffort } from "../shared/schema";
 
 // Pi owns its credential file and the cross-process refresh lock. Never copy tokens into app state.
 const agentDir =
@@ -38,17 +40,28 @@ export function piRuntime() {
 }
 // Keep existing GPT selections compatible; qualify other providers to avoid ID collisions.
 export function piModelId(model: { provider: string; id: string }) {
-  return model.provider === "openai-codex" ? model.id : `${model.provider}/${model.id}`;
+  return formatSubagentModelId(model);
 }
-export function resolvePiModel(models: ModelRuntime, id: string) {
+export function resolvePiModel(models: Pick<ModelRuntime, "getModel">, id: string) {
   const slash = id.indexOf("/");
   return slash < 0
     ? models.getModel("openai-codex", id)
     : models.getModel(id.slice(0, slash), id.slice(slash + 1));
 }
+export function configuredPiModels(models: Pick<ModelRuntime, "getModels" | "hasConfiguredAuth">) {
+  return models.getModels().filter((model) => models.hasConfiguredAuth(model.provider));
+}
+export function subagentModelOptions(catalog: readonly { id: string; name: string; provider: string; reasoningEfforts?: ReasoningEffort[] }[]) {
+  return catalog.map((model) => ({
+    id: piModelId(model),
+    name: model.name,
+    provider: model.provider,
+    ...(model.reasoningEfforts ? { reasoningEfforts: [...model.reasoningEfforts] } : {}),
+  }));
+}
 export async function piStatus() {
   if (process.env.PI_LAB_E2E === "1")
-    return { connected: false, models: [] };
+    return { connected: false, subagentConnected: false, models: [], subagentModels: DEFAULT_SUBAGENT_MODELS.map((model) => ({ ...model })) };
   const models = await piRuntime();
   let selectedModel: string | undefined;
   try {
@@ -60,10 +73,16 @@ export async function piStatus() {
   } catch {
     /* Missing preferences do not invalidate a logged-in subscription. */
   }
-  const catalog = models.getModels().filter((m) => models.hasConfiguredAuth(m.provider));
+  const catalog = configuredPiModels(models);
   const preferred = catalog.find((m) => piModelId(m) === selectedModel) || catalog[0];
+  const subagentModels = subagentModelOptions(catalog.map((model) => ({
+    ...model,
+    reasoningEfforts: getSupportedThinkingLevels(model),
+  })));
+  const subagentConnected = subagentModels.length > 0;
   return {
     connected: catalog.length > 0,
+    subagentConnected,
     provider: preferred?.provider,
     defaultModel: preferred && piModelId(preferred),
     models: catalog.map((m) => ({
@@ -72,5 +91,6 @@ export async function piStatus() {
       reasoningEfforts: getSupportedThinkingLevels(m),
       reasoningEffortMap: m.thinkingLevelMap,
     })),
+    subagentModels,
   };
 }

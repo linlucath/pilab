@@ -27,6 +27,13 @@ const message = (
   enabled = true,
 ): Message => ({ id: crypto.randomUUID(), role, content, enabled });
 test("reasoning effort keeps legacy switch settings and rejects invalid values", () => {
+  const legacySettings = { ...defaults } as Partial<typeof defaults>;
+  delete legacySettings.defaultSubagentModel;
+  delete legacySettings.defaultSubagentThinkingLevel;
+  assert.equal(settingsSchema.parse(legacySettings).defaultSubagentModel, "gpt-6-luna");
+  assert.equal(settingsSchema.parse(legacySettings).defaultSubagentThinkingLevel, "max");
+  assert.equal(settingsSchema.parse({ ...defaults, defaultSubagentModel: " gpt-5.3-codex " }).defaultSubagentModel, "gpt-5.3-codex");
+  assert.equal(settingsSchema.parse({ ...defaults, defaultSubagentThinkingLevel: "high" }).defaultSubagentThinkingLevel, "high");
   assert.equal(
     getReasoningEffort(settingsSchema.parse({ ...defaults, reasoningEffort: undefined, reasoning: true })),
     "medium",

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEFAULT_SUBAGENT_MODEL_ID } from "./subagent-models";
 export const roles = [
   "system",
   "developer",
@@ -16,6 +17,12 @@ export const reasoningEfforts = [
   "max",
 ] as const;
 export type ReasoningEffort = (typeof reasoningEfforts)[number];
+export function nearestSupportedReasoningEffort(effort: ReasoningEffort, supported: readonly ReasoningEffort[]): ReasoningEffort {
+  if (!supported.length) return effort;
+  const currentIndex = reasoningEfforts.indexOf(effort);
+  return reasoningEfforts.filter((candidate) => supported.includes(candidate))
+    .sort((left, right) => Math.abs(reasoningEfforts.indexOf(left) - currentIndex) - Math.abs(reasoningEfforts.indexOf(right) - currentIndex))[0] || "off";
+}
 export const toolCallSchema = z.object({
   id: z.string().min(1).max(300),
   name: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
@@ -91,6 +98,8 @@ export const settingsSchema = z.object({
       "仅支持 HTTP(S) 地址",
     ),
   model: z.string().trim().min(1).max(200),
+  defaultSubagentModel: z.string().trim().min(1).max(200).optional().default(DEFAULT_SUBAGENT_MODEL_ID),
+  defaultSubagentThinkingLevel: z.enum(reasoningEfforts).optional().default("max"),
   apiKey: z.string().max(4000).optional().default(""),
   temperature: z.number().min(0).max(2),
   maxTokens: z.number().int().min(1).max(128_000),
@@ -122,6 +131,8 @@ export const defaults: Settings = {
   protocol: "openai-completions",
   baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
   model: "gemini-3.8-flash",
+  defaultSubagentModel: DEFAULT_SUBAGENT_MODEL_ID,
+  defaultSubagentThinkingLevel: "max",
   apiKey: "",
   temperature: 0.7,
   maxTokens: 16384,

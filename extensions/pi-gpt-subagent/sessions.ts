@@ -8,6 +8,7 @@ import { stat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
+import type { ReasoningEffort } from "../../shared/schema";
 import { gptWorkerRoleLabels } from "./persona.ts";
 import type { RpcTransport } from "./rpc.ts";
 
@@ -23,6 +24,17 @@ export function boundSessionReply(text: string, truncated = false) {
 export const rolePresets = ["scout", "experimenter", "implementer"] as const;
 export type GptRolePreset = (typeof rolePresets)[number];
 export const rolePresetLabels: Record<GptRolePreset, string> = gptWorkerRoleLabels;
+
+export function parseWorkerModelId(value: string) {
+  const slash = value.indexOf("/");
+  return slash < 0
+    ? { provider: "openai-codex", id: value }
+    : { provider: value.slice(0, slash), id: value.slice(slash + 1) };
+}
+
+export function formatWorkerModelId(model: { provider: string; id: string }) {
+  return model.provider === "openai-codex" ? model.id : `${model.provider}/${model.id}`;
+}
 export interface SessionInfo {
   id: string;
   name: string;
@@ -31,6 +43,7 @@ export interface SessionInfo {
   ownerSessionId?: string;
   cwd: string;
   model: string;
+  thinkingLevel?: ReasoningEffort;
   status: SessionStatus;
   createdAt: number;
   updatedAt: number;
@@ -61,6 +74,9 @@ export interface WorkerSpec {
   ownerSessionId?: string;
   cwd: string;
   model: string;
+  provider: string;
+  modelId: string;
+  thinkingLevel?: ReasoningEffort;
   sessionDirectory: string;
   sessionFile?: string;
 }
@@ -244,9 +260,10 @@ export class GptSessionManager {
     if (this.disposed) return Promise.reject(new Error("GPT session manager is closed."));
     entry.info.status = "starting";
     entry.info.error = undefined;
+    const { provider, id: modelId } = parseWorkerModelId(entry.info.model);
     const client = this.options.createTransport({
       id: entry.info.id, name: entry.info.name, rolePreset: entry.info.rolePreset, ownerSessionId: entry.info.ownerSessionId, cwd: entry.info.cwd,
-      model: entry.info.model, sessionFile: entry.info.sessionFile,
+      model: entry.info.model, provider, modelId, thinkingLevel: entry.info.thinkingLevel ?? "max", sessionFile: entry.info.sessionFile,
       sessionDirectory: path.join(this.options.storageDir, "native"),
     }, (event) => this.handleEvent(entry, event), (error) => {
       if (entry.client !== client) return;
@@ -260,8 +277,8 @@ export class GptSessionManager {
     entry.starting = (async () => {
       try {
         const state = await client.request("get_state");
-        if (state.model?.provider !== "openai-codex" || state.model?.id !== entry.info.model)
-          throw new Error("Pi started the GPT session with an unexpected model/provider.");
+        if (state.model?.provider !== provider || state.model?.id !== modelId)
+          throw new Error("Pi started the worker session with an unexpected model/provider.");
         entry.info.sessionFile = state.sessionFile;
         entry.info.status = "idle";
         entry.ready = true;
@@ -275,7 +292,21 @@ export class GptSessionManager {
     return entry.starting;
   }
 
-  async create(input: { name: string; role?: string; rolePreset?: GptRolePreset; ownerSessionId?: string; model: string; message?: string; cwd?: string }) {
+  private async synchronizeThinkingLevel(entry: ManagedSession, client: RpcTransport, level: ReasoningEffort) {
+    try {
+      await client.request("set_thinking_level", { level });
+    } catch (error) {
+      const message = errorText(error);
+      if (!/(unknown|unsupported|unrecognized|not implemented).{0,40}(rpc )?command|(rpc )?command.{0,40}(unknown|unsupported|unrecognized|not implemented)/i.test(message))
+        throw error;
+    }
+    if (entry.info.thinkingLevel !== level) {
+      entry.info.thinkingLevel = level;
+      this.persist();
+    }
+  }
+
+  async create(input: { name: string; role?: string; rolePreset?: GptRolePreset; ownerSessionId?: string; model: string; thinkingLevel?: ReasoningEffort; message?: string; cwd?: string }) {
     if (this.disposed) throw new Error("GPT session manager is closed.");
     if (input.ownerSessionId !== undefined && (!input.ownerSessionId.trim() || input.ownerSessionId.length > 200))
       throw new Error("ownerSessionId must contain 1–200 characters.");
@@ -295,6 +326,7 @@ export class GptSessionManager {
     const info: SessionInfo = {
       id: `gpt-${randomUUID()}`, name, ...(role ? { role } : {}), ...(input.rolePreset ? { rolePreset: input.rolePreset } : {}),
       ...(input.ownerSessionId ? { ownerSessionId: input.ownerSessionId } : {}), cwd, model: input.model,
+      thinkingLevel: input.thinkingLevel ?? "max",
       status: "starting", createdAt: now, updatedAt: now, lastText: "", partialText: "",
       cursor: 0, pendingInput: [], queuedMessages: { steering: [], followUp: [] },
     };
@@ -309,7 +341,7 @@ export class GptSessionManager {
     return this.view(entry);
   }
 
-  async send(id: string, message: string, mode: SendMode = "steer", rolePreset?: GptRolePreset, ownerSessionId?: string) {
+  async send(id: string, message: string, mode: SendMode = "steer", rolePreset?: GptRolePreset, ownerSessionId?: string, thinkingLevel?: ReasoningEffort) {
     if (!message.trim()) throw new Error("Message must not be empty.");
     if (rolePreset && !rolePresets.includes(rolePreset)) throw new Error("未知工兵角色预设。");
     const entry = this.get(id);
@@ -324,6 +356,7 @@ export class GptSessionManager {
       const epoch = entry.epoch;
       const client = await this.start(entry);
       if (this.disposed || epoch !== entry.epoch) throw new Error("GPT message was interrupted before delivery.");
+      await this.synchronizeThinkingLevel(entry, client, thinkingLevel ?? entry.info.thinkingLevel ?? "max");
       entry.info.error = undefined;
       entry.info.status = "running";
       const result = await client.request("prompt", {

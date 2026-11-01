@@ -9,13 +9,46 @@ import { GptSessionManager, type ProgressEvent, type SessionInfo } from "../exte
 import { gptWorkerSystemPrompt } from "../extensions/pi-gpt-subagent/persona";
 import { nativeTransportFactory, sessionStorageDir } from "../extensions/pi-gpt-subagent/native";
 import { createSessionTools, type ConversationHistory } from "../extensions/pi-gpt-subagent/tools";
-import { piRuntime } from "./pi-subscription";
+import { piModelId, piRuntime, resolvePiModel } from "./pi-subscription";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { projectImages } from "./images";
 import type { GptSessionSummary } from "../shared/gpt-sessions";
-import type { Message } from "../shared/schema";
+import { nearestSupportedReasoningEffort, type Message, type ReasoningEffort } from "../shared/schema";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { fromPiMessage } from "./transcript";
 
 const managers = new Map<string, GptSessionManager>();
+
+export function resolveSubagentModelId(
+  requested?: string,
+  defaultSubagentModel?: string,
+  environmentModel = process.env.PI_LAB_GPT_SUBAGENT_MODEL,
+) {
+  return [requested, defaultSubagentModel, environmentModel, "gpt-6-luna"]
+    .map((model) => model?.trim())
+    .find((model): model is string => !!model) || "gpt-6-luna";
+}
+
+export function resolveConfiguredSubagentModel(
+  runtime: Pick<ModelRuntime, "getModel" | "hasConfiguredAuth">,
+  requested: string,
+) {
+  const model = resolvePiModel(runtime, requested);
+  if (!model) throw new Error(`Pi 中找不到工兵模型：${requested}`);
+  if (!runtime.hasConfiguredAuth(model.provider))
+    throw new Error(`请先在 Pi 中为 ${model.provider} 配置认证。`);
+  return piModelId(model);
+}
+
+export function resolveConfiguredSubagentThinkingLevel(
+  runtime: Pick<ModelRuntime, "getModel">,
+  requestedModel: string,
+  requestedLevel: ReasoningEffort,
+) {
+  const model = resolvePiModel(runtime, requestedModel);
+  if (!model) throw new Error(`Pi 中找不到工兵模型：${requestedModel}`);
+  return nearestSupportedReasoningEffort(requestedLevel, getSupportedThinkingLevels(model) as ReasoningEffort[]);
+}
 
 function managerFor(cwd: string) {
   let manager = managers.get(cwd);
@@ -165,18 +198,24 @@ export async function cleanupIdleGptSessions(cwdInput: string | undefined, owner
   return { closed, failures, sessions: manager.list(owner).map((session) => summarize(manager, session)) };
 }
 
-export function createGptSessionTools(cwd: string, getHistory?: ConversationHistory, ownerSessionId?: string): AgentTool<TSchema, unknown>[] {
+export function createGptSessionTools(
+  cwd: string,
+  getHistory?: ConversationHistory,
+  ownerSessionId?: string,
+  defaultSubagentModel?: string,
+  defaultSubagentThinkingLevel: ReasoningEffort = "max",
+): AgentTool<TSchema, unknown>[] {
   return createSessionTools(async () => ({
     manager: managerFor(cwd),
     resolveModel: async (requested?: string) => {
+      const id = resolveSubagentModelId(requested, defaultSubagentModel);
       const runtime = await piRuntime();
-      const credentials = await runtime.listCredentials();
-      if (!credentials.some((credential) => credential.providerId === "openai-codex" && credential.type === "oauth"))
-        throw new Error("请先在 Pi 中通过 /login 登录 OpenAI Codex。");
-      const id = requested || process.env.PI_LAB_GPT_SUBAGENT_MODEL?.trim() || "gpt-6-luna";
-      if (!id || !runtime.getModel("openai-codex", id))
-        throw new Error(`Pi 中找不到 GPT 模型：${id || "模型目录为空"}`);
-      return id;
+      return resolveConfiguredSubagentModel(runtime, id);
+    },
+    thinkingLevel: defaultSubagentThinkingLevel,
+    resolveThinkingLevel: async (modelId: string, level: ReasoningEffort) => {
+      const runtime = await piRuntime();
+      return resolveConfiguredSubagentThinkingLevel(runtime, modelId, level);
     },
   }), getHistory, ownerSessionId).filter((tool) =>
     ["subagent_dispatch", "subagent_query", "subagent_control"].includes(tool.name));

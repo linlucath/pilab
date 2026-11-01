@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { fileSchema } from "./schema";
+import { DEFAULT_SUBAGENT_MODEL_ID } from "./subagent-models";
 
 const id = z.string().min(1).max(200);
 export const workspaceFolderSchema = z.object({
@@ -25,8 +26,24 @@ function migrateWorkspaceData(input: unknown): unknown {
   if (!input || typeof input !== "object" || Array.isArray(input)) return input;
   const data = input as Record<string, unknown>;
   const sessions = Array.isArray(data.sessions) ? data.sessions as { id?: unknown }[] : [];
+  const migratedSessions = Array.isArray(data.sessions) ? data.sessions.map((session) => {
+    if (!session || typeof session !== "object" || Array.isArray(session)) return session;
+    const saved = session as Record<string, unknown>;
+    if (!saved.settings || typeof saved.settings !== "object" || Array.isArray(saved.settings)) return session;
+    const settings = saved.settings as Record<string, unknown>;
+    const migratedSettings = {
+      ...settings,
+      ...(settings.defaultSubagentModel === undefined ? { defaultSubagentModel: DEFAULT_SUBAGENT_MODEL_ID } : {}),
+      ...(settings.defaultSubagentThinkingLevel === undefined ? { defaultSubagentThinkingLevel: "max" } : {}),
+    };
+    return migratedSettings.defaultSubagentModel === settings.defaultSubagentModel &&
+      migratedSettings.defaultSubagentThinkingLevel === settings.defaultSubagentThinkingLevel
+      ? session
+      : { ...saved, settings: migratedSettings };
+  }) : undefined;
   return {
     ...data,
+    ...(migratedSessions ? { sessions: migratedSessions } : {}),
     folders: Array.isArray(data.folders) ? data.folders : [],
     rootSessionIds: Array.isArray(data.rootSessionIds)
       ? data.rootSessionIds

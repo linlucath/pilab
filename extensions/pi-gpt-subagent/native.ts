@@ -5,11 +5,19 @@ import path from "node:path";
 import { getAgentDir, getPackageDir } from "@earendil-works/pi-coding-agent";
 import { PiRpcProcess } from "./rpc.ts";
 import { gptWorkerSystemPrompt } from "./persona.ts";
-import type { TransportFactory } from "./sessions.ts";
+import type { TransportFactory, WorkerSpec } from "./sessions.ts";
 
 export function sessionStorageDir(owner: string) {
   const key = createHash("sha256").update(owner).digest("hex").slice(0, 24);
   return path.join(getAgentDir(), "gpt-sessions", key);
+}
+
+export function nativeModelArgs(session: Pick<WorkerSpec, "provider" | "modelId">) {
+  return ["--provider", session.provider, "--model", session.modelId];
+}
+
+export function nativeThinkingArgs(session: Pick<WorkerSpec, "thinkingLevel">) {
+  return ["--thinking", session.thinkingLevel ?? "max"];
 }
 
 export function nativeTransportFactory(imageRoot = process.env.PI_LAB_IMAGE_ROOT || process.cwd()): TransportFactory {
@@ -21,8 +29,7 @@ export function nativeTransportFactory(imageRoot = process.env.PI_LAB_IMAGE_ROOT
     const command = process.env.PI_LAB_PI_BIN || (cli ? process.execPath : "pi");
     const args = process.env.PI_LAB_PI_BIN || !cli ? [] : [cli];
     args.push(
-      "--mode", "rpc", "--provider", "openai-codex", "--model", session.model,
-      "--thinking", "max",
+      "--mode", "rpc", ...nativeModelArgs(session), ...nativeThinkingArgs(session),
       "--name", session.name,
       // Pi restores a resumed session's recorded loadout. Explicitly add the
       // image reader too, including when the session predates the tool.

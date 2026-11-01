@@ -84,6 +84,64 @@ test("MOD-01 模型和推理档位在 Composer 就近选择并按会话持久化
   await expect(page.getByRole("button", { name: /推理强度 Low/ })).toBeVisible();
 });
 
+test("MOD-09 工兵模型胶囊可按供应商搜索、切换并按会话持久化", async ({ page }) => {
+  const statusResponse = await page.context().request.get(new URL("/api/pi-status", page.url()).href);
+  expect(statusResponse.ok()).toBeTruthy();
+  const disconnectedStatus = await statusResponse.json() as { connected: boolean; subagentConnected: boolean; subagentModels: { id: string; provider: string }[] };
+  expect(disconnectedStatus.connected).toBe(false);
+  expect(disconnectedStatus.subagentConnected).toBe(false);
+  expect(disconnectedStatus.subagentModels.every((model) => !!model.id && !!model.provider)).toBe(true);
+
+  const subagentModels = [
+    { id: "gpt-6-luna", name: "GPT 6 Luna", provider: "openai-codex" },
+    { id: "anthropic/claude-sonnet-4-5", name: "Claude Sonnet 4.5", provider: "anthropic" },
+    { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro", provider: "google" },
+    { id: "deepseek/deepseek-chat", name: "DeepSeek Chat", provider: "deepseek" },
+    { id: "openai/gpt-4.1", name: "GPT-4.1", provider: "openai" },
+    { id: "openrouter/anthropic/claude-sonnet", name: "Claude Sonnet via OpenRouter", provider: "openrouter" },
+  ];
+  await page.route("**/api/pi-status", (route) => route.fulfill({ json: {
+    connected: true,
+    subagentConnected: true,
+    provider: "mock-provider",
+    defaultModel: "mock-provider/model-a",
+    models: [],
+    subagentModels,
+  } }));
+  await page.reload();
+
+  const status = await page.evaluate(async () => (await fetch("/api/pi-status")).json()) as { subagentModels: typeof subagentModels };
+  expect(status.subagentModels.map((model) => model.provider)).toEqual([
+    "openai-codex", "anthropic", "google", "deepseek", "openai", "openrouter",
+  ]);
+  const workerPickerButton = page.getByRole("button", { name: /工兵模型.*gpt-6-luna/ });
+  await expect(workerPickerButton).toBeVisible();
+  await workerPickerButton.click();
+  const picker = page.getByRole("dialog", { name: "选择工兵模型" });
+  await expect(picker).toBeVisible();
+  await expect(picker).toContainText("6 个候选模型");
+  await expect(picker.getByRole("group", { name: "Anthropic" })).toBeVisible();
+  await expect(picker.getByRole("group", { name: "Google" })).toBeVisible();
+  await expect(picker.getByRole("group", { name: "DeepSeek" })).toBeVisible();
+
+  await picker.getByLabel("搜索工兵模型").fill("Google");
+  await expect(picker.getByRole("option")).toHaveCount(1);
+  await expect(picker.getByRole("option")).toContainText("google/gemini-2.5-pro");
+  await picker.getByLabel("搜索工兵模型").fill("Claude Sonnet");
+  await expect(picker.getByRole("option")).toHaveCount(2);
+  await picker.getByLabel("搜索工兵模型").fill("deepseek");
+  await expect(picker.getByRole("option")).toHaveCount(1);
+  await picker.getByRole("option", { name: /DeepSeek Chat/ }).click();
+  await expect(page.getByRole("button", { name: /工兵模型.*deepseek\/deepseek-chat/ })).toBeVisible();
+
+  await expect.poll(async () => {
+    const workspace = await savedWorkspace(page);
+    return workspace.sessions.find((item) => item.id === workspace.active)?.settings.defaultSubagentModel;
+  }).toBe("deepseek/deepseek-chat");
+  await page.reload();
+  await expect(page.getByRole("button", { name: /工兵模型.*deepseek\/deepseek-chat/ })).toBeVisible();
+});
+
 test("MOD-02 右侧设置面板和工具关闭开关不存在，Agent 工具始终可用", async ({ page }) => {
   await expect(page.locator(".right-panel, .right-panel-backdrop")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /显示工作台|隐藏工作台|高级设置与调试/ })).toHaveCount(0);

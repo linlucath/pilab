@@ -16,6 +16,17 @@ function workspace(): WorkspaceData {
   };
 }
 
+test("legacy workspace settings receive subagent model and reasoning defaults without migration loss", () => {
+  const legacy = workspace();
+  for (const session of legacy.sessions) {
+    delete (session.settings as Partial<typeof defaults>).defaultSubagentModel;
+    delete (session.settings as Partial<typeof defaults>).defaultSubagentThinkingLevel;
+  }
+  const migrated = projectWorkspaceSchema.parse({ ...legacy, version: 1, revision: 0, deletedSessionIds: [] });
+  assert.ok(migrated.sessions.every((session) => session.settings.defaultSubagentModel === "gpt-6-luna"));
+  assert.ok(migrated.sessions.every((session) => session.settings.defaultSubagentThinkingLevel === "max"));
+});
+
 test("v1 workspace migration places newest sessions first and persists schema v2", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "pilab-workspace-migration-"));
   try {

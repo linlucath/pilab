@@ -3,6 +3,8 @@ import type { ClipboardEvent as ClipboardEventType, DragEvent as DragEventType }
 import { AlertTriangle, ArrowUp, Check, ChevronDown, Cpu, FileText, ImagePlus, LoaderCircle, Paperclip, Plus, RotateCw, RotateCcw, Sparkles, Square, UserRound, Wrench, X } from "lucide-react";
 import { imageReferenceSchema, MAX_IMAGE_BYTES, MAX_MESSAGE_IMAGES, MAX_MESSAGE_IMAGE_BYTES, MAX_WORKSPACE_FILE_BYTES, type Message, type Settings } from "../../shared/schema";
 import { ComposerModelControls, type ModelOption } from "./ComposerModelControls";
+import { ComposerSubagentModelPicker } from "./ComposerSubagentModelPicker";
+import type { SubagentModelOption } from "../../shared/subagent-models";
 import type { GptSessionSummary } from "../../shared/gpt-sessions";
 
 type WakeNotice = { names: string[] };
@@ -18,7 +20,7 @@ type StagedWorkspaceFile = {
 type WorkspaceFileResult = { success: true; fileName: string; relativePath: string; size: number };
 type Props = {
   busy: boolean; blocked?: boolean; workerMode?: boolean; placeholder?: string; toolName?: string; sessionId: string; workingDirectory: string; messageCount: number; contextTokens: number; savedPercent: number;
-  settings: Pick<Settings, "protocol" | "model" | "reasoning" | "reasoningEffort">; models: ModelOption[]; defaultModel?: string; piConnected?: boolean;
+  settings: Pick<Settings, "protocol" | "model" | "reasoning" | "reasoningEffort" | "defaultSubagentModel" | "defaultSubagentThinkingLevel">; models: ModelOption[]; subagentModels: readonly SubagentModelOption[]; subagentConnected?: boolean; defaultModel?: string; piConnected?: boolean;
   onSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => void; onNotice: (message: string) => void; onRefreshModels: () => void;
   backgroundWorkers?: GptSessionSummary[];
   wakeNotice?: WakeNotice | null; onDismissWake?: () => void; onReviewWorkers?: () => void;
@@ -34,7 +36,7 @@ const formatFileSize = (bytes: number) => bytes < 1024 ? `${bytes} B`
   : bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB`
   : `${(bytes / (1024 * 1024)).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
 
-export function ComposerBar({ busy, blocked, workerMode = false, placeholder, toolName, sessionId, workingDirectory, messageCount, contextTokens, savedPercent, settings, models, defaultModel, piConnected, onSetting, onNotice, onRefreshModels, backgroundWorkers = [], wakeNotice, onDismissWake, onReviewWorkers, onSend, onRun, onStop }: Props) {
+export function ComposerBar({ busy, blocked, workerMode = false, placeholder, toolName, sessionId, workingDirectory, messageCount, contextTokens, savedPercent, settings, models, subagentModels, subagentConnected, defaultModel, piConnected, onSetting, onNotice, onRefreshModels, backgroundWorkers = [], wakeNotice, onDismissWake, onReviewWorkers, onSend, onRun, onStop }: Props) {
   const tokenLabel = contextTokens >= 10_000 ? `${(contextTokens / 1000).toFixed(1)}k` : contextTokens.toLocaleString();
   const usageLabel = `~${tokenLabel} tokens`;
   const usageTitle = `${messageCount} 条消息 · 按消息、思考过程及工具参数估算`;
@@ -289,7 +291,7 @@ export function ComposerBar({ busy, blocked, workerMode = false, placeholder, to
           }}>{composerRoles.map((value) => <option key={value} value={value}>{value === "user" ? "User" : value === "assistant" ? "Assistant" : "System"}</option>)}</select><ChevronDown size={13} /></label>}
           <span className="context-count" title={usageTitle} style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><span>{usageLabel}</span>{savedPercent > 0 && <span style={{ color: "var(--success)", fontSize: 8 }}>🧹 已省 {savedPercent}%</span>}</span>
         </div>
-        <div className="composer-footer-right">{!workerMode && <ComposerModelControls settings={settings} models={models} defaultModel={defaultModel} piConnected={piConnected} busy={busy} blocked={blocked} onSetting={onSetting} onNotice={onNotice} onRefreshModels={onRefreshModels} />}<div className="composer-actions">{workerMode
+        <div className="composer-footer-right">{!workerMode && <><ComposerSubagentModelPicker model={settings.defaultSubagentModel} thinkingLevel={settings.defaultSubagentThinkingLevel} models={subagentModels} subagentConnected={subagentConnected} disabled={busy || blocked} onSetting={onSetting} onNotice={onNotice} /><ComposerModelControls settings={settings} models={models} defaultModel={defaultModel} piConnected={piConnected} busy={busy} blocked={blocked} onSetting={onSetting} onNotice={onNotice} onRefreshModels={onRefreshModels} /></>}<div className="composer-actions">{workerMode
           ? <button className="send-button" disabled={!canSend || busy || blocked || sending || attachmentsUploading} onClick={() => void submit(true)}><ArrowUp size={15} />发送指导</button>
           : canSend ? <><button className="add-only-button" disabled={busy || blocked || sending || attachmentsUploading} onClick={() => void submit(false)}><Plus size={14} />仅添加</button><button className="send-button" disabled={busy || blocked || sending || attachmentsUploading} onClick={() => void submit(true)}><ArrowUp size={15} />发送</button></> : <button className="send-button run-current" disabled={busy || blocked} onClick={onRun} title="重新运行当前上下文" style={{ minWidth: "unset", width: "auto", padding: "0 10px", fontSize: 9, fontWeight: 500, color: "var(--text-muted)", borderColor: "var(--border)", background: "var(--surface-soft)" }}><RotateCw size={13} />重新运行</button>}</div></div>
       </div>

@@ -56,7 +56,7 @@
   .system-banner-head { gap: 7px; padding: 8px; }.system-banner-copy strong { font-size: 9px; }.system-banner-copy small { max-width: 170px; }
   .message-head { gap: 5px; padding-right: 7px; padding-left: 8px; }.message-actions { gap: 0; }.message-actions button { min-width: 22px; width: 22px; height: 24px; }.message-actions button:nth-child(2) { display: none; }
   .message-content { padding-right: 11px; padding-left: 11px; }.tool-group-desc { display: none; }.tool-state { font-size: 7px; }
-  .composer-actions { gap: 4px; }.composer-model-pill { max-width: 116px; }.composer-model-pill strong { max-width: 74px; }.run-current { min-width: 38px; width: 38px; overflow: hidden; padding: 0; font-size: 0; }.run-current svg { width: 16px; }
+  .composer-actions { gap: 4px; }.composer-subagent-pill { max-width: 108px; }.composer-subagent-pill strong { max-width: 54px; }.composer-model-pill { max-width: 116px; }.composer-model-pill strong { max-width: 74px; }.run-current { min-width: 38px; width: 38px; overflow: hidden; padding: 0; font-size: 0; }.run-current svg { width: 16px; }
 }
 @media (max-height: 700px) and (min-width: 681px) {
   .topbar { height: 58px; min-height: 58px; }

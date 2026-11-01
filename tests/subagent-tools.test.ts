@@ -7,8 +7,13 @@ import { Type } from "typebox";
 import { ToolRegistry } from "../extensions/pi-gpt-subagent/registry";
 import { subagentToolUi } from "../extensions/pi-gpt-subagent/tool-ui";
 import { GptSessionManager } from "../extensions/pi-gpt-subagent/sessions";
+import { nativeModelArgs, nativeThinkingArgs } from "../extensions/pi-gpt-subagent/native";
+import { resolveTerminalSubagentModel } from "../extensions/pi-gpt-subagent/index";
 import { createSessionTools, type SessionTool } from "../extensions/pi-gpt-subagent/tools";
 import { compactSubagentDispatchArguments } from "../shared/subagent-tools";
+import type { ReasoningEffort } from "../shared/schema";
+import { resolveConfiguredSubagentModel, resolveConfiguredSubagentThinkingLevel, resolveSubagentModelId } from "../server/gpt-subagent";
+import { configuredPiModels, subagentModelOptions } from "../server/pi-subscription";
 import type { RpcTransport } from "../extensions/pi-gpt-subagent/rpc";
 
 const model = "subagent-tool-fixture";
@@ -32,7 +37,7 @@ async function until(check: () => boolean) {
   }
 }
 
-function fixture(root: string) {
+function fixture(root: string, resolveModel: (requested?: string) => string = () => model, thinkingLevel: ReasoningEffort = "max") {
   const sentPrompts: { name: string; message: string }[] = [];
   const manager = new GptSessionManager({
     storageDir: path.join(root, "sessions"),
@@ -72,7 +77,7 @@ function fixture(root: string) {
       async stop() {},
     }),
   });
-  const tools = createSessionTools(async () => ({ manager, resolveModel: () => model }), undefined, owner);
+  const tools = createSessionTools(async () => ({ manager, resolveModel, thinkingLevel }), undefined, owner);
   return { manager, tools, sentPrompts };
 }
 
@@ -124,6 +129,158 @@ test("the model surface is exactly three active native tools; legacy names remai
     assert.equal(subagentToolUi.subagent_dispatch.summarizeInput({ task: { message: "请梳理 API 模块的入口和依赖。" } }), "派发任务 · 梳理 API 模块的入口和依赖。");
     assert.match(subagentToolUi.subagent_dispatch.summarizeResult({ mode: "async", started: [{}] }), /后台派发/);
     assert.equal(manager.list(owner).length, 0);
+  } finally {
+    await manager.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("subagent model catalog includes every configured provider and excludes unauthenticated providers", () => {
+  const models = [
+    { provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet" },
+    { provider: "google", id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
+    { provider: "deepseek", id: "deepseek-chat", name: "DeepSeek Chat" },
+    { provider: "openai", id: "gpt-4.1", name: "GPT-4.1" },
+  ];
+  const authenticated = new Set(["anthropic", "google", "openai"]);
+  const runtime = {
+    getModels: () => models,
+    hasConfiguredAuth: (provider: string) => authenticated.has(provider),
+  } as unknown as Parameters<typeof configuredPiModels>[0];
+  const catalog = configuredPiModels(runtime);
+  assert.deepEqual(subagentModelOptions(catalog).map((model) => model.id), [
+    "anthropic/claude-sonnet-4-5", "google/gemini-2.5-pro", "openai/gpt-4.1",
+  ]);
+  assert.deepEqual(subagentModelOptions(catalog).map((model) => model.provider), ["anthropic", "google", "openai"]);
+});
+
+test("server and terminal model resolution accept provider-qualified models and check provider auth", () => {
+  const catalog = [
+    { provider: "anthropic", id: "claude-sonnet-4-5", reasoning: true },
+    { provider: "openai-codex", id: "gpt-6-luna", reasoning: false },
+    { provider: "deepseek", id: "deepseek-chat", reasoning: false },
+  ];
+  const configured = new Set(["anthropic", "openai-codex"]);
+  const runtime = {
+    getModel(provider: string, id: string) { return catalog.find((model) => model.provider === provider && model.id === id); },
+    hasConfiguredAuth(provider: string) { return configured.has(provider); },
+  } as unknown as Parameters<typeof resolveConfiguredSubagentModel>[0];
+  const modelRegistry = {
+    find(provider: string, id: string) { return catalog.find((model) => model.provider === provider && model.id === id); },
+    hasConfiguredAuth(model: { provider: string }) { return configured.has(model.provider); },
+  } as unknown as Parameters<typeof resolveTerminalSubagentModel>[0];
+
+  assert.equal(resolveConfiguredSubagentModel(runtime, "anthropic/claude-sonnet-4-5"), "anthropic/claude-sonnet-4-5");
+  assert.equal(resolveConfiguredSubagentThinkingLevel(runtime, "anthropic/claude-sonnet-4-5", "max"), "high");
+  assert.equal(resolveConfiguredSubagentThinkingLevel(runtime, "gpt-6-luna", "max"), "off");
+  assert.equal(resolveConfiguredSubagentModel(runtime, "gpt-6-luna"), "gpt-6-luna", "legacy bare IDs still resolve to Codex");
+  assert.equal(resolveTerminalSubagentModel(modelRegistry, "anthropic/claude-sonnet-4-5"), "anthropic/claude-sonnet-4-5");
+  assert.equal(resolveTerminalSubagentModel(modelRegistry, "gpt-6-luna"), "gpt-6-luna");
+  assert.throws(() => resolveConfiguredSubagentModel(runtime, "deepseek/deepseek-chat"), /请先在 Pi 中为 deepseek 配置认证/);
+  assert.throws(() => resolveTerminalSubagentModel(modelRegistry, "deepseek/deepseek-chat"), /请先在 Pi 中为 deepseek 配置认证/);
+  assert.throws(() => resolveConfiguredSubagentModel(runtime, "google/gemini-missing"), /找不到工兵模型/);
+});
+
+test("session startup keeps provider-qualified model IDs and accepts matching non-Codex providers", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "subagent-provider-session-"));
+  const specs: { model: string; provider: string; modelId: string }[] = [];
+  const manager = new GptSessionManager({
+    storageDir: path.join(root, "sessions"), cwd: root,
+    createTransport: (spec): RpcTransport => {
+      specs.push({ model: spec.model, provider: spec.provider, modelId: spec.modelId });
+      return {
+        async request<T = unknown>(type: string): Promise<T> {
+          if (type === "get_state") return { model: { provider: spec.provider, id: spec.modelId } } as T;
+          return {} as T;
+        },
+        async reply() {}, async stop() {},
+      };
+    },
+  });
+  try {
+    const claude = await manager.create({ name: "claude-worker", model: "anthropic/claude-sonnet-4-5" });
+    const legacy = await manager.create({ name: "legacy-worker", model: "gpt-6-luna" });
+    await until(() => manager.read(claude.id).session.status === "idle" && manager.read(legacy.id).session.status === "idle");
+    assert.deepEqual(specs, [
+      { model: "anthropic/claude-sonnet-4-5", provider: "anthropic", modelId: "claude-sonnet-4-5" },
+      { model: "gpt-6-luna", provider: "openai-codex", modelId: "gpt-6-luna" },
+    ]);
+    assert.deepEqual(nativeModelArgs(specs[0]), ["--provider", "anthropic", "--model", "claude-sonnet-4-5"]);
+    assert.deepEqual(nativeModelArgs(specs[1]), ["--provider", "openai-codex", "--model", "gpt-6-luna"]);
+    assert.deepEqual(nativeThinkingArgs({ thinkingLevel: "low" }), ["--thinking", "low"]);
+    assert.deepEqual(nativeThinkingArgs({}), ["--thinking", "max"]);
+  } finally {
+    await manager.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("new workers start with their configured reasoning level and existing workers synchronize before prompts", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "subagent-thinking-level-"));
+  const calls: string[] = [];
+  const manager = new GptSessionManager({
+    storageDir: path.join(root, "sessions"), cwd: root,
+    createTransport: (spec): RpcTransport => {
+      calls.push(`start:${spec.thinkingLevel}`);
+      return {
+        async request<T = unknown>(type: string, fields?: Record<string, unknown>): Promise<T> {
+          if (type === "get_state") return { model: { provider: spec.provider, id: spec.modelId } } as T;
+          if (type === "set_thinking_level") calls.push(`thinking:${String(fields?.level)}`);
+          if (type === "prompt") calls.push("prompt");
+          return {} as T;
+        },
+        async reply() {}, async stop() {},
+      };
+    },
+  });
+  try {
+    const session = await manager.create({ name: "thinking-worker", model: "gpt-6-luna", ownerSessionId: owner, thinkingLevel: "low" });
+    await until(() => manager.read(session.id).session.status === "idle");
+    await manager.send(session.id, "continue with high", "steer", undefined, owner, "high");
+    assert.deepEqual(calls, ["start:low", "thinking:high", "prompt"]);
+    assert.equal(manager.read(session.id).session.thinkingLevel, "high");
+  } finally {
+    await manager.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("dispatch uses the session reasoning default for new workers and synchronizes it on existing workers", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "subagent-dispatch-thinking-"));
+  const { manager, tools } = fixture(root, () => model, "low");
+  try {
+    const firstDispatch = findTool(tools, "subagent_dispatch");
+    await firstDispatch.execute("new-worker", { task: { name: "thinking-dispatch-worker", message: "start low" } });
+    const created = manager.list(owner).find((session) => session.name === "thinking-dispatch-worker");
+    assert.equal(created?.thinkingLevel, "low");
+
+    const updatedTools = createSessionTools(async () => ({ manager, resolveModel: () => model, thinkingLevel: "high" }), undefined, owner);
+    await findTool(updatedTools, "subagent_dispatch").execute("existing-worker", {
+      task: { name: "thinking-dispatch-worker", message: "continue high", action: "send" },
+    });
+    assert.equal(manager.read("thinking-dispatch-worker").session.thinkingLevel, "high");
+  } finally {
+    await manager.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("subagent model resolution follows explicit, session, environment, and fallback priority in dispatch", async () => {
+  assert.equal(resolveSubagentModelId("task-model", "session-model", "env-model"), "task-model");
+  assert.equal(resolveSubagentModelId(undefined, "session-model", "env-model"), "session-model");
+  assert.equal(resolveSubagentModelId(undefined, undefined, "env-model"), "env-model");
+  assert.equal(resolveSubagentModelId("  ", "  ", "  "), "gpt-6-luna");
+
+  const root = await mkdtemp(path.join(tmpdir(), "subagent-model-resolution-"));
+  const configuredModel = "session-default-worker";
+  const { manager, tools } = fixture(root, (requested) => resolveSubagentModelId(requested, configuredModel, "env-worker"));
+  try {
+    const dispatch = findTool(tools, "subagent_dispatch");
+    await dispatch.execute("session-default", { task: { name: "session-model-worker", message: "use session default" } });
+    await dispatch.execute("explicit-model", { task: { name: "explicit-model-worker", message: "use explicit", model: "task-override" } });
+    const sessions = manager.list(owner);
+    assert.equal(sessions.find((session) => session.name === "session-model-worker")?.model, configuredModel);
+    assert.equal(sessions.find((session) => session.name === "explicit-model-worker")?.model, "task-override");
   } finally {
     await manager.shutdown();
     await rm(root, { recursive: true, force: true });
