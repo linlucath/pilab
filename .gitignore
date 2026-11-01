@@ -4,6 +4,7 @@ dist/
 coverage/
 test-results/
 playwright-report/
+/blob-report/
 .vite/
 .cache/
 *.tsbuildinfo
@@ -15,6 +16,7 @@ playwright-report/
 *.pem
 *.key
 /auth.json
+/playwright/.auth/
 .pi/
 .codex/
 
