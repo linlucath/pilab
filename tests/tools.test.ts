@@ -114,6 +114,7 @@ test("Agent exposes GPT, image, and artifact tools, feeds results back, and repl
       "subagent_query",
       "subagent_control",
       "view_image",
+      "list_artifacts",
       "read_artifact",
       "write_artifact",
     ]);
@@ -197,6 +198,7 @@ test("Agent tools are always enabled and expose the full tool set", async () => 
       "subagent_query",
       "subagent_control",
       "view_image",
+      "list_artifacts",
       "read_artifact",
       "write_artifact",
     ]);

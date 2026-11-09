@@ -9,6 +9,7 @@ import { newSession, uid, loadLegacyWorkspace } from "./utils/session";
 import { contextTokenMetrics } from "./utils/context-tokens";
 import { Sidebar } from "./components/Sidebar";
 import { SearchModal } from "./components/SearchModal";
+import { ConfirmModal } from "./components/ConfirmModal";
 import { TopBar } from "./components/TopBar";
 import { MessageStream } from "./components/MessageStream";
 import { ComposerBar } from "./components/ComposerBar";
@@ -23,6 +24,7 @@ type PiConnection = {
 type ToolActivity = { id?: string; name: string; arguments: unknown; output: string };
 type WorkerWakeNotice = { sessionId: string; cwd: string; names: string[] };
 type WorkerReview = Pick<WorkerWakeNotice, "sessionId" | "cwd" | "names">;
+type ConfirmRequest = { title: string; description: string; confirmLabel: string; onConfirm: () => void | Promise<void> };
 type SearchJump = { sessionId: string; messageId: string; query: string; token: number };
 type SessionStreamView = { streamingId: string; thinking: string; toolActivity: ToolActivity | null };
 type RunControl = { sessionId: string; runId: string; lastSeq: number; shouldSubscribe: boolean; readerController?: AbortController; resume?: () => void };
@@ -70,6 +72,7 @@ export default function App() {
     try { return localStorage.getItem("pilab-tools-compact-v1") !== "false"; } catch { return true; }
   });
   const [searchModalOpen, setSearchModalOpen] = useState(false);
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [searchJump, setSearchJump] = useState<SearchJump | undefined>();
   const searchJumpSequence = useRef(0);
   const [runErrors, setRunErrors] = useState<Record<string, string>>({});
@@ -102,8 +105,8 @@ export default function App() {
   const runStartLocks = useRef(new Set<string>());
 
   const { workspace, setWorkspace, workspaceRef, ready, error: storageError } =
-    useProjectWorkspace(loadLegacyWorkspace, () => newSession(), setNotice);
-  const session = workspace.sessions.find((item) => item.id === workspace.active) || workspace.sessions[0] || newSession();
+    useProjectWorkspace(loadLegacyWorkspace, (defaultSystemPrompt) => newSession("", undefined, defaultSystemPrompt), setNotice);
+  const session = workspace.sessions.find((item) => item.id === workspace.active) || workspace.sessions[0] || newSession("", undefined, workspace.defaultSystemPrompt);
   const requestSessionWorkspace = useCallback(async (sessionId: string) => {
     const response = await fetch("/api/session-workspaces", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId }),
@@ -447,9 +450,11 @@ export default function App() {
     ...(values.messages && current.piSync ? { piSync: { ...current.piSync, dirty: true } } : {}),
   }));
   const updateSetting = <K extends keyof Settings>(key: K, value: Settings[K]) => updateActive((current) => ({ ...current, settings: { ...current.settings, [key]: value } }));
+  const updateDefaultSystemPrompt = useCallback((defaultSystemPrompt: string) => setWorkspace((current) =>
+    current.defaultSystemPrompt === defaultSystemPrompt ? current : { ...current, defaultSystemPrompt }), [setWorkspace]);
   const currentRunLocksActiveSession = () => busyForSessionRef.current(workspaceRef.current.active);
   const updateMessage = (id: string, values: Partial<Message>) => {
-    if (!selectedWorkerId && currentRunLocksActiveSession()) return;
+    if (!selectedWorkerId && currentRunLocksActiveSession() && id === streamViews[workspaceRef.current.active]?.streamingId) return;
     if (selectedWorkerId) {
       const target = workerMessagesRef.current[selectedWorkerId]?.find((message) => message.id === id);
       if (!target) return;
@@ -604,7 +609,7 @@ export default function App() {
       const workingDirectory = await requestSessionWorkspace(id);
       const next: Session = copy
         ? { ...structuredClone(copy), id, title: copy.title, settings: { ...copy.settings, workingDirectory }, runs: [] }
-        : newSession(workingDirectory, id);
+        : newSession(workingDirectory, id, workspaceRef.current.defaultSystemPrompt);
       delete next.piSync;
       setWorkspace((current) => ({ ...current, sessions: [...current.sessions, next], rootSessionIds: [next.id, ...current.rootSessionIds], active: next.id, followPi: false }));
       setScrollRequest((value) => value + 1);
@@ -620,15 +625,19 @@ export default function App() {
     window.addEventListener("keydown", createShortcut);
     return () => window.removeEventListener("keydown", createShortcut);
   }, [createSession]);
-  const duplicateSession = (source: Session) => { void createSession({ ...source, title: `${source.title} · 副本` }); };
+  const duplicateSession = (source: Session) => {
+    const streamingId = streamViews[source.id]?.streamingId;
+    const messages = streamingId ? source.messages.filter((message) => message.id !== streamingId) : source.messages;
+    void createSession({ ...source, title: `${source.title} · 副本`, messages });
+  };
   const deleteSession = async (id: string) => {
     if (busyForSessionRef.current(id)) return;
     const target = workspaceRef.current.sessions.find((item) => item.id === id);
-    if (!target || !window.confirm(`删除「${target.title}」？此操作无法撤销。`)) return;
+    if (!target) return;
     let replacement: Session | undefined;
     if (workspaceRef.current.sessions.length === 1) {
       const replacementId = uid();
-      try { replacement = newSession(await requestSessionWorkspace(replacementId), replacementId); }
+      try { replacement = newSession(await requestSessionWorkspace(replacementId), replacementId, workspaceRef.current.defaultSystemPrompt); }
       catch (error) { setNotice(`无法创建替代会话：${error instanceof Error ? error.message : String(error)}`); return; }
     }
     setWorkspace((current) => {
@@ -642,6 +651,17 @@ export default function App() {
       return { ...current, sessions, folders, rootSessionIds, active: current.active === id ? sessions[0]?.id || current.active : current.active, followPi: false };
     });
   };
+  const requestDeleteSession = (id: string) => {
+    if (busyForSessionRef.current(id)) return;
+    const target = workspaceRef.current.sessions.find((item) => item.id === id);
+    if (!target) return;
+    setConfirmRequest({
+      title: "删除会话？",
+      description: `将删除「${target.title}」及其会话内容。此操作无法撤销。`,
+      confirmLabel: "删除会话",
+      onConfirm: () => deleteSession(id),
+    });
+  };
   const branchAt = (message: Message, index: number) => {
     if (selectedWorkerId) {
       const messages = workerMessagesRef.current[selectedWorkerId] || [];
@@ -650,7 +670,7 @@ export default function App() {
       if (selectedWorker) void createSession({ ...session, title: `${selectedWorker.name} · 分支`, messages: messages.slice(0, end + 1) });
       return;
     }
-    if (busyForSessionRef.current(workspaceRef.current.active)) return;
+    if (streamView?.streamingId === message.id) { setNotice("当前消息正在生成中，无法分支。"); return; }
     const currentSession = workspaceRef.current.sessions.find((item) => item.id === workspaceRef.current.active);
     if (!currentSession) return;
     const end = completeToolBranchEnd(currentSession.messages, index);
@@ -692,6 +712,16 @@ export default function App() {
       rootSessionIds: [...current.rootSessionIds, ...folder.sessionIds.filter((sessionId) => !alreadyRoot.has(sessionId))],
     };
   });
+  const requestDeleteFolder = (id: string) => {
+    const folder = workspaceRef.current.folders.find((item) => item.id === id);
+    if (!folder) return;
+    setConfirmRequest({
+      title: "删除文件夹？",
+      description: `删除文件夹「${folder.name}」？其中的会话会移回未归类。`,
+      confirmLabel: "删除文件夹",
+      onConfirm: () => { deleteFolder(id); },
+    });
+  };
   const moveSession = (sessionId: string, targetFolderId: string | null, targetId?: string, position: "before" | "after" | "end" = "end") => setWorkspace((current) => {
     if (!current.sessions.some((item) => item.id === sessionId) || targetId === sessionId) return current;
     const folders = current.folders.map((folder) => ({ ...folder, sessionIds: folder.sessionIds.filter((id) => id !== sessionId) }));
@@ -754,6 +784,7 @@ export default function App() {
     let finalGenerationStatus = "done";
     const textById = new Map<string, string>(); const pendingTextIds = new Set<string>(); const trace: Message[] = []; const requests: unknown[] = [];
     let pendingThinkingText = "";
+    let thoughtMark = 0;
     let streamTextFlushTimer: number | undefined;
     const updateRun = (values: Partial<Run>) => setWorkspace((current) => ({ ...current, sessions: current.sessions.map((item) => item.id === sessionId ? { ...item, runs: item.runs.map((run) => run.id === runId ? { ...run, ...values, elapsed: Date.now() - started } : run) } : item) }));
     const upsert = (message: Message) => {
@@ -826,9 +857,14 @@ export default function App() {
         if (event.type === "runtime") updateRun({ cwd: event.cwd as string | undefined });
         if (event.type === "request") { requests.push(event.payload); updateRun({ request: event.payload, requests: [...requests], turns: event.turn }); }
         if (event.type === "assistant_start") {
+          // A restart replays a message whose stream was cut: drop what this
+          // message already produced instead of appending the resent response.
+          if (event.restart) { thought = thought.slice(0, thoughtMark); pendingThinkingText = ""; }
           flushPendingText();
+          if (!event.restart) thoughtMark = thought.length;
           currentMessageId = event.id; updateStreamView(sessionId, (current) => ({ ...current, streamingId: event.id, thinking: "" })); textById.set(event.id, "");
           upsert({ id: event.id, role: "assistant", content: "", enabled: true });
+          updateRun({ thinking: thought });
         }
         if (event.type === "text") { const id = event.id || currentMessageId; const next = (textById.get(id) || "") + event.delta; queueStreamText(id, next); }
         if (event.type === "thinking") { thought += event.delta; pendingThinkingText += event.delta; scheduleStreamFlush(); }
@@ -1081,7 +1117,7 @@ export default function App() {
   }
   if (!ready) return <div className="app-loading" role="status">{storageError || "正在打开本地工作区…"}{storageError && <button onClick={() => location.reload()}>重试</button>}</div>;
   return <div className={`app-shell ${sidebarCollapsed ? "sidebar-compact" : ""}`}>
-    <Sidebar sessions={workspace.sessions} folders={workspace.folders} rootSessionIds={workspace.rootSessionIds} active={session.id} collapsed={sidebarCollapsed} activeRuns={activeRuns} onToggle={() => setSidebarCollapsed((value) => !value)} onOpenSearch={() => setSearchModalOpen(true)} onCreate={() => createSession()} onCreateFolder={createFolder} onSelect={selectSession} onRename={renameSession} onDuplicate={duplicateSession} onDelete={deleteSession} onRenameFolder={renameFolder} onDeleteFolder={deleteFolder} onToggleFolder={toggleFolder} onMoveSession={moveSession} />
+    <Sidebar sessions={workspace.sessions} folders={workspace.folders} rootSessionIds={workspace.rootSessionIds} active={session.id} collapsed={sidebarCollapsed} activeRuns={activeRuns} onToggle={() => setSidebarCollapsed((value) => !value)} onOpenSearch={() => setSearchModalOpen(true)} onCreate={() => createSession()} onCreateFolder={createFolder} onSelect={selectSession} onRename={renameSession} onDuplicate={duplicateSession} onDelete={requestDeleteSession} onRenameFolder={renameFolder} onDeleteFolder={requestDeleteFolder} onToggleFolder={toggleFolder} onMoveSession={moveSession} />
     <main className="app-main">
       <TopBar session={session} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onTitle={(title) => patchSession({ title })} />
       <div className="workspace-body">
@@ -1089,13 +1125,14 @@ export default function App() {
           <ThreadTabs sessionId={session.id} workers={visibleGptSessions} selectedWorkerId={selectedWorkerId} onSelectWorker={setSelectedWorkerId} onCloseWorker={(workerId) => setSelectedWorkerId((current) => current === workerId ? "" : current)} />
           {gptSessionsError && !selectedWorker && <div className="run-error-banner" role="status"><AlertTriangle size={17} /><div><strong>读取工兵列表失败</strong><span>{gptSessionsError}</span></div><button onClick={() => setGptSessionsError("")} aria-label="关闭工兵列表错误">关闭<X size={14} /></button></div>}
           {selectedWorker && workerMessagesError && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>工兵对话失败</strong><span>{workerMessagesError}</span></div><button onClick={() => setWorkerMessagesError("")} aria-label="关闭工兵对话错误">关闭<X size={14} /></button></div>}
-          <MessageStream sessionId={`${session.id}:${selectedWorker?.id || "main"}`} scrollRequest={scrollRequest} searchJump={!selectedWorker && searchJump?.sessionId === session.id ? { ...searchJump, sessionId: `${session.id}:main` } : undefined} messages={currentMessages} assistantName={selectedWorker ? `${selectedWorker.model} · ${selectedWorker.name}` : "Gemini"} busy={selectedWorker ? false : busy} compactTools={compactTools} streamingId={selectedWorker ? undefined : streamingId} streamingThinking={selectedWorker ? undefined : streamingThinking} toolActivity={selectedWorker ? undefined : toolActivity} gptWorkers={selectedWorker ? [] : visibleGptSessions} onMessage={onMessage} onCall={onCall} onAdd={onAdd} onMove={onMove} onDelete={onDelete} onDeleteCall={onDeleteCall} onAddToolResult={onAddToolResult} onBranch={onBranch} onCopy={onCopyMessage} />
+          <MessageStream sessionId={`${session.id}:${selectedWorker?.id || "main"}`} scrollRequest={scrollRequest} searchJump={!selectedWorker && searchJump?.sessionId === session.id ? { ...searchJump, sessionId: `${session.id}:main` } : undefined} messages={currentMessages} assistantName={selectedWorker ? `${selectedWorker.model} · ${selectedWorker.name}` : "Gemini"} busy={selectedWorker ? false : busy} compactTools={compactTools} streamingId={selectedWorker ? undefined : streamingId} streamingThinking={selectedWorker ? undefined : streamingThinking} toolActivity={selectedWorker ? undefined : toolActivity} gptWorkers={selectedWorker ? [] : visibleGptSessions} onMessage={onMessage} onCall={onCall} onAdd={onAdd} onMove={onMove} onDelete={onDelete} onDeleteCall={onDeleteCall} onAddToolResult={onAddToolResult} onBranch={onBranch} onStop={!selectedWorker ? () => { void abortRun(); } : undefined} onCopy={onCopyMessage} defaultSystemPrompt={workspace.defaultSystemPrompt} onDefaultSystemPromptChange={updateDefaultSystemPrompt} />
           {!selectedWorker && runErrors[session.id] && <div className="run-error-banner" role="alert"><AlertTriangle size={17} /><div><strong>本次运行失败</strong><span>{runErrors[session.id]}</span></div><button onClick={() => setSessionRunError(session.id)} aria-label="关闭运行错误">关闭<X size={14} /></button></div>}
           <ComposerBar key={session.id} busy={selectedWorker ? false : busy} workerMode={!!selectedWorker} placeholder={selectedWorker ? `给工兵发送直接指导 (Steer)…` : undefined} sessionId={session.id} workingDirectory={session.settings.workingDirectory} toolName={selectedWorker ? undefined : toolActivity?.name} messageCount={currentMessages.length} contextTokens={currentContextMetrics.context} savedPercent={currentContextMetrics.savedPercent} settings={session.settings} models={piConnection?.models || []} subagentModels={piConnection?.subagentModels || DEFAULT_SUBAGENT_MODELS} subagentConnected={piConnection?.subagentConnected ?? false} defaultModel={piConnection?.defaultModel} piConnected={piConnection?.connected} onSetting={updateSetting} onNotice={setNotice} onRefreshModels={() => void refreshPiStatus()} backgroundWorkers={selectedWorker ? [] : visibleGptSessions.filter((worker) => activeWorkerStatuses.has(worker.status))} wakeNotice={selectedWorker ? undefined : workerWakeNotice} onDismissWake={() => dismissSessionWorkerWake(session.id)} onReviewWorkers={() => reviewCurrentSessionWorkers(session.id)} onSend={selectedWorker ? sendWorkerGuidance : sendMessage} onRun={() => { if (!selectedWorker) void run(); }} onStop={() => { if (!selectedWorker) void abortRun(); }} />
         </section>
       </div>
     </main>
     {searchModalOpen && <SearchModal sessions={workspace.sessions} activeSessionId={session.id} onClose={() => setSearchModalOpen(false)} onSelectSession={selectSearchSession} onJumpToMessage={jumpToSearchMessage} />}
+    {confirmRequest && <ConfirmModal {...confirmRequest} variant="danger" onClose={() => setConfirmRequest(null)} />}
     {notice && <div className="toast" role="status"><CircleHelp size={16} /><span>{notice}</span><button onClick={() => setNotice("")} aria-label="关闭提示"><X size={14} /></button></div>}
   </div>;
 }

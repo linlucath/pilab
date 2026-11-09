@@ -1,5 +1,12 @@
-import { EnvHttpProxyAgent, install, setGlobalDispatcher } from "undici";
+import { Agent, EnvHttpProxyAgent, install, setGlobalDispatcher } from "undici";
 import { channel } from "node:diagnostics_channel";
+
+// Transport-level failures, as opposed to provider errors that carry a status.
+// "terminated" is what undici's fetch throws when the socket dies after the
+// response headers arrived, so it marks a cut SSE body rather than a failed
+// handshake. Keep this the single source of truth; stream retry reuses it.
+export const transportFailurePattern =
+  /fetch failed|failed to fetch|terminated|socket hang up|other side closed|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|EAI_AGAIN|UND_ERR_/i;
 
 // Antigravity controls its SSE inactivity watchdog separately from timeoutMs.
 // Reasoning/queued turns can remain silent for over two minutes. Keep a finite
@@ -38,7 +45,7 @@ export function modelRequestError(message: string, model: { provider: string; ba
     const seconds = Number(stalled[1]) / 1000;
     return `模型流式响应连续 ${seconds} 秒未收到数据，已中止等待。可能是上游推理、排队或网络连接停滞；已收到的内容会保留。原始错误：${message}`;
   }
-  if (!/fetch failed|failed to fetch|terminated|ECONNRESET|ECONNREFUSED|ETIMEDOUT|UND_ERR_/i.test(message)) return message;
+  if (!transportFailurePattern.test(message)) return message;
   const provider = model.provider === "antigravity" ? "Gemini" : model.provider === "openai-codex" ? "GPT" : model.provider;
   let host = "";
   try { host = new URL(model.baseUrl).hostname; } catch {}
@@ -46,6 +53,23 @@ export function modelRequestError(message: string, model: { provider: string; ba
     (lastFailure.host === host || (model.provider === "antigravity" && lastFailure.host.endsWith(".googleapis.com"))) ? lastFailure : undefined;
   return `${provider} 请求连接失败：${message}${recent ? `（${recent.codes.join(" / ")}）` : ""}`;
 }
+
+// Model streams idle for minutes: while a tool runs, and again while the model
+// reasons before its first token. Local proxies and NAT tables reap such
+// tunnels, which surfaces as a cut SSE body. Probe the socket often enough to
+// keep the path alive, expire pooled connections before the far side does, and
+// leave the inactivity deadline to the stream watchdogs above.
+const socketKeepAlive = {
+  keepAlive: true,
+  keepAliveInitialDelay: Number(process.env.PI_LAB_TCP_KEEPALIVE_MS || 15_000),
+};
+const connectionOptions = {
+  keepAliveTimeout: 10_000,
+  keepAliveMaxTimeout: 60_000,
+  headersTimeout: 300_000,
+  bodyTimeout: 600_000,
+  connect: { timeout: 20_000, ...socketKeepAlive },
+};
 
 // Node's fetch does not consistently inherit HTTP_PROXY without an explicit dispatcher.
 // Honor the user's existing proxy while keeping local model endpoints on loopback.
@@ -59,6 +83,11 @@ if (
   install();
   setGlobalDispatcher(
     new EnvHttpProxyAgent({
+      ...connectionOptions,
+      // ProxyAgent builds the socket to the proxy from `proxyTls` and the
+      // tunneled TLS socket from `requestTls`; neither reads `connect`.
+      proxyTls: socketKeepAlive,
+      requestTls: socketKeepAlive,
       noProxy: [
         process.env.NO_PROXY || process.env.no_proxy,
         "localhost",
@@ -69,4 +98,6 @@ if (
         .join(","),
     }),
   );
+} else {
+  setGlobalDispatcher(new Agent(connectionOptions));
 }

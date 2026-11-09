@@ -66,3 +66,20 @@ test("Gemini/GPT replay behavior and user messages are unchanged", () => {
   const user = { role: "user" as const, content: "Keep text", timestamp: 0 };
   assert.equal(preparePiMessageForModel(user, model), user);
 });
+
+test("Claude replay removes earlier adjacent thinking parts without changing stored messages", async () => {
+  const { preparePiMessagesForModel } = await import("../server/transcript");
+  const first = toPiMessage({ ...historical, content: " ", toolCalls: [], providerState: { ...historical.providerState!, stopReason: "length", thinking: [{ type: "thinking", thinking: "First thought", thinkingSignature: "first" }] } }, model);
+  const second = toPiMessage({ ...historical, providerState: { ...historical.providerState!, thinking: [{ type: "thinking", thinking: "Second thought", thinkingSignature: "second" }] } }, model);
+  const messages = [first, second];
+  const before = structuredClone(messages);
+  const replay = preparePiMessagesForModel(messages, model);
+  assert.equal(replay[0].role, "assistant");
+  assert.equal(replay[1].role, "assistant");
+  if (replay[0].role !== "assistant" || replay[1].role !== "assistant") throw new Error("Expected assistant");
+  assert.equal(replay[0].content.filter((block) => block.type === "thinking").length, 0);
+  assert.equal(replay[1].content.filter((block) => block.type === "thinking").length, 1);
+  assert.deepEqual(messages, before);
+  const separated = preparePiMessagesForModel([first, { role: "user", content: "Continue", timestamp: 0 }, second], model);
+  assert.deepEqual(separated[0], first);
+});

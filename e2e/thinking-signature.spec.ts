@@ -22,6 +22,8 @@ for (const signature of [undefined, "signed-but-interrupted"]) test(`RUN-05 Clau
   } });
   expect(initialized.ok()).toBe(true);
   await page.reload();
+  await page.getByText("思考过程", { exact: false }).first().click();
+  await expect(page.getByText("中断前的思考", { exact: true })).toBeVisible();
   let responseEvents: Record<string, unknown>[] = [];
   await page.route("**/api/runs", async (route) => {
     if (route.request().method() !== "POST") return route.continue();

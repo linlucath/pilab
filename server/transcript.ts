@@ -73,6 +73,38 @@ export function preparePiMessageForModel(message: PiMessage, model: Model<Api>, 
     block.type !== "thinking" || (!incomplete && !!block.thinkingSignature?.trim())) };
 }
 
+/** Antigravity joins adjacent assistant messages into one model turn. Its Claude
+ * bridge cannot reliably replay consecutive thinking parts, even when both
+ * have signatures. Keep the latest part on the wire and leave history intact. */
+export function preparePiMessagesForModel(messages: PiMessage[], model: Model<Api>): PiMessage[] {
+  const prepared = messages.map((message) => preparePiMessageForModel(message, model));
+  if (model.provider !== "antigravity" || !model.id.startsWith("claude-")) return prepared;
+  let prior: { message: number; block: number } | undefined;
+  const remove = new Map<number, Set<number>>();
+  for (let i = 0; i < prepared.length; i++) {
+    const message = prepared[i];
+    if (message.role !== "assistant") { prior = undefined; continue; }
+    for (let j = 0; j < message.content.length; j++) {
+      const block = message.content[j];
+      if (block.type === "text" && !block.text.trim() && !block.textSignature) continue;
+      if (block.type === "thinking" && !block.thinking.trim()) continue;
+      if (block.type !== "thinking") { prior = undefined; continue; }
+      if (prior) {
+        const indices = remove.get(prior.message) || new Set<number>();
+        indices.add(prior.block);
+        remove.set(prior.message, indices);
+      }
+      prior = { message: i, block: j };
+    }
+  }
+  return prepared.map((message, index) => {
+    const indices = remove.get(index);
+    return indices && message.role === "assistant"
+      ? { ...message, content: message.content.filter((_, block) => !indices.has(block)) }
+      : message;
+  });
+}
+
 export function toPiMessage(message: Message, model: Model<Api>): PiMessage {
   if (message.role === "tool")
     return {

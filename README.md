@@ -41,7 +41,7 @@ Pi 本地登录模式要求 system 消息位于开头。OpenAI Codex 会将其�
 
 Antigravity 流式请求默认允许连续 10 分钟没有数据，避免长推理或排队被扩展原有的 120 秒空闲限制过早中止。这是无数据等待上限，不是整次 Agent 运行时长；收到数据后重新计时。可在启动前设置 `ANTIGRAVITY_STREAM_STALL_TIMEOUT_MS`（毫秒，兼容旧变量 `NOAGY_STREAM_STALL_TIMEOUT_MS`）；已有显式设置优先，修改后重启服务生效。达到上限仍会报错并保留已收到的内容；延长等待不能修复上游或代理断线。
 
-Antigravity 的 Claude 续聊会在发送前排除缺少签名的 thinking 块，以及 error/aborted 运行遗留的思考（即使已带签名），避免失败思考和重试思考被合并后触发 `thinking.signature: Field required`。原始思考仍保存在网页历史中；完整成功回复的签名、正文与工具调用不变，不伪造签名。
+Antigravity 的 Claude 续聊会在发送前排除缺少签名的 thinking 块，以及 error/aborted 运行遗留的思考（即使已带签名），避免失败思考和重试思考被合并后触发 `thinking.signature: Field required`。连续 assistant 消息合并后若出现相邻思考块，请求中仅保留最后一块，避免上游转换时丢失签名。原始思考仍保存在网页历史中；正文与工具调用不变，不伪造签名。
 
 「推理强度 / Reasoning effort」可选 off、minimal、low、medium、high、xhigh、max，Pi 订阅按当前模型能力列出档位；存在映射时直接显示实际发送值（如 minimal → low）。切换至不支持原档位的模型时，会调整到 medium 或首个支持的档位并提示。自定义接口由 Pi 转换为对应协议的参数，服务商决定实际支持范围。启用推理时省略 Temperature。推理强度随实验保存、导入导出，并记录在运行快照中；旧版开关设置兼容为 off / medium。最大输出数由 Pi 和供应商协议共同限制。编辑器支持文本和图片消息、图片预览；订阅模型按目录能力判断图片支持，自定义协议使用相应的多模态序列化。OAuth 登录复用 Pi CLI，网页不单独发起登录。
 
@@ -85,7 +85,7 @@ Gemini 通过三个原生工具管理这些会话。创建任务时设置唯一�
 | 原生工具 | 用途 |
 | --- | --- |
 | `subagent_dispatch` | 传 `task` 或 1–8 个 `tasks`；`mode: "async"`（默认）后台派发并返回 tracking handles；`mode: "sync"` 安静阻塞，等待工兵当前轮次结束、出错、需要输入或被取消，不提供超时参数。已存在的会话可用 `action: "send"` 接续。 |
-| `subagent_query` | `action: "list"` 查询会话列表；`action: "status"` 加 `name` 或 handle 查询状态、未读简报、问题和近期活动。失败时自动附带有界 diagnostics；也可显式请求。 |
+| `subagent_query` | `action: "list"` 查询会话列表；`action: "status"` 加 `name` 或 handle 查询状态、未读简报、问题和近期活动。若工兵正在启动或运行，status 会等待当前轮次结束、需要输入或失败（类似同步派发）；其他状态即时返回。失败时自动附带有界 diagnostics；也可显式请求。 |
 | `subagent_control` | 使用 `action: "abort"` 中止并清理排队任务、`"respond"` 回答工兵输入，或 `"close"` 关闭进程并保留原生历史。 |
 
 旧名 `gpt_session_*` 仍保留为不可默认激活的兼容别名，供已保存 transcript 和直接集成继续调用；模型正常可见的 GPT 工具只有上述三个。
@@ -110,7 +110,7 @@ GPT 直接使用自己的 `read`、`grep`、`find`、`ls`、`bash`、`edit`、`w
 
 管理记录保存在 `~/.pi/agent/gpt-sessions/`（支持 `PI_CODING_AGENT_DIR`），按主 Pi 会话区分；GPT 的原生对话保存到 Pi 正常的 sessions 目录，也能通过 `/resume` 查找。主 Pi 退出、切换会话或 `/reload` 时会停止所属后台进程、清空尚未送达的排队消息并保留历史；再次发送消息可恢复。已经完成的文件修改不会自动撤销。关闭某个后台进程后，也可以用 `pi --session 原生会话文件路径` 在终端中直接继续它。不要同时让两个进程写入同一原生会话文件。
 
-主模型不会把整段聊天历史自动交给 GPT，由 Gemini 在派发消息中提供相关背景和约束。`subagent_query` 默认只返回当前主会话尚未读过的已生成简报，不发送正在流式生成的草稿；重复读取显示「暂无新简报」，需要重看时可设 `repeat: true`。已读记录随聊天历史保存，不发送给模型；不同主会话和分支独立判断，新的 GPT 回复即使文字相同也会重新送达。终端 `/gpt read` 仍可主动查看最新回复和草稿。主模型与各 GPT 都通过 Pi 的正常凭证机制请求各自的模型，不复制登录 Token。可以通过 `PI_LAB_PI_BIN` 指定其他 Pi 可执行文件。
+主模型不会把整段聊天历史自动交给 GPT，由 Gemini 在派发消息中提供相关背景和约束。`subagent_query` 的 `action: "status"` 若遇到正在启动或运行的工兵，会等待当前轮次结束、需要输入或失败后再返回；其他状态即时返回。它默认只返回当前主会话尚未读过的已生成简报，不发送正在流式生成的草稿；重复读取显示「暂无新简报」，需要重看时可设 `repeat: true`。已读记录随聊天历史保存，不发送给模型；不同主会话和分支独立判断，新的 GPT 回复即使文字相同也会重新送达。终端 `/gpt read` 仍可主动查看最新回复和草稿。主模型与各 GPT 都通过 Pi 的正常凭证机制请求各自的模型，不复制登录 Token。可以通过 `PI_LAB_PI_BIN` 指定其他 Pi 可执行文件。
 
 需要等结果时，Gemini 应使用 `subagent_dispatch({ task: {...}, mode: "sync" })`，而非执行 `bash sleep`。同步派发会安静等待当前轮次结束（或出错、需要回答、被用户取消）；等待不暴露超时配置。同步派发期间无需也不得反复调用 `subagent_query` 或 wait 轮询。批量同步派发默认等待所有 worker，遇到错误、停止或需要回答时提前返回。等待通过进程状态事件唤醒，不轮询文件；主模型停止或网页关闭时取消当前等待。终端 Pi 在主动等待期间不会再为同一个完成事件额外排入自动通知轮次。
 

@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import {
+  listArtifactEntries,
   listArtifacts,
   MAX_ARTIFACT_BYTES,
   readArtifact,
@@ -34,6 +35,98 @@ test("artifacts write and read UTF-8 Markdown and JSON, creating nested parents"
     assert.equal(jsonResult.bytes, Buffer.byteLength(json, "utf8"));
     assert.equal(await readArtifact("session-a", "data/result.json", root), json);
     assert.deepEqual(await listArtifacts("session-a", root), ["data/result.json", "research/summary.md"]);
+    assert.deepEqual(await listArtifactEntries(undefined, "session-a", root), [
+      { name: "data", type: "directory" },
+      { name: "research", type: "directory" },
+    ]);
+    assert.deepEqual(await listArtifactEntries("data", "session-a", root), [
+      { name: "result.json", type: "file", size: Buffer.byteLength(json, "utf8") },
+    ]);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("workspace artifact mode creates and reads files under the workspace artifacts directory", async () => {
+  const { temp } = await tempArtifactsRoot();
+  const workspaceRoot = path.join(temp, "workspace");
+  const artifactsDir = path.join(workspaceRoot, "artifacts");
+  await mkdir(workspaceRoot);
+  try {
+    const options = { workspaceRoot, artifactsDir };
+    const content = "Workspace-local research result";
+    const result = await writeArtifact("session-a", "research/summary.md", content, options);
+    assert.equal(result.path, path.join(await realpath(artifactsDir), "research", "summary.md"));
+    assert.equal(await readArtifact("session-a", "research/summary.md", options), content);
+    assert.deepEqual(await listArtifacts("session-a", options), ["research/summary.md"]);
+    assert.deepEqual(await listArtifactEntries(undefined, "session-a", options), [
+      { name: "research", type: "directory" },
+    ]);
+    assert.deepEqual(await listArtifactEntries("research", "session-a", options), [
+      { name: "summary.md", type: "file", size: Buffer.byteLength(content, "utf8") },
+    ]);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("workspace artifacts allow in-workspace leaf symlinks and reject escaping or writable symlinks", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Symlink creation may require elevated privileges on Windows.");
+    return;
+  }
+  const { temp } = await tempArtifactsRoot();
+  const workspaceRoot = path.join(temp, "workspace");
+  const artifactsDir = path.join(workspaceRoot, "artifacts");
+  const options = { workspaceRoot, artifactsDir };
+  try {
+    await mkdir(artifactsDir, { recursive: true });
+    await writeFile(path.join(workspaceRoot, "workspace-file.txt"), "workspace content");
+    await writeFile(path.join(temp, "outside.txt"), "outside content");
+    await symlink("../workspace-file.txt", path.join(artifactsDir, "inside.txt"));
+    await symlink(path.join(temp, "outside.txt"), path.join(artifactsDir, "outside-absolute.txt"));
+    await symlink("../../outside.txt", path.join(artifactsDir, "outside-parent.txt"));
+
+    assert.equal(await readArtifact("session-a", "inside.txt", options), "workspace content");
+    await assert.rejects(listArtifactEntries(undefined, "session-a", options), /Path traversal forbidden/);
+    await assert.rejects(readArtifact("session-a", "outside-absolute.txt", options), /Path traversal forbidden/);
+    await assert.rejects(readArtifact("session-a", "outside-parent.txt", options), /Path traversal forbidden/);
+    await assert.rejects(writeArtifact("session-a", "inside.txt", "must not overwrite", options), /Path traversal forbidden/);
+    assert.equal(await readFile(path.join(workspaceRoot, "workspace-file.txt"), "utf8"), "workspace content");
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("workspace artifact reads report dangling symlinks as missing and listing skips them", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Symlink creation may require elevated privileges on Windows.");
+    return;
+  }
+  const { temp } = await tempArtifactsRoot();
+  const workspaceRoot = path.join(temp, "workspace");
+  const artifactsDir = path.join(workspaceRoot, "artifacts");
+  const options = { workspaceRoot, artifactsDir };
+  try {
+    await mkdir(workspaceRoot);
+    await writeArtifact("session-a", "visible.md", "still available", options);
+    const linkedTarget = path.join(workspaceRoot, "linked.txt");
+    await writeFile(linkedTarget, "linked content");
+    await symlink("../linked.txt", path.join(artifactsDir, "linked.txt"));
+    const deletedTarget = path.join(workspaceRoot, "deleted.txt");
+    await writeFile(deletedTarget, "removed target");
+    await symlink("../deleted.txt", path.join(artifactsDir, "dangling.txt"));
+    await rm(deletedTarget);
+
+    await assert.rejects(
+      readArtifact("session-a", "dangling.txt", options),
+      (error: unknown) => error instanceof Error && error.message === "Artifact file not found: dangling.txt",
+    );
+    assert.deepEqual(await listArtifacts("session-a", options), ["linked.txt", "visible.md"]);
+    assert.deepEqual(await listArtifactEntries(undefined, "session-a", options), [
+      { name: "linked.txt", type: "link", size: Buffer.byteLength("linked content", "utf8") },
+      { name: "visible.md", type: "file", size: Buffer.byteLength("still available", "utf8") },
+    ]);
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
@@ -69,6 +162,11 @@ test("artifact paths reject traversal, absolute paths, and unsafe session identi
     assert.throws(() => resolveArtifactPath("session-a", "/etc/passwd", root), /Path traversal forbidden/);
     assert.throws(() => resolveArtifactPath("session-a", "nested/../../package.json", root), /Path traversal forbidden/);
     assert.throws(() => resolveArtifactPath("../session-a", "safe.txt", root), /Path traversal forbidden/);
+    assert.deepEqual(await listArtifactEntries(undefined, "session-a", root), []);
+    for (const invalid of ["../outside", "nested/../../outside", "/etc", "C:/outside", "nested\\outside"]) {
+      await assert.rejects(listArtifactEntries(invalid, "session-a", root), /Path traversal forbidden/);
+    }
+    await assert.rejects(listArtifactEntries("missing", "session-a", root), /Artifact directory not found/);
     await assert.rejects(writeArtifact("session-a", "/etc/passwd", "no", root), /Path traversal forbidden/);
   } finally {
     await rm(temp, { recursive: true, force: true });
@@ -169,11 +267,46 @@ test("read_artifact handles empty files and rejects invalid page bounds", async 
   }
 });
 
+test("list_artifacts returns direct children, sizes, details, and safe empty results", async () => {
+  const { temp, root } = await tempArtifactsRoot();
+  try {
+    await writeArtifact("owner", "alpha.md", "abc", root);
+    await writeArtifact("owner", "nested/child.txt", "child", root);
+    const listTool = createArtifactTools("owner", root).find((tool) => tool.name === "list_artifacts")!;
+    const rootResult = await listTool.execute("list-root", {});
+    assert.equal(rootResult.content[0].type === "text" ? rootResult.content[0].text : "", "alpha.md (3 bytes)\nnested/");
+    assert.deepEqual(rootResult.details, {
+      directory: "",
+      entries: [
+        { name: "alpha.md", type: "file", size: 3 },
+        { name: "nested", type: "directory" },
+      ],
+    });
+
+    const childResult = await listTool.execute("list-child", { directory: "nested" });
+    assert.equal(childResult.content[0].type === "text" ? childResult.content[0].text : "", "child.txt (5 bytes)");
+    assert.deepEqual(childResult.details, {
+      directory: "nested",
+      entries: [{ name: "child.txt", type: "file", size: 5 }],
+    });
+    const emptyResult = await createArtifactTools("empty-owner", root)
+      .find((tool) => tool.name === "list_artifacts")!.execute("list-empty", {});
+    assert.equal(emptyResult.content[0].type === "text" ? emptyResult.content[0].text : "", "(empty directory)");
+    await assert.rejects(listTool.execute("list-unsafe", { directory: "../outside" }), /Path traversal forbidden/);
+
+    const abort = new AbortController();
+    abort.abort();
+    await assert.rejects(listTool.execute("list-aborted", {}, abort.signal), /已取消/);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
 test("read_artifact and write_artifact tools are bound to their owning session", async () => {
   const { temp, root } = await tempArtifactsRoot();
   try {
     const ownerTools = createArtifactTools("owner-session", root);
-    assert.deepEqual(ownerTools.map((tool) => tool.name), ["read_artifact", "write_artifact"]);
+    assert.deepEqual(ownerTools.map((tool) => tool.name), ["list_artifacts", "read_artifact", "write_artifact"]);
     const writeTool = ownerTools.find((tool) => tool.name === "write_artifact")!;
     const readTool = ownerTools.find((tool) => tool.name === "read_artifact")!;
     const writeResult = await writeTool.execute("write-call", { path: "research/summary.md", content: "Owner-only finding" });

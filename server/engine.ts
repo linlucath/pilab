@@ -1,4 +1,6 @@
 import { modelRequestError } from "./network";
+import { withStreamRetry } from "./stream-retry";
+import { logEvent } from "./logger";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -32,7 +34,7 @@ import { latestImageContext, retainToolImages } from "../extensions/pi-gpt-subag
 import {
   exactPayload as serializeExactPayload,
   fromPiMessage,
-  preparePiMessageForModel,
+  preparePiMessagesForModel,
   validateToolHistory,
 } from "./transcript";
 
@@ -287,10 +289,15 @@ export async function generate(
     else transcript.unshift({ role: "system", content: "", toolsAdded, timestamp: Date.now() });
   }
   let requestCount = 0;
-  const streamFn: StreamFn = (chosen, context, options) => {
-    requestCount++;
+  let retrying = false;
+  const baseStreamFn: StreamFn = (chosen, context, options) => {
+    // A resent request is the same turn: it must not advance the turn counter
+    // against settings.maxTurns, nor duplicate the inspector payload.
+    const isRetry = retrying;
+    retrying = false;
+    if (!isRetry) requestCount++;
     // Also normalize newly generated Agent turns, not just persisted history.
-    context = { ...context, messages: context.messages.map((message) => preparePiMessageForModel(message, chosen)) };
+    context = { ...context, messages: preparePiMessagesForModel(context.messages, chosen) };
     const currentMessages = prepareMessagesForModel([...active, ...generatedTranscript]);
     const requestOptions: SimpleStreamOptions = {
       ...options,
@@ -300,7 +307,7 @@ export async function generate(
       temperature:
         subscription || effort !== "off" ? undefined : settings.temperature,
       maxTokens: settings.maxTokens,
-      maxRetries: 0,
+      maxRetries: 3,
       timeoutMs: 120_000,
       onPayload: (payload) => {
         // Use the provider's multimodal serializer when images are attached.
@@ -309,7 +316,7 @@ export async function generate(
         const exact = hasImages || (subscription && chosen.api !== "openai-codex-responses")
           ? payload
           : exactPayload(payload, settings, currentMessages);
-        emit({ type: "request", turn: requestCount, payload: inspectorPayload(exact) });
+        if (!isRetry) emit({ type: "request", turn: requestCount, payload: inspectorPayload(exact) });
         return exact;
       },
     };
@@ -341,6 +348,24 @@ export async function generate(
       requestOptions,
     );
   };
+  // Proxied connections drop the SSE body mid-turn; Antigravity returns transient
+  // 500/503s. Resend the request instead of failing the turn.
+  const streamFn = withStreamRetry(baseStreamFn, {
+    attempts: 3,
+    onRetry: ({ attempt, message, hadContent }) => {
+      retrying = true;
+      logEvent("run", "warn", "stream_retry", "模型流式响应中断，正在重发请求。", {
+        attempt,
+        turn: requestCount,
+        provider: model.provider,
+        hadContent,
+        reason: message.slice(0, 500),
+      });
+      // Same id: the client clears what it already rendered for this message
+      // and starts it over, so the retried response does not append to it.
+      emit({ type: "assistant_start", id: currentAssistantId, turn: requestCount, restart: true });
+    },
+  });
   const agent = new Agent({
     initialState: {
       model,
